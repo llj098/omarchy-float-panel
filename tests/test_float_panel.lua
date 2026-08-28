@@ -160,6 +160,7 @@ assert(#configs == 1 and configs[1].general.float_gaps == -1,
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
 assert(type(handlers["workspace.move_to_monitor"]) == "function")
+assert(type(handlers["workspace.work_area_changed"]) == "function")
 assert(handlers["monitor.removed"] == nil,
   "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
 assert(#window_rules == 1, "the WeChat size override must be registered once")
@@ -213,9 +214,9 @@ local fullscreen = {
 }
 ws1.windows = { w1, w2, inside, unmapped, hidden, tiled, maximized, fullscreen }
 local before_migration = #dispatched
-handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
+handlers["workspace.work_area_changed"](ws1)
 assert(#dispatched == before_migration + 3,
-  "a migrated Float workspace must resize/move only mapped floating non-fullscreen windows that need fitting")
+  "a recalculated Float work area must inspect every mapped ordinary float and change only windows needing fitting")
 local migrated_resize = dispatched[before_migration + 1]
 local migrated_oversize_move = dispatched[before_migration + 2]
 local migrated_offscreen_move = dispatched[before_migration + 3]
@@ -235,10 +236,17 @@ assert(inside.at.x == -1000 and inside.at.y == 300,
   "an already-fitting on-screen migrated window must not move")
 assert(unmapped.at.x == 4000 and hidden.at.x == 4000 and tiled.at.x == 4000 and maximized.at.x == 4000 and fullscreen.at.x == 4000,
   "unmapped, hidden, tiled, maximized, and fullscreen windows must be left to native behavior")
+local before_idempotent_fit = #dispatched
+handlers["workspace.work_area_changed"](ws1)
+handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
+assert(#dispatched == before_idempotent_fit,
+  "repeated work-area and migration routes must be geometrically idempotent through their common fitter")
 local before_wrong_routes = #dispatched
+handlers["workspace.work_area_changed"](ws2)
+handlers["workspace.work_area_changed"](special)
 handlers["workspace.move_to_monitor"](ws2, migrated_monitor)
 handlers["workspace.move_to_monitor"](special, migrated_monitor)
-assert(#dispatched == before_wrong_routes, "tiling and special workspaces must not route migration geometry")
+assert(#dispatched == before_wrong_routes, "tiling and special workspaces must not route defensive fitting")
 local route_window = {
   workspace = ws1, floating = false, mapped = true, fullscreen = 0, monitor = migrated_monitor,
   at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
@@ -361,8 +369,8 @@ w1.monitor = migrated_monitor
 w2.monitor = migrated_monitor
 ws1.windows = { w1, w2 }
 local before_max_migration = #dispatched
-handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
-assert(#dispatched == before_max_migration + 4, "migration must resize then move each tagged max peer")
+handlers["workspace.work_area_changed"](ws1)
+assert(#dispatched == before_max_migration + 4, "work-area recalculation must resize then move each tagged max peer")
 assert(w1.floating and w2.floating and w1.at.x == -1578 and w1.at.y == 242 and w1.size.x == 1146 and w1.size.y == 696,
   "migration must refill the first tagged max against the new work area")
 assert(w2.at.x == -1578 and w2.at.y == 242 and w2.size.x == 1146 and w2.size.y == 696,

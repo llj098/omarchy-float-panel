@@ -89,7 +89,8 @@ for required in (
     'hl.on("window.open"',
     'hl.on("window.move_to_workspace"',
     'hl.on("workspace.move_to_monitor"',
-    "fit_migrated_float_workspace(workspace)",
+    'hl.on("workspace.work_area_changed"',
+    "defensively_fit_float_workspace(workspace)",
     "floating_window_bounds(window.monitor)",
     "window.mapped ~= true",
     "window.hidden == true",
@@ -159,7 +160,29 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
 
 assert "Qt.callLater(function() { root.dispatchActivation" not in switcher
 assert lua.count('hl.on("workspace.move_to_monitor"') == 1
+assert lua.count('hl.on("workspace.work_area_changed"') == 1
 assert 'hl.on("monitor.removed"' not in lua
+for forbidden_event in ('monitor.layout_changed', 'layer.opened', 'layer.closed', 'config.props_refreshed'):
+    assert f'hl.on("{forbidden_event}"' not in lua, "work-area repair must use the single native workspace event"
+
+patch = (ROOT / "patches" / "hyprland-0.56.2-work-area-event.patch").read_text()
+for required in (
+    "Event<PHLWORKSPACE>             workAreaChanged;",
+    'dispatch("workspace.work_area_changed"',
+    '"workspace.work_area_changed",',
+    "m_floatingWorkArea.x != floatWorkArea.x",
+    "m_floatingWorkArea.h != floatWorkArea.h",
+    "m_algorithm->recalculate(reason);",
+    "emitWorkAreaChanged();",
+    "m_floatingWorkAreaChanged = false;",
+):
+    assert required in patch, f"Hyprland work-area patch missing contract: {required}"
+recalculate = patch.index("m_algorithm->recalculate(reason);")
+assert recalculate < patch.index("emitWorkAreaChanged();", recalculate), \
+    "workspace event must follow native algorithm recalculation"
+assert "m_floatingWorkAreaChanged ||" in patch, "work-area changes must latch until recalculation"
+assert "timer" not in patch.lower() and "calllater" not in patch.lower()
+
 assert 'mode = "maximized"' not in lua, "Float maximize must not use Hyprland's single fullscreen owner"
 assert "monocle" not in lua.lower() and "workspace_rule" not in lua, "geometry maximize must not change tiled layouts"
 assert "hl.dsp.window.cycle_next" not in lua and "hl.dsp.window.bring_to_top" not in lua, "Super+Tab must remain workspace navigation in every mode"

@@ -363,7 +363,7 @@ apply_workspace_mode = function(workspace)
   for _, window in ipairs(workspace:get_windows()) do set_window_floating(window, enabled) end
 end
 
-local function fit_migrated_float_workspace(workspace)
+local function defensively_fit_float_workspace(workspace)
   if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
 
   for _, window in ipairs(workspace:get_windows()) do
@@ -471,7 +471,7 @@ end
 for _, workspace in ipairs(hl.get_workspaces()) do
   if workspace_float_enabled(workspace) then
     apply_workspace_mode(workspace)
-    fit_migrated_float_workspace(workspace)
+    defensively_fit_float_workspace(workspace)
   end
 end
 
@@ -503,7 +503,13 @@ end)
 -- Hyprland emits this only after the workspace monitor, every member window's
 -- monitor, floating position translation, and native fullscreen reflow finish.
 hl.on("workspace.move_to_monitor", function(workspace, _monitor)
-  fit_migrated_float_workspace(workspace)
+  defensively_fit_float_workspace(workspace)
+end)
+
+-- Supplied by patches/hyprland-0.56.2-work-area-event.patch after the
+-- workspace's native algorithms have recalculated against the new work area.
+hl.on("workspace.work_area_changed", function(workspace)
+  defensively_fit_float_workspace(workspace)
 end)
 
 local resize_bindings = {

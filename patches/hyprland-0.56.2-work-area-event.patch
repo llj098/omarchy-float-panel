@@ -1,0 +1,116 @@
+diff --git a/src/config/lua/LuaEventHandler.cpp b/src/config/lua/LuaEventHandler.cpp
+index 24ec764..14faa95 100644
+--- a/src/config/lua/LuaEventHandler.cpp
++++ b/src/config/lua/LuaEventHandler.cpp
+@@ -147,6 +147,8 @@ CLuaEventHandler::CLuaEventHandler(lua_State* L) : m_lua(L) {
+             CLuaMonitor::push(L, mon);
+         });
+     }));
++    m_listeners.push_back(bus()->m_events.workspace.workAreaChanged.listen(
++        [this](PHLWORKSPACE ws) { dispatch("workspace.work_area_changed", 1, [&](lua_State* L) { CLuaWorkspace::push(L, ws); }); }));
+
+     m_listeners.push_back(bus()->m_events.config.reloaded.listen([this] { dispatch("config.reloaded", 0, [](lua_State* L) {}); }));
+     m_listeners.push_back(bus()->m_events.config.props_refreshed.listen(
+@@ -289,6 +291,7 @@ std::unordered_set<std::string> CLuaEventHandler::knownEvents() {
+         "workspace.created",
+         "workspace.removed",
+         "workspace.move_to_monitor",
++        "workspace.work_area_changed",
+         "config.reloaded",
+         "config.props_refreshed",
+         "keybinds.submap",
+diff --git a/src/event/EventBus.hpp b/src/event/EventBus.hpp
+index 3ac0428..457ac78 100644
+--- a/src/event/EventBus.hpp
++++ b/src/event/EventBus.hpp
+@@ -175,6 +175,7 @@ namespace Event {
+                 Event<PHLWORKSPACE, PHLMONITOR> specialActive;
+                 Event<PHLWORKSPACEREF>          created;
+                 Event<PHLWORKSPACEREF>          removed;
++                Event<PHLWORKSPACE>             workAreaChanged;
+             } workspace;
+
+             struct {
+diff --git a/src/layout/space/Space.cpp b/src/layout/space/Space.cpp
+index 0cb3aff..1c1e5a7 100644
+--- a/src/layout/space/Space.cpp
++++ b/src/layout/space/Space.cpp
+@@ -20,6 +20,7 @@ SP<CSpace> CSpace::create(PHLWORKSPACE w) {
+
+ CSpace::CSpace(PHLWORKSPACE parent) : m_parent(parent) {
+     recheckWorkArea();
++    m_floatingWorkAreaChanged = false;
+
+     // NOLINTNEXTLINE
+     m_geomUpdateCallback = Event::bus()->m_events.monitor.layoutChanged.listen([this] {
+@@ -31,8 +32,10 @@ CSpace::CSpace(PHLWORKSPACE parent) : m_parent(parent) {
+
+         recheckWorkArea();
+
+-        if (m_algorithm)
++        if (m_algorithm) {
+             m_algorithm->recalculate();
++            emitWorkAreaChanged();
++        }
+     });
+ }
+
+@@ -102,10 +105,25 @@ void CSpace::recheckWorkArea() {
+     reservedFloatGaps.applyip(floatWorkArea);
+     reservedGaps.applyip(workArea);
+
++    m_floatingWorkAreaChanged = m_floatingWorkAreaChanged || m_floatingWorkArea.x != floatWorkArea.x || m_floatingWorkArea.y != floatWorkArea.y ||
++        m_floatingWorkArea.w != floatWorkArea.w || m_floatingWorkArea.h != floatWorkArea.h;
+     m_workArea         = workArea;
+     m_floatingWorkArea = floatWorkArea;
+ }
+
++void CSpace::emitWorkAreaChanged() {
++    if (!m_floatingWorkAreaChanged)
++        return;
++
++    // Clear before dispatch so synchronous Lua geometry changes cannot re-emit
++    // this work-area transition recursively.
++    m_floatingWorkAreaChanged = false;
++
++    const auto WORKSPACE = m_parent.lock();
++    if (WORKSPACE)
++        Event::bus()->m_events.workspace.workAreaChanged.emit(WORKSPACE);
++}
++
+ const CBox& CSpace::workArea(bool floating) const {
+     return floating ? m_floatingWorkArea : m_workArea;
+ }
+@@ -149,8 +167,10 @@ SP<CAlgorithm> CSpace::algorithm() const {
+ void CSpace::recalculate(eRecalculateReason reason) {
+     recheckWorkArea();
+
+-    if (m_algorithm)
++    if (m_algorithm) {
+         m_algorithm->recalculate(reason);
++        emitWorkAreaChanged();
++    }
+ }
+
+ Config::ErrorResult CSpace::layoutMsg(const std::string_view& sv) {
+diff --git a/src/layout/space/Space.hpp b/src/layout/space/Space.hpp
+index 583cc53..676023b 100644
+--- a/src/layout/space/Space.hpp
++++ b/src/layout/space/Space.hpp
+@@ -68,6 +68,8 @@ namespace Layout {
+       private:
+         CSpace(PHLWORKSPACE parent);
+
++        void emitWorkAreaChanged();
++
+         WP<CSpace>               m_self;
+
+         std::vector<WP<ITarget>> m_targets;
+@@ -76,6 +78,7 @@ namespace Layout {
+
+         // work area is in global coords
+         CBox m_workArea, m_floatingWorkArea;
++        bool m_floatingWorkAreaChanged = false;
+
+         // for recalc
+         CHyprSignalListener m_geomUpdateCallback;
