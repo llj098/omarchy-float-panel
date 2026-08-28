@@ -31,7 +31,7 @@ local own_monitor = {
 }
 local active_monitor = own_monitor
 w1.at = { x = 200, y = 100 }
-w1.size = { width = 400, height = 200 }
+w1.size = { x = 400, y = 200 }
 w1.monitor = own_monitor
 
 local active_workspace = ws1
@@ -63,7 +63,7 @@ hl = {
         action.params.window.at = { x = action.params.x, y = action.params.y }
       end
     elseif action.kind == "resize" and action.params.window then
-      action.params.window.size = { width = action.params.x, height = action.params.y }
+      action.params.window.size = { x = action.params.x, y = action.params.y }
     elseif action.kind == "tag" then
       action.params.window.order_tag = action.params.tag
     end
@@ -150,9 +150,9 @@ assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must no
 for _, route in ipairs(resize_routes) do
   local dx, dy = route[2], route[3]
   w1.at = { x = 250, y = dy < 0 and 80 or 218 }
-  w1.size = { width = 500, height = dy < 0 and 350 or 100 }
+  w1.size = { x = 500, y = dy < 0 and 350 or 100 }
   local old_x, old_y = w1.at.x, w1.at.y
-  local old_width, old_height = w1.size.width, w1.size.height
+  local old_width, old_height = w1.size.x, w1.size.y
   local before = #dispatched
   binds[route[1]]()
   local resized, moved = dispatched[before + 1], dispatched[before + 2]
@@ -166,24 +166,24 @@ end
 
 active_monitor = { x = -5000, y = -5000, width = 100, height = 100, scale = 1, reserved = {} }
 w1.at = { x = 900, y = 100 }
-w1.size = { width = 50, height = 100 }
+w1.size = { x = 50, y = 100 }
 for _ = 1, 20 do binds["SUPER + code:21"]() end
-assert(w1.at.x == 32 and w1.size.width == 946,
+assert(w1.at.x == 32 and w1.size.x == 946,
   "repeated growth must stop at the active window's own monitor floating work-area boundary")
-assert(w1.at.y == 100 and w1.size.height == 100, "horizontal resize must not change vertical geometry")
+assert(w1.at.y == 100 and w1.size.y == 100, "horizontal resize must not change vertical geometry")
 w1.at = { x = 100, y = 400 }
-w1.size = { width = 100, height = 50 }
+w1.size = { x = 100, y = 50 }
 binds["SUPER + CTRL + SHIFT + code:21"]()
 binds["SUPER + CTRL + SHIFT + code:21"]()
-assert(w1.at.y == 62 and w1.size.height == 406, "large vertical growth must clamp to the usable work area")
+assert(w1.at.y == 62 and w1.size.y == 406, "large vertical growth must clamp to the usable work area")
 active_monitor = own_monitor
 
 binds["SUPER + LEFT"]()
 assert(w1.position.x == 32 and w1.position.y == 62, "left snap must preserve tiling outer gaps and borders")
-assert(w1.size.width == 466 and w1.size.height == 406, "left snap must fill half the gapped work area")
+assert(w1.size.x == 466 and w1.size.y == 406, "left snap must fill half the gapped work area")
 binds["SUPER + RIGHT"]()
 assert(w1.position.x == 512 and w1.position.y == 62, "right snap must preserve the tiling inner gap")
-assert(w1.size.width == 466 and w1.size.height == 406, "right snap must fill the other gapped half")
+assert(w1.size.x == 466 and w1.size.y == 406, "right snap must fill the other gapped half")
 
 binds["SUPER + UP"]()
 local last = dispatched[#dispatched]

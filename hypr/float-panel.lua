@@ -203,8 +203,8 @@ local function mode_aware_resize(dx, dy)
   local top = area.y + gaps.top + border
   local right = area.x + area.width - gaps.right - border
   local bottom = area.y + area.height - gaps.bottom - border
-  local old_width = math.max(1, tonumber(size.width) or 1)
-  local old_height = math.max(1, tonumber(size.height) or 1)
+  local old_width = math.max(1, tonumber(size.x) or 1)
+  local old_height = math.max(1, tonumber(size.y) or 1)
   local width = math.max(1, math.min(right - left, old_width + dx))
   local height = math.max(1, math.min(bottom - top, old_height + dy))
   local x = math.max(left, math.min(right - width, (tonumber(at.x) or left) - (width - old_width) / 2))
