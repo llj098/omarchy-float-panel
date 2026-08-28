@@ -121,19 +121,45 @@ local function monitor_work_area(monitor)
   }
 end
 
+local function config_gap(name)
+  local value = hl.get_config(name)
+  if type(value) == "number" then
+    return { top = value, right = value, bottom = value, left = value }
+  end
+  value = type(value) == "table" and value or {}
+  return {
+    top = tonumber(value.top) or 0,
+    right = tonumber(value.right) or 0,
+    bottom = tonumber(value.bottom) or 0,
+    left = tonumber(value.left) or 0,
+  }
+end
+
 local function snap_active_window(side)
   local window = hl.get_active_window()
   local area = monitor_work_area(hl.get_active_monitor())
   if not window or not area then return end
 
-  local left_width = math.floor(area.width / 2)
-  local width = side == "left" and left_width or area.width - left_width
-  local x = side == "left" and area.x or area.x + left_width
+  local gaps_out = config_gap("general.gaps_out")
+  local gaps_in = config_gap("general.gaps_in")
+  local border = math.max(0, tonumber(hl.get_config("general.border_size")) or 0)
+  local outer_x = area.x + gaps_out.left
+  local outer_y = area.y + gaps_out.top
+  local outer_width = math.max(1, area.width - gaps_out.left - gaps_out.right)
+  local outer_height = math.max(1, area.height - gaps_out.top - gaps_out.bottom)
+  local middle_gap = math.max(0, gaps_in.left + gaps_in.right)
+  local halves_width = math.max(2, outer_width - middle_gap)
+  local left_outer_width = math.floor(halves_width / 2)
+  local outer_half_width = side == "left" and left_outer_width or halves_width - left_outer_width
+  local x = side == "left" and outer_x + border or outer_x + left_outer_width + middle_gap + border
+  local y = outer_y + border
+  local width = math.max(1, outer_half_width - border * 2)
+  local height = math.max(1, outer_height - border * 2)
 
   set_window_floating(window, true)
   -- Resize first so Hyprland does not clamp the old, wider window before placing it.
-  hl.dispatch(hl.dsp.window.resize({ x = width, y = area.height, window = window }))
-  hl.dispatch(hl.dsp.window.move({ x = x, y = area.y, window = window }))
+  hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
+  hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
 end
 
 local function focus_or_snap(direction)

@@ -55,6 +55,12 @@ hl = {
     }
   end,
   get_workspaces = function() return { ws1, ws2, special } end,
+  get_config = function(name)
+    if name == "general.gaps_out" then return { top = 10, right = 10, bottom = 10, left = 10 } end
+    if name == "general.gaps_in" then return { top = 5, right = 5, bottom = 5, left = 5 } end
+    if name == "general.border_size" then return 2 end
+    return nil
+  end,
   on = function(name, callback) handlers[name] = callback end,
   unbind = function(keys) table.insert(unbound, keys) end,
 }
@@ -79,11 +85,11 @@ assert(w1.floating and w2.floating, "toggle on must float every current window")
 assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must notify its mode")
 
 binds["SUPER + LEFT"]()
-assert(w1.position.x == 20 and w1.position.y == 50, "left snap must use the monitor work area origin")
-assert(w1.size.width == 485 and w1.size.height == 430, "left snap must fill half the scaled work area")
+assert(w1.position.x == 32 and w1.position.y == 62, "left snap must preserve tiling outer gaps and borders")
+assert(w1.size.width == 466 and w1.size.height == 406, "left snap must fill half the gapped work area")
 binds["SUPER + RIGHT"]()
-assert(w1.position.x == 505 and w1.position.y == 50, "right snap must start at the second half")
-assert(w1.size.width == 485 and w1.size.height == 430, "right snap must fill the other half")
+assert(w1.position.x == 512 and w1.position.y == 62, "right snap must preserve the tiling inner gap")
+assert(w1.size.width == 466 and w1.size.height == 406, "right snap must fill the other gapped half")
 
 local opened = { workspace = ws1, floating = false }
 handlers["window.open"](opened)

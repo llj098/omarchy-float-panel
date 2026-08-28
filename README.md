@@ -69,7 +69,7 @@ The set of floating workspace names is stored at:
 
 Deleting that file resets the remembered modes at the next Hyprland config reload. Switching to tiling deliberately tiles all normal windows on that workspace; it does not preserve per-window exceptions from before the toggle.
 
-In a floating workspace, `Super+Left` and `Super+Right` snap the active window to the left or right half of the current monitor. Geometry is calculated from the monitor's scale and reserved bar area, so it remains monitor-local and works with the bar on any edge. In a tiling workspace the same keys continue to focus the neighboring window.
+In a floating workspace, `Super+Left` and `Super+Right` snap the active window to the left or right half of the current monitor. Geometry is calculated from the monitor's scale, reserved bar area, live `gaps_out`/`gaps_in`, and border size, so snapped windows retain the same outer and middle margins as tiling and work with the bar on any edge. In a tiling workspace the same keys continue to focus the neighboring window.
 
 ## Minimize and restore
 
