@@ -83,7 +83,7 @@ for required in (
     'o.bind("ALT + ALT_L"',
     'o.bind("ALT + ALT_R"',
     'hl.dsp.global("fatlj.float-panel:alt-tab-next")',
-    '{ release = true }',
+    '{ release = true, transparent = true }',
     'hl.unbind("SUPER + LEFT")',
     "hl.get_active_monitor()",
     'config_gap("general.gaps_out")',

@@ -95,6 +95,8 @@ assert(binds["ALT + TAB"].kind == "global" and binds["ALT + TAB"].name == "fatlj
 assert(binds["ALT + SHIFT + TAB"].name == "fatlj.float-panel:alt-tab-previous")
 assert(binds["ALT + ALT_L"].name == "fatlj.float-panel:alt-release")
 assert(bind_options["ALT + ALT_L"].release == true and bind_options["ALT + ALT_R"].release == true)
+assert(bind_options["ALT + ALT_L"].transparent == true and bind_options["ALT + ALT_R"].transparent == true,
+  "Alt release binds must survive shadowing by the intervening Alt+Tab chord")
 assert(unbound[1] == "SUPER + LEFT" and unbound[2] == "SUPER + RIGHT")
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
