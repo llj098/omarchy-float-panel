@@ -181,18 +181,9 @@ local function config_gap(name)
   }
 end
 
-local function mode_aware_resize(dx, dy)
-  local workspace = hl.get_active_workspace()
-  if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then
-    hl.dispatch(hl.dsp.window.resize({ x = dx, y = dy, relative = true }))
-    return
-  end
-
-  local window = hl.get_active_window()
-  local area = window and monitor_work_area(window.monitor) or nil
-  local at = window and window.at or nil
-  local size = window and window.size or nil
-  if not area or not at or not size then return end
+local function floating_window_bounds(monitor)
+  local area = monitor_work_area(monitor)
+  if not area then return nil end
 
   local gaps = config_gap("general.float_gaps")
   if gaps.top < 0 or gaps.right < 0 or gaps.bottom < 0 or gaps.left < 0 then
@@ -203,12 +194,73 @@ local function mode_aware_resize(dx, dy)
   local top = area.y + gaps.top + border
   local right = area.x + area.width - gaps.right - border
   local bottom = area.y + area.height - gaps.bottom - border
+
+  return {
+    left = left,
+    top = top,
+    right = right,
+    bottom = bottom,
+    width = math.max(1, right - left),
+    height = math.max(1, bottom - top),
+  }
+end
+
+local function fit_window_to_floating_bounds(window)
+  if not window or window.mapped ~= true or window.hidden == true or window.floating ~= true then return end
+  -- Hyprland natively reflows maximized/fullscreen windows during monitor moves.
+  if (tonumber(window.fullscreen) or 0) ~= 0 then return end
+
+  local bounds = floating_window_bounds(window.monitor)
+  local at = window.at
+  local size = window.size
+  if not bounds or not at or not size then return end
+
   local old_width = math.max(1, tonumber(size.x) or 1)
   local old_height = math.max(1, tonumber(size.y) or 1)
-  local width = math.max(1, math.min(right - left, old_width + dx))
-  local height = math.max(1, math.min(bottom - top, old_height + dy))
-  local x = math.max(left, math.min(right - width, (tonumber(at.x) or left) - (width - old_width) / 2))
-  local y = math.max(top, math.min(bottom - height, (tonumber(at.y) or top) - (height - old_height) / 2))
+  local width = math.min(old_width, bounds.width)
+  local height = math.min(old_height, bounds.height)
+
+  if width ~= old_width or height ~= old_height then
+    hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
+    local resized = window.size or {}
+    width = math.max(1, tonumber(resized.x) or width)
+    height = math.max(1, tonumber(resized.y) or height)
+  end
+
+  local x = math.max(bounds.left, math.min(bounds.right - width, tonumber(at.x) or bounds.left))
+  local y = math.max(bounds.top, math.min(bounds.bottom - height, tonumber(at.y) or bounds.top))
+  if x ~= tonumber(at.x) or y ~= tonumber(at.y) then
+    hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
+  end
+end
+
+local function fit_migrated_float_workspace(workspace)
+  if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
+
+  for _, window in ipairs(workspace:get_windows()) do
+    fit_window_to_floating_bounds(window)
+  end
+end
+
+local function mode_aware_resize(dx, dy)
+  local workspace = hl.get_active_workspace()
+  if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then
+    hl.dispatch(hl.dsp.window.resize({ x = dx, y = dy, relative = true }))
+    return
+  end
+
+  local window = hl.get_active_window()
+  local bounds = window and floating_window_bounds(window.monitor) or nil
+  local at = window and window.at or nil
+  local size = window and window.size or nil
+  if not bounds or not at or not size then return end
+
+  local old_width = math.max(1, tonumber(size.x) or 1)
+  local old_height = math.max(1, tonumber(size.y) or 1)
+  local width = math.max(1, math.min(bounds.width, old_width + dx))
+  local height = math.max(1, math.min(bounds.height, old_height + dy))
+  local x = math.max(bounds.left, math.min(bounds.right - width, (tonumber(at.x) or bounds.left) - (width - old_width) / 2))
+  local y = math.max(bounds.top, math.min(bounds.bottom - height, (tonumber(at.y) or bounds.top) - (height - old_height) / 2))
 
   hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
   hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
@@ -311,6 +363,12 @@ end)
 hl.on("window.move_to_workspace", function(window, workspace)
   if not workspace_is_regular(workspace) then return end
   set_window_floating(window, workspace_float_enabled(workspace))
+end)
+
+-- Hyprland emits this only after the workspace monitor, every member window's
+-- monitor, floating position translation, and native fullscreen reflow finish.
+hl.on("workspace.move_to_monitor", function(workspace, _monitor)
+  fit_migrated_float_workspace(workspace)
 end)
 
 local resize_bindings = {

@@ -73,6 +73,15 @@ lua = (ROOT / "hypr" / "float-panel.lua").read_text()
 for required in (
     'hl.on("window.open"',
     'hl.on("window.move_to_workspace"',
+    'hl.on("workspace.move_to_monitor"',
+    "fit_migrated_float_workspace(workspace)",
+    "floating_window_bounds(window.monitor)",
+    "window.mapped ~= true",
+    "window.hidden == true",
+    "window.floating ~= true",
+    "tonumber(window.fullscreen)",
+    "tonumber(size.x)",
+    "tonumber(size.y)",
     "hl.get_windows()",
     "hl.dsp.window.tag",
     'order_tag_prefix = "float-panel-order-"',
@@ -115,7 +124,6 @@ for required in (
     "client = 0",
     'action = "toggle"',
     "hl.get_active_monitor()",
-    "monitor_work_area(window.monitor)",
     'config_gap("general.float_gaps")',
     'config_gap("general.gaps_out")',
     "relative = true",
@@ -132,5 +140,9 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
     assert forbidden not in lua
 
 assert "Qt.callLater(function() { root.dispatchActivation" not in switcher
+assert lua.count('hl.on("workspace.move_to_monitor"') == 1
+assert 'hl.on("monitor.removed"' not in lua
+for forbidden in ("callLater", "Timer", "poll", "mouse_button"):
+    assert forbidden not in lua, f"migration repair must not use delayed/blanket workaround: {forbidden}"
 
 print("STATIC_VALIDATION_OK")

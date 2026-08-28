@@ -16,8 +16,8 @@ end
 local ws1 = workspace(1, "1", false)
 local ws2 = workspace(2, "2", false)
 local special = workspace(-99, "special:test", true)
-local w1 = { workspace = ws1, floating = false, pid = 1 }
-local w2 = { workspace = ws1, floating = false, pid = 1 }
+local w1 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1 }
+local w2 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1 }
 ws1.windows = { w1, w2 }
 
 local own_monitor = {
@@ -137,6 +137,9 @@ assert(#configs == 1 and configs[1].general.float_gaps == -1,
   "native floating work areas must inherit the configured outer gaps")
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
+assert(type(handlers["workspace.move_to_monitor"]) == "function")
+assert(handlers["monitor.removed"] == nil,
+  "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
 assert(#window_rules == 1, "the WeChat size override must be registered once")
 assert(window_rules[1].match.class == "^wechat$" and window_rules[1].match.xwayland == true)
 assert(window_rules[1].min_size[1] == 1 and window_rules[1].min_size[2] == 1)
@@ -147,6 +150,87 @@ binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")
 assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must notify its mode")
 
+local migrated_monitor = {
+  x = -1600,
+  y = 200,
+  width = 1600,
+  height = 2400,
+  scale = 2,
+  transform = 1,
+  reserved = { left = 10, right = 20, top = 30, bottom = 50 },
+}
+w1.monitor = migrated_monitor
+w1.at = { x = 2000, y = -500 }
+w1.size = { x = 1400, y = 300 }
+w2.monitor = migrated_monitor
+w2.at = { x = -3000, y = 1000 }
+w2.size = { x = 400, y = 200 }
+local inside = {
+  workspace = ws1, floating = true, mapped = true, fullscreen = 0, monitor = migrated_monitor,
+  at = { x = -1000, y = 300 }, size = { x = 100, y = 100 },
+}
+local unmapped = {
+  workspace = ws1, floating = true, mapped = false, fullscreen = 0, monitor = migrated_monitor,
+  at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
+}
+local hidden = {
+  workspace = ws1, floating = true, mapped = true, hidden = true, fullscreen = 0, monitor = migrated_monitor,
+  at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
+}
+local tiled = {
+  workspace = ws1, floating = false, mapped = true, fullscreen = 0, monitor = migrated_monitor,
+  at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
+}
+local maximized = {
+  workspace = ws1, floating = true, mapped = true, fullscreen = 1, monitor = migrated_monitor,
+  at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
+}
+local fullscreen = {
+  workspace = ws1, floating = true, mapped = true, fullscreen = 2, monitor = migrated_monitor,
+  at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
+}
+ws1.windows = { w1, w2, inside, unmapped, hidden, tiled, maximized, fullscreen }
+local before_migration = #dispatched
+handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
+assert(#dispatched == before_migration + 3,
+  "a migrated Float workspace must resize/move only mapped floating non-fullscreen windows that need fitting")
+local migrated_resize = dispatched[before_migration + 1]
+local migrated_oversize_move = dispatched[before_migration + 2]
+local migrated_offscreen_move = dispatched[before_migration + 3]
+assert(migrated_resize.kind == "resize" and migrated_resize.params.window == w1,
+  "oversize migration repair must resize before moving")
+assert(migrated_resize.params.x == 1146 and migrated_resize.params.y == 300,
+  "migration repair must shrink only the dimension exceeding the transformed logical work area")
+assert(migrated_oversize_move.kind == "move" and migrated_oversize_move.params.x == -1578 and migrated_oversize_move.params.y == 242,
+  "oversize migration repair must clamp against the negative-origin work area")
+assert(migrated_offscreen_move.kind == "move" and migrated_offscreen_move.params.window == w2,
+  "an offscreen mapped Float-workspace window that already fits must move without resizing")
+assert(migrated_offscreen_move.params.x == -1578 and migrated_offscreen_move.params.y == 738,
+  "offscreen migration repair must account for reserved bottom space, gaps, and borders")
+assert(w2.size.x == 400 and w2.size.y == 200,
+  "a migrated window that already fits must preserve both dimensions")
+assert(inside.at.x == -1000 and inside.at.y == 300,
+  "an already-fitting on-screen migrated window must not move")
+assert(unmapped.at.x == 4000 and hidden.at.x == 4000 and tiled.at.x == 4000 and maximized.at.x == 4000 and fullscreen.at.x == 4000,
+  "unmapped, hidden, tiled, maximized, and fullscreen windows must be left to native behavior")
+local before_wrong_routes = #dispatched
+handlers["workspace.move_to_monitor"](ws2, migrated_monitor)
+handlers["workspace.move_to_monitor"](special, migrated_monitor)
+assert(#dispatched == before_wrong_routes, "tiling and special workspaces must not route migration geometry")
+local route_window = {
+  workspace = ws1, floating = false, mapped = true, fullscreen = 0, monitor = migrated_monitor,
+  at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
+}
+local before_window_route = #dispatched
+handlers["window.move_to_workspace"](route_window, ws1)
+assert(#dispatched == before_window_route + 1 and dispatched[#dispatched].kind == "float",
+  "window.move_to_workspace must keep only its workspace-mode routing")
+assert(route_window.at.x == 4000 and route_window.size.x == 2000,
+  "window.move_to_workspace fires before monitor reassignment and must not route migration geometry")
+
+ws1.windows = { w1, w2 }
+w1.monitor = own_monitor
+w2.monitor = own_monitor
 for _, route in ipairs(resize_routes) do
   local dx, dy = route[2], route[3]
   w1.at = { x = 250, y = dy < 0 and 80 or 218 }
