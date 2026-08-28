@@ -20,6 +20,20 @@ local w1 = { workspace = ws1, floating = false, pid = 1 }
 local w2 = { workspace = ws1, floating = false, pid = 1 }
 ws1.windows = { w1, w2 }
 
+local own_monitor = {
+  x = 10,
+  y = 20,
+  width = 2000,
+  height = 1000,
+  scale = 2,
+  transform = 0,
+  reserved = { left = 10, right = 20, top = 30, bottom = 40 },
+}
+local active_monitor = own_monitor
+w1.at = { x = 200, y = 100 }
+w1.size = { width = 400, height = 200 }
+w1.monitor = own_monitor
+
 local active_workspace = ws1
 local active_window = w1
 
@@ -44,8 +58,11 @@ hl = {
       action.params.window.floating = action.params.action == "on"
     elseif action.kind == "move" then
       action.params.window.moved_to = action.params.workspace
-      action.params.window.position = { x = action.params.x, y = action.params.y }
-    elseif action.kind == "resize" then
+      if action.params.x ~= nil and action.params.y ~= nil then
+        action.params.window.position = { x = action.params.x, y = action.params.y }
+        action.params.window.at = { x = action.params.x, y = action.params.y }
+      end
+    elseif action.kind == "resize" and action.params.window then
       action.params.window.size = { width = action.params.x, height = action.params.y }
     elseif action.kind == "tag" then
       action.params.window.order_tag = action.params.tag
@@ -55,20 +72,11 @@ hl = {
   get_active_workspace = function() return active_workspace end,
   get_active_window = function() return active_window end,
   get_windows = function() return { w1, w2 } end,
-  get_active_monitor = function()
-    return {
-      x = 10,
-      y = 20,
-      width = 2000,
-      height = 1000,
-      scale = 2,
-      transform = 0,
-      reserved = { left = 10, right = 20, top = 30, bottom = 40 },
-    }
-  end,
+  get_active_monitor = function() return active_monitor end,
   get_workspaces = function() return { ws1, ws2, special } end,
   get_config = function(name)
     if name == "general.gaps_out" then return { top = 10, right = 10, bottom = 10, left = 10 } end
+    if name == "general.float_gaps" then return -1 end
     if name == "general.gaps_in" then return { top = 5, right = 5, bottom = 5, left = 5 } end
     if name == "general.border_size" then return 2 end
     return nil
@@ -98,14 +106,33 @@ assert(type(binds["SUPER + SHIFT + T"]) == "function")
 assert(type(binds["SUPER + M"]) == "function")
 assert(type(binds["SUPER + TAB"]) == "function")
 assert(type(binds["SUPER + SHIFT + TAB"]) == "function")
+local resize_routes = {
+  { "SUPER + code:20", -100, 0 },
+  { "SUPER + code:21", 100, 0 },
+  { "SUPER + SHIFT + code:20", 0, -100 },
+  { "SUPER + SHIFT + code:21", 0, 100 },
+  { "SUPER + ALT + code:20", -25, 0 },
+  { "SUPER + ALT + code:21", 25, 0 },
+  { "SUPER + SHIFT + ALT + code:20", 0, -25 },
+  { "SUPER + SHIFT + ALT + code:21", 0, 25 },
+  { "SUPER + CTRL + code:20", -300, 0 },
+  { "SUPER + CTRL + code:21", 300, 0 },
+  { "SUPER + CTRL + SHIFT + code:20", 0, -300 },
+  { "SUPER + CTRL + SHIFT + code:21", 0, 300 },
+}
+for _, route in ipairs(resize_routes) do assert(type(binds[route[1]]) == "function", route[1] .. " must be rebound") end
 assert(binds["ALT + TAB"].kind == "global" and binds["ALT + TAB"].name == "fatlj.float-panel:alt-tab-next")
 assert(binds["ALT + SHIFT + TAB"].name == "fatlj.float-panel:alt-tab-previous")
 assert(binds["ALT + ALT_L"].name == "fatlj.float-panel:alt-release")
 assert(bind_options["ALT + ALT_L"].release == true and bind_options["ALT + ALT_R"].release == true)
 assert(bind_options["ALT + ALT_L"].transparent == true and bind_options["ALT + ALT_R"].transparent == true,
   "Alt release binds must survive shadowing by the intervening Alt+Tab chord")
-assert(unbound[1] == "SUPER + LEFT" and unbound[2] == "SUPER + RIGHT")
-assert(unbound[3] == "SUPER + UP" and unbound[4] == "SUPER + DOWN" and unbound[5] == "SUPER + F")
+local unbound_set = {}
+for _, keys in ipairs(unbound) do unbound_set[keys] = true end
+for _, route in ipairs(resize_routes) do assert(unbound_set[route[1]], route[1] .. " stock binding must be unbound") end
+for _, keys in ipairs({ "SUPER + LEFT", "SUPER + RIGHT", "SUPER + UP", "SUPER + DOWN", "SUPER + F" }) do
+  assert(unbound_set[keys], keys .. " stock binding must be unbound")
+end
 assert(#configs == 1 and configs[1].general.float_gaps == -1,
   "native floating work areas must inherit the configured outer gaps")
 assert(type(handlers["window.open"]) == "function")
@@ -119,6 +146,37 @@ assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")
 assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must notify its mode")
+
+for _, route in ipairs(resize_routes) do
+  local dx, dy = route[2], route[3]
+  w1.at = { x = 250, y = dy < 0 and 80 or 218 }
+  w1.size = { width = 500, height = dy < 0 and 350 or 100 }
+  local old_x, old_y = w1.at.x, w1.at.y
+  local old_width, old_height = w1.size.width, w1.size.height
+  local before = #dispatched
+  binds[route[1]]()
+  local resized, moved = dispatched[before + 1], dispatched[before + 2]
+  assert(#dispatched == before + 2 and resized.kind == "resize" and moved.kind == "move",
+    route[1] .. " floating resize must resize then move synchronously")
+  assert(resized.params.relative == nil and resized.params.x == old_width + dx and resized.params.y == old_height + dy,
+    route[1] .. " floating resize must apply its exact delta")
+  assert(moved.params.x == old_x - dx / 2 and moved.params.y == old_y - dy / 2,
+    route[1] .. " floating resize must retain the window center")
+end
+
+active_monitor = { x = -5000, y = -5000, width = 100, height = 100, scale = 1, reserved = {} }
+w1.at = { x = 900, y = 100 }
+w1.size = { width = 50, height = 100 }
+for _ = 1, 20 do binds["SUPER + code:21"]() end
+assert(w1.at.x == 32 and w1.size.width == 946,
+  "repeated growth must stop at the active window's own monitor floating work-area boundary")
+assert(w1.at.y == 100 and w1.size.height == 100, "horizontal resize must not change vertical geometry")
+w1.at = { x = 100, y = 400 }
+w1.size = { width = 100, height = 50 }
+binds["SUPER + CTRL + SHIFT + code:21"]()
+binds["SUPER + CTRL + SHIFT + code:21"]()
+assert(w1.at.y == 62 and w1.size.height == 406, "large vertical growth must clamp to the usable work area")
+active_monitor = own_monitor
 
 binds["SUPER + LEFT"]()
 assert(w1.position.x == 32 and w1.position.y == 62, "left snap must preserve tiling outer gaps and borders")
@@ -168,6 +226,14 @@ for _, binding in ipairs({ { "SUPER + LEFT", "l" }, { "SUPER + RIGHT", "r" }, { 
     "tiling mode must preserve directional focus for " .. binding[1])
 end
 assert(#dispatched == before_focus + 4, "tiling directional bindings must each dispatch exactly once")
+for _, route in ipairs(resize_routes) do
+  local before = #dispatched
+  binds[route[1]]()
+  last = dispatched[#dispatched]
+  assert(#dispatched == before + 1 and last.kind == "resize" and last.params.relative == true,
+    route[1] .. " tiling resize must keep the stock relative dispatcher")
+  assert(last.params.x == route[2] and last.params.y == route[3], route[1] .. " tiling resize delta changed")
+end
 binds["SUPER + F"]()
 last = dispatched[#dispatched]
 assert(last.kind == "fullscreen" and last.params.mode == "fullscreen" and last.params.action == nil,

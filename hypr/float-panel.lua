@@ -181,6 +181,39 @@ local function config_gap(name)
   }
 end
 
+local function mode_aware_resize(dx, dy)
+  local workspace = hl.get_active_workspace()
+  if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then
+    hl.dispatch(hl.dsp.window.resize({ x = dx, y = dy, relative = true }))
+    return
+  end
+
+  local window = hl.get_active_window()
+  local area = window and monitor_work_area(window.monitor) or nil
+  local at = window and window.at or nil
+  local size = window and window.size or nil
+  if not area or not at or not size then return end
+
+  local gaps = config_gap("general.float_gaps")
+  if gaps.top < 0 or gaps.right < 0 or gaps.bottom < 0 or gaps.left < 0 then
+    gaps = config_gap("general.gaps_out")
+  end
+  local border = math.max(0, tonumber(hl.get_config("general.border_size")) or 0)
+  local left = area.x + gaps.left + border
+  local top = area.y + gaps.top + border
+  local right = area.x + area.width - gaps.right - border
+  local bottom = area.y + area.height - gaps.bottom - border
+  local old_width = math.max(1, tonumber(size.width) or 1)
+  local old_height = math.max(1, tonumber(size.height) or 1)
+  local width = math.max(1, math.min(right - left, old_width + dx))
+  local height = math.max(1, math.min(bottom - top, old_height + dy))
+  local x = math.max(left, math.min(right - width, (tonumber(at.x) or left) - (width - old_width) / 2))
+  local y = math.max(top, math.min(bottom - height, (tonumber(at.y) or top) - (height - old_height) / 2))
+
+  hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
+  hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
+end
+
 local function snap_active_window(side)
   local window = hl.get_active_window()
   local area = monitor_work_area(hl.get_active_monitor())
@@ -279,6 +312,26 @@ hl.on("window.move_to_workspace", function(window, workspace)
   if not workspace_is_regular(workspace) then return end
   set_window_floating(window, workspace_float_enabled(workspace))
 end)
+
+local resize_bindings = {
+  { "SUPER + code:20", "Expand window left", -100, 0 },
+  { "SUPER + code:21", "Shrink window left", 100, 0 },
+  { "SUPER + SHIFT + code:20", "Shrink window up", 0, -100 },
+  { "SUPER + SHIFT + code:21", "Expand window down", 0, 100 },
+  { "SUPER + ALT + code:20", "Expand window left a little", -25, 0 },
+  { "SUPER + ALT + code:21", "Shrink window left a little", 25, 0 },
+  { "SUPER + SHIFT + ALT + code:20", "Shrink window up a little", 0, -25 },
+  { "SUPER + SHIFT + ALT + code:21", "Expand window down a little", 0, 25 },
+  { "SUPER + CTRL + code:20", "Expand window left a lot", -300, 0 },
+  { "SUPER + CTRL + code:21", "Shrink window left a lot", 300, 0 },
+  { "SUPER + CTRL + SHIFT + code:20", "Shrink window up a lot", 0, -300 },
+  { "SUPER + CTRL + SHIFT + code:21", "Expand window down a lot", 0, 300 },
+}
+for _, binding in ipairs(resize_bindings) do
+  local keys, description, dx, dy = binding[1], binding[2], binding[3], binding[4]
+  hl.unbind(keys)
+  o.bind(keys, description, function() mode_aware_resize(dx, dy) end)
+end
 
 hl.unbind("SUPER + LEFT")
 hl.unbind("SUPER + RIGHT")
