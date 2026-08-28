@@ -25,6 +25,7 @@ for required in (
     "hl.dsp.window.alter_zorder",
     "hl.dsp.focus",
     "TaskListModel.actionForGroup",
+    "ipc.mapped !== true",
     "TaskListModel.hasEmbeddedNul(ipc.class)",
     '"ignored": true',
 ):

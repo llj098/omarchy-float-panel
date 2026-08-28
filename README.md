@@ -111,7 +111,7 @@ Desktop icons use an exact desktop-entry lookup, then `DesktopEntries.heuristicL
 
 When an app has multiple windows, the representative prefers an active visible window, then any visible window, then a minimized window. Clicking an active group hides only its active representative, not every window owned by the app. Clicking never cycles windows.
 
-The model admits only toplevels backed by a mapped Hyprland IPC client and rejects malformed application identities containing embedded NUL bytes. On the target system, Fcitx's X11 combo/input surface is reported by Hyprland as `fcitx\0fcit`, so it is excluded without matching its title or executable name. Protocol-only transient surfaces remain excluded because they have no mapped IPC client.
+The model admits only toplevels whose Hyprland IPC object explicitly reports `mapped === true`; an associated toplevel with an absent or not-yet-populated IPC mapping is not enough. This excludes the observed Fcitx X11 combo/input surface, which reaches Quickshell with an address and title but empty IPC identity/mapping fields. Malformed identities containing embedded NUL bytes are rejected as a secondary guard. Neither filter matches a window title or executable name.
 
 Hyprland's focus dispatcher normally warps the pointer. To keep the pointer stationary and make focus click-driven, add native overrides to the user config:
 
