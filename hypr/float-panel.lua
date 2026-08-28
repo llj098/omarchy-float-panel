@@ -19,6 +19,8 @@ hl.window_rule({
 })
 
 local order_tag_prefix = "float-panel-order-"
+local monocle_tag_prefix = "float-panel-monocle-v1-"
+local workspace_base_layouts = {}
 
 local function process_start_ticks(pid)
   pid = tonumber(pid)
@@ -102,14 +104,8 @@ local function set_window_floating(window, enabled)
   }))
 end
 
-local function apply_workspace_mode(workspace)
-  if not workspace_is_regular(workspace) then return end
-
-  local enabled = workspace_float_enabled(workspace)
-  for _, window in ipairs(workspace:get_windows()) do
-    set_window_floating(window, enabled)
-  end
-end
+local apply_workspace_mode
+local suspend_monocle_window
 
 local function toggle_active_workspace_mode()
   local workspace = hl.get_active_workspace()
@@ -130,6 +126,7 @@ local function minimize_active_window()
   local workspace = window and window.workspace or nil
   if not workspace_is_regular(workspace) then return end
 
+  suspend_monocle_window(window, workspace)
   local minimized_workspace = "special:omarchy-minimized-" .. tostring(workspace.id)
   hl.dispatch(hl.dsp.window.move({
     workspace = minimized_workspace,
@@ -205,6 +202,143 @@ local function floating_window_bounds(monitor)
   }
 end
 
+local function encode_hex(value)
+  return (tostring(value or ""):gsub(".", function(character)
+    return string.format("%02x", string.byte(character))
+  end))
+end
+
+local function decode_hex(value)
+  if type(value) ~= "string" or value == "" or #value % 2 ~= 0 or value:find("[^0-9a-f]") then return nil end
+  return (value:gsub("%x%x", function(byte) return string.char(tonumber(byte, 16)) end))
+end
+
+local function encode_integer(value)
+  value = math.floor(tonumber(value) or 0)
+  return (value < 0 and "n" or "p") .. tostring(math.abs(value))
+end
+
+local function decode_integer(value)
+  if type(value) ~= "string" then return nil end
+  local sign, digits = value:match("^([pn])(%d+)$")
+  if not sign then return nil end
+  local number = tonumber(digits)
+  return sign == "n" and -number or number
+end
+
+local function workspace_selector(workspace)
+  if not workspace then return "" end
+  return tostring(workspace.config_name or workspace.name or "")
+end
+
+local function parse_monocle_tag(tag)
+  if type(tag) ~= "string" or tag:sub(1, #monocle_tag_prefix) ~= monocle_tag_prefix then return nil end
+  local body = tag:sub(#monocle_tag_prefix + 1)
+  local x, y, width, height, workspace_id, source_hex, layout_hex =
+    body:match("^([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([0-9a-f]+)%-([0-9a-f]+)$")
+  if not x then return nil end
+
+  local source = decode_hex(source_hex)
+  local layout = decode_hex(layout_hex)
+  local result = {
+    raw = tag,
+    x = decode_integer(x),
+    y = decode_integer(y),
+    width = decode_integer(width),
+    height = decode_integer(height),
+    workspace_id = decode_integer(workspace_id),
+    source = source,
+    layout = layout,
+  }
+  if not result.x or not result.y or not result.width or not result.height or result.width < 1 or result.height < 1 or
+      not result.workspace_id or not result.source or result.source == "" or not result.layout or result.layout == "" then
+    return nil
+  end
+  return result
+end
+
+local function window_monocle_metadata(window)
+  for _, tag in ipairs(window and window.tags or {}) do
+    local metadata = parse_monocle_tag(tag)
+    if metadata then return metadata end
+  end
+  return nil
+end
+
+local function make_monocle_tag(window, workspace, layout)
+  local at = window and window.at or nil
+  local size = window and window.size or nil
+  if not at or not size then return nil end
+
+  local values = {
+    encode_integer(at.x),
+    encode_integer(at.y),
+    encode_integer(size.x),
+    encode_integer(size.y),
+    encode_integer(workspace.id),
+    encode_hex(workspace_selector(workspace)),
+    encode_hex(layout),
+  }
+  return monocle_tag_prefix .. table.concat(values, "-")
+end
+
+local function add_window_tag(window, tag)
+  hl.dispatch(hl.dsp.window.tag({ tag = "+" .. tag, window = window }))
+end
+
+local function remove_window_tag(window, tag)
+  hl.dispatch(hl.dsp.window.tag({ tag = "-" .. tag, window = window }))
+end
+
+local function find_workspace_by_selector(selector)
+  for _, workspace in ipairs(hl.get_workspaces()) do
+    if workspace_is_regular(workspace) and workspace_selector(workspace) == selector then return workspace end
+  end
+  return nil
+end
+
+local function workspace_has_monocle_members(workspace, excluded)
+  if not workspace then return false end
+  local selector = workspace_selector(workspace)
+  for _, window in ipairs(workspace:get_windows()) do
+    local metadata = window ~= excluded and window_monocle_metadata(window) or nil
+    if metadata and metadata.source == selector and window.floating ~= true then return true end
+  end
+  return false
+end
+
+local function tagged_base_layout(workspace)
+  local selector = workspace_selector(workspace)
+  if workspace_base_layouts[selector] then return workspace_base_layouts[selector] end
+  for _, window in ipairs(hl.get_windows()) do
+    local metadata = window_monocle_metadata(window)
+    if metadata and metadata.source == selector then
+      workspace_base_layouts[selector] = metadata.layout
+      return metadata.layout
+    end
+  end
+  return nil
+end
+
+local function set_workspace_layout(workspace, layout)
+  if not workspace_is_regular(workspace) or not layout or layout == "" then return end
+  hl.workspace_rule({ workspace = workspace_selector(workspace), layout = layout })
+end
+
+local function apply_monocle_layout(workspace, base_layout)
+  local selector = workspace_selector(workspace)
+  workspace_base_layouts[selector] = base_layout
+  set_workspace_layout(workspace, "monocle")
+end
+
+local function restore_workspace_layout_if_unused(workspace, base_layout, excluded)
+  if not workspace_is_regular(workspace) or workspace_has_monocle_members(workspace, excluded) then return end
+  local selector = workspace_selector(workspace)
+  local layout = base_layout or tagged_base_layout(workspace)
+  if layout then set_workspace_layout(workspace, layout) end
+  workspace_base_layouts[selector] = nil
+end
+
 local function fit_window_to_floating_bounds(window)
   if not window or window.mapped ~= true or window.hidden == true or window.floating ~= true then return end
   -- Hyprland natively reflows maximized/fullscreen windows during monitor moves.
@@ -235,6 +369,86 @@ local function fit_window_to_floating_bounds(window)
   end
 end
 
+local function restored_geometry(window, metadata)
+  local bounds = floating_window_bounds(window and window.monitor or nil)
+  if not bounds then return nil end
+
+  local width = math.max(1, math.min(metadata.width, bounds.width))
+  local height = math.max(1, math.min(metadata.height, bounds.height))
+  local x = math.max(bounds.left, math.min(bounds.right - width, metadata.x))
+  local y = math.max(bounds.top, math.min(bounds.bottom - height, metadata.y))
+  return { x = x, y = y, width = width, height = height }
+end
+
+local function restore_monocle_window(window)
+  local metadata = window_monocle_metadata(window)
+  if not metadata then return false end
+
+  local source_workspace = find_workspace_by_selector(metadata.source)
+  local geometry = restored_geometry(window, metadata)
+  set_window_floating(window, true)
+  if geometry then
+    hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
+    hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
+  end
+  remove_window_tag(window, metadata.raw)
+  restore_workspace_layout_if_unused(source_workspace, metadata.layout)
+  return true
+end
+
+suspend_monocle_window = function(window, workspace)
+  local metadata = window_monocle_metadata(window)
+  if not metadata then return false end
+
+  set_window_floating(window, true)
+  restore_workspace_layout_if_unused(workspace, metadata.layout)
+  return true
+end
+
+local function maximize_monocle_window(window, workspace)
+  if not window or window_monocle_metadata(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
+
+  local base_layout = tagged_base_layout(workspace) or tostring(workspace.tiled_layout or "")
+  if base_layout == "" or base_layout == "unknown" then return false end
+  local tag = make_monocle_tag(window, workspace, base_layout)
+  if not tag then return false end
+
+  add_window_tag(window, tag)
+  apply_monocle_layout(workspace, base_layout)
+  set_window_floating(window, false)
+  return true
+end
+
+local function clear_monocle_metadata_for_workspace(workspace)
+  local selector = workspace_selector(workspace)
+  local base_layout = tagged_base_layout(workspace)
+  for _, window in ipairs(hl.get_windows()) do
+    local metadata = window_monocle_metadata(window)
+    if metadata and metadata.source == selector then remove_window_tag(window, metadata.raw) end
+  end
+  if base_layout then set_workspace_layout(workspace, base_layout) end
+  workspace_base_layouts[selector] = nil
+end
+
+apply_workspace_mode = function(workspace)
+  if not workspace_is_regular(workspace) then return end
+
+  local enabled = workspace_float_enabled(workspace)
+  if not enabled then
+    clear_monocle_metadata_for_workspace(workspace)
+    for _, window in ipairs(workspace:get_windows()) do set_window_floating(window, false) end
+    return
+  end
+
+  local selector = workspace_selector(workspace)
+  local base_layout = tagged_base_layout(workspace)
+  if base_layout then apply_monocle_layout(workspace, base_layout) end
+  for _, window in ipairs(workspace:get_windows()) do
+    local metadata = window_monocle_metadata(window)
+    set_window_floating(window, not (metadata and metadata.source == selector))
+  end
+end
+
 local function fit_migrated_float_workspace(workspace)
   if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
 
@@ -251,6 +465,7 @@ local function mode_aware_resize(dx, dy)
   end
 
   local window = hl.get_active_window()
+  if window_monocle_metadata(window) then restore_monocle_window(window) end
   local bounds = window and floating_window_bounds(window.monitor) or nil
   local at = window and window.at or nil
   local size = window and window.size or nil
@@ -269,7 +484,8 @@ end
 
 local function snap_active_window(side)
   local window = hl.get_active_window()
-  local area = monitor_work_area(hl.get_active_monitor())
+  if window_monocle_metadata(window) then restore_monocle_window(window) end
+  local area = monitor_work_area(window and window.monitor or hl.get_active_monitor())
   if not window or not area then return end
 
   local gaps_out = config_gap("general.gaps_out")
@@ -299,11 +515,10 @@ local function mode_aware_direction(direction)
   if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
     if direction == "l" or direction == "r" then
       snap_active_window(direction == "l" and "left" or "right")
+    elseif direction == "u" then
+      maximize_monocle_window(hl.get_active_window(), workspace)
     else
-      hl.dispatch(hl.dsp.window.fullscreen({
-        mode = "maximized",
-        action = direction == "u" and "set" or "unset",
-      }))
+      restore_monocle_window(hl.get_active_window())
     end
     return
   end
@@ -325,19 +540,8 @@ local function mode_aware_fullscreen()
   hl.dispatch(hl.dsp.window.fullscreen({ mode = "fullscreen" }))
 end
 
-local function cycle_window(next_window)
-  hl.dispatch(hl.dsp.window.cycle_next({ next = next_window }))
-  hl.dispatch(hl.dsp.window.bring_to_top())
-end
-
-local function mode_aware_super_tab(next_window)
-  local workspace = hl.get_active_workspace()
-  if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
-    hl.dispatch(hl.dsp.focus({ workspace = next_window and "e+1" or "e-1" }))
-    return
-  end
-
-  cycle_window(next_window)
+local function workspace_super_tab(next_workspace)
+  hl.dispatch(hl.dsp.focus({ workspace = next_workspace and "e+1" or "e-1" }))
 end
 
 load_float_workspaces()
@@ -366,8 +570,29 @@ hl.on("window.open", function(window)
 end)
 
 hl.on("window.move_to_workspace", function(window, workspace)
-  if not workspace_is_regular(workspace) then return end
-  set_window_floating(window, workspace_float_enabled(workspace))
+  local metadata = window_monocle_metadata(window)
+  if metadata then
+    local source_workspace = find_workspace_by_selector(metadata.source)
+    if not workspace_is_regular(workspace) then
+      set_window_floating(window, true)
+      restore_workspace_layout_if_unused(source_workspace, metadata.layout)
+      return
+    end
+    if workspace_float_enabled(workspace) and workspace_selector(workspace) == metadata.source then
+      apply_monocle_layout(workspace, metadata.layout)
+      set_window_floating(window, false)
+      return
+    end
+    remove_window_tag(window, metadata.raw)
+    restore_workspace_layout_if_unused(source_workspace, metadata.layout)
+  end
+  if workspace_is_regular(workspace) then set_window_floating(window, workspace_float_enabled(workspace)) end
+end)
+
+hl.on("window.close", function(window)
+  local metadata = window_monocle_metadata(window)
+  if not metadata then return end
+  restore_workspace_layout_if_unused(find_workspace_by_selector(metadata.source), metadata.layout, window)
 end)
 
 -- Hyprland emits this only after the workspace monitor, every member window's
@@ -412,8 +637,8 @@ o.bind("SUPER + RIGHT", "Focus right / snap right in floating mode", function() 
 o.bind("SUPER + UP", "Focus up / maximize in floating mode", function() mode_aware_direction("u") end)
 o.bind("SUPER + DOWN", "Focus down / restore in floating mode", function() mode_aware_direction("d") end)
 o.bind("SUPER + F", "Full screen", mode_aware_fullscreen)
-o.bind("SUPER + TAB", "Next workspace in floating / next window in tiling", function() mode_aware_super_tab(true) end)
-o.bind("SUPER + SHIFT + TAB", "Previous workspace in floating / previous window in tiling", function() mode_aware_super_tab(false) end)
+o.bind("SUPER + TAB", "Next workspace", function() workspace_super_tab(true) end)
+o.bind("SUPER + SHIFT + TAB", "Previous workspace", function() workspace_super_tab(false) end)
 o.bind("ALT + TAB", "Select next application", hl.dsp.global("fatlj.float-panel:alt-tab-next"))
 o.bind("ALT + SHIFT + TAB", "Select previous application", hl.dsp.global("fatlj.float-panel:alt-tab-previous"))
 -- Keep modifier-release binds transparent so an intervening ALT+TAB chord does

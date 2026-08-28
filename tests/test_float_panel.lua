@@ -5,10 +5,11 @@ local commands = {}
 local unbound = {}
 local bind_options = {}
 local window_rules = {}
+local workspace_rules = {}
 local configs = {}
 
 local function workspace(id, name, special)
-  local value = { id = id, name = name, special = special == true, windows = {} }
+  local value = { id = id, name = name, config_name = tostring(name), tiled_layout = "dwindle", special = special == true, windows = {} }
   function value:get_windows() return self.windows end
   return value
 end
@@ -16,8 +17,8 @@ end
 local ws1 = workspace(1, "1", false)
 local ws2 = workspace(2, "2", false)
 local special = workspace(-99, "special:test", true)
-local w1 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1 }
-local w2 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1 }
+local w1 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1, tags = {} }
+local w2 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1, tags = {} }
 ws1.windows = { w1, w2 }
 
 local own_monitor = {
@@ -73,7 +74,17 @@ hl = {
       end
       window.size = { x = action.params.x, y = action.params.y }
     elseif action.kind == "tag" then
-      action.params.window.order_tag = action.params.tag
+      local window, tag = action.params.window, action.params.tag
+      if tag:sub(1, 1) == "+" then
+        local raw = tag:sub(2)
+        table.insert(window.tags, raw)
+        if raw:match("^float%-panel%-order%-%d+$") then window.order_tag = tag end
+      elseif tag:sub(1, 1) == "-" then
+        local raw = tag:sub(2)
+        for index = #window.tags, 1, -1 do
+          if window.tags[index] == raw then table.remove(window.tags, index) end
+        end
+      end
     end
   end,
   exec_cmd = function(command) table.insert(commands, command) end,
@@ -92,6 +103,13 @@ hl = {
   on = function(name, callback) handlers[name] = callback end,
   unbind = function(keys) table.insert(unbound, keys) end,
   window_rule = function(rule) table.insert(window_rules, rule) end,
+  workspace_rule = function(rule)
+    table.insert(workspace_rules, rule)
+    for _, candidate in ipairs({ ws1, ws2 }) do
+      if candidate.config_name == rule.workspace then candidate.tiled_layout = rule.layout end
+    end
+    return {}
+  end,
   config = function(config) table.insert(configs, config) end,
 }
 
@@ -141,10 +159,14 @@ for _, route in ipairs(resize_routes) do assert(unbound_set[route[1]], route[1] 
 for _, keys in ipairs({ "SUPER + LEFT", "SUPER + RIGHT", "SUPER + UP", "SUPER + DOWN", "SUPER + F" }) do
   assert(unbound_set[keys], keys .. " stock binding must be unbound")
 end
+for _, keys in ipairs({ "SUPER + ALT + TAB", "ALT + 1", "ALT + 2", "ALT + 3", "ALT + 4", "ALT + 5", "ALT + 6", "ALT + 7", "ALT + 8", "ALT + 9" }) do
+  assert(not unbound_set[keys] and binds[keys] == nil, keys .. " must remain owned by Omarchy")
+end
 assert(#configs == 1 and configs[1].general.float_gaps == -1,
   "native floating work areas must inherit the configured outer gaps")
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
+assert(type(handlers["window.close"]) == "function")
 assert(type(handlers["workspace.move_to_monitor"]) == "function")
 assert(handlers["monitor.removed"] == nil,
   "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
@@ -277,14 +299,57 @@ binds["SUPER + RIGHT"]()
 assert(w1.position.x == 512 and w1.position.y == 62, "right snap must preserve the tiling inner gap")
 assert(w1.size.x == 466 and w1.size.y == 406, "right snap must fill the other gapped half")
 
+local w1_restore = { x = w1.at.x, y = w1.at.y, width = w1.size.x, height = w1.size.y }
+local before_monocle = #dispatched
 binds["SUPER + UP"]()
-local last = dispatched[#dispatched]
-assert(last.kind == "fullscreen" and last.params.mode == "maximized" and last.params.action == "set",
-  "Super+Up must set native maximization in floating mode")
+assert(ws1.tiled_layout == "monocle" and not w1.floating,
+  "Float Super+Up must route the window into the native Monocle tiled subset")
+assert(#workspace_rules == 1 and workspace_rules[1].workspace == ws1.config_name and workspace_rules[1].layout == "monocle",
+  "the active workspace must receive an exact dynamic Monocle rule")
+local w1_monocle_tag
+for _, tag in ipairs(w1.tags) do if tag:match("^float%-panel%-monocle%-v1%-") then w1_monocle_tag = tag end end
+assert(w1_monocle_tag and w1_monocle_tag:find("p" .. tostring(w1_restore.width), 1, true),
+  "the max tag must durably encode exact restore geometry")
+for index = before_monocle + 1, #dispatched do
+  assert(dispatched[index].kind ~= "fullscreen", "Float Super+Up must not use native fullscreen/maximize owner state")
+end
+
+-- A config reload recreates the module's Lua state. Live-window metadata must
+-- reconstruct Monocle membership instead of blanket-floating the tagged member.
+dofile("hypr/float-panel.lua")
+assert(not w1.floating and w2.floating and ws1.tiled_layout == "monocle",
+  "reload must exempt tagged Monocle members from Float workspace reapplication")
+
+w1.at = { x = 12, y = 12 }
+w1.size = { x = 976, y = 456 }
+w2.at = { x = 150, y = 120 }
+w2.size = { x = 360, y = 240 }
+w2.monitor = own_monitor
+w2.floating = true
+active_window = w2
+local w2_restore = { x = w2.at.x, y = w2.at.y, width = w2.size.x, height = w2.size.y }
+binds["SUPER + UP"]()
+assert(not w1.floating and not w2.floating and ws1.tiled_layout == "monocle",
+  "multiple tagged windows must coexist in the same Monocle subset")
+
+active_window = w1
 binds["SUPER + DOWN"]()
-last = dispatched[#dispatched]
-assert(last.kind == "fullscreen" and last.params.mode == "maximized" and last.params.action == "unset",
-  "Super+Down must unset native maximization in floating mode")
+assert(w1.floating and w1.at.x == w1_restore.x and w1.at.y == w1_restore.y and
+  w1.size.x == w1_restore.width and w1.size.y == w1_restore.height,
+  "Float Super+Down must restore the selected member's exact geometry")
+assert(ws1.tiled_layout == "monocle" and not w2.floating,
+  "restoring one member must leave Monocle active for remaining members")
+active_window = w2
+binds["SUPER + DOWN"]()
+assert(w2.floating and w2.at.x == w2_restore.x and w2.at.y == w2_restore.y and
+  w2.size.x == w2_restore.width and w2.size.y == w2_restore.height,
+  "each Monocle member must carry independent restore geometry")
+assert(ws1.tiled_layout == "dwindle" and workspace_rules[#workspace_rules].layout == "dwindle",
+  "restoring the final member must restore the workspace's captured tiled layout")
+local last = dispatched[#dispatched]
+for _, window in ipairs({ w1, w2 }) do
+  for _, tag in ipairs(window.tags) do assert(not tag:match("^float%-panel%-monocle%-v1%-"), "restore must remove max metadata") end
+end
 binds["SUPER + F"]()
 last = dispatched[#dispatched]
 assert(last.kind == "fullscreen_state" and last.params.internal == 2 and last.params.client == 0 and last.params.action == "toggle",
@@ -297,7 +362,7 @@ binds["SUPER + SHIFT + TAB"]()
 assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e-1",
   "Super+Shift+Tab on a floating workspace must use Omarchy's previous-workspace action")
 
-local opened = { workspace = ws1, floating = false, pid = 1 }
+local opened = { workspace = ws1, floating = false, pid = 1, tags = {} }
 handlers["window.open"](opened)
 assert(opened.floating, "new windows on a floating workspace must float")
 assert(opened.order_tag and opened.order_tag:match("^%+float%-panel%-order%-%d+$"), "new windows must receive a launch-order tag")
@@ -330,13 +395,13 @@ binds["SUPER + F"]()
 last = dispatched[#dispatched]
 assert(last.kind == "fullscreen" and last.params.mode == "fullscreen" and last.params.action == nil,
   "tiling Super+F must preserve Omarchy's synchronized fullscreen toggle")
-local before_cycle = #dispatched
+local before_workspace_switch = #dispatched
 binds["SUPER + TAB"]()
-assert(#dispatched == before_cycle + 2 and dispatched[#dispatched - 1].kind == "cycle_next" and dispatched[#dispatched].kind == "bring_to_top",
-  "Super+Tab on a tiling workspace must cycle and raise")
+assert(#dispatched == before_workspace_switch + 1 and dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e+1",
+  "Super+Tab on a tiling workspace must keep Omarchy's next-workspace action")
 binds["SUPER + SHIFT + TAB"]()
-assert(dispatched[#dispatched - 1].kind == "cycle_next" and dispatched[#dispatched - 1].params.next == false,
-  "reverse Super+Tab on a tiling workspace must cycle backward")
+assert(#dispatched == before_workspace_switch + 2 and dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e-1",
+  "Super+Shift+Tab on a tiling workspace must keep Omarchy's previous-workspace action")
 binds["SUPER + SHIFT + T"]()
 assert(opened.floating, "each workspace must toggle independently")
 

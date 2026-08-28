@@ -107,7 +107,7 @@ for required in (
     'o.bind("SUPER + F"',
     'o.bind("SUPER + TAB"',
     'o.bind("SUPER + SHIFT + TAB"',
-    'workspace = next_window and "e+1" or "e-1"',
+    'workspace = next_workspace and "e+1" or "e-1"',
     'o.bind("ALT + TAB"',
     'o.bind("ALT + SHIFT + TAB"',
     'o.bind("ALT + ALT_L"',
@@ -132,9 +132,13 @@ for required in (
     'hl.unbind("SUPER + F")',
     'hl.config({ general = { float_gaps = -1 } })',
     'hl.dsp.window.fullscreen({',
-    'mode = "maximized"',
-    'action = direction == "u" and "set" or "unset"',
     'hl.dsp.window.fullscreen_state({',
+    'monocle_tag_prefix = "float-panel-monocle-v1-"',
+    'hl.workspace_rule({ workspace = workspace_selector(workspace), layout = layout })',
+    'set_workspace_layout(workspace, "monocle")',
+    'workspace.tiled_layout',
+    'make_monocle_tag(window, workspace, base_layout)',
+    'set_window_floating(window, not (metadata and metadata.source == selector))',
     "internal = 2",
     "client = 0",
     'action = "toggle"',
@@ -157,6 +161,8 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
 assert "Qt.callLater(function() { root.dispatchActivation" not in switcher
 assert lua.count('hl.on("workspace.move_to_monitor"') == 1
 assert 'hl.on("monitor.removed"' not in lua
+assert 'mode = "maximized"' not in lua, "Float maximize must not use Hyprland's single fullscreen owner"
+assert "hl.dsp.window.cycle_next" not in lua and "hl.dsp.window.bring_to_top" not in lua, "Super+Tab must remain workspace navigation in every mode"
 for forbidden in ("callLater", "Timer", "poll", "mouse_button"):
     assert forbidden not in lua, f"migration repair must not use delayed/blanket workaround: {forbidden}"
 
