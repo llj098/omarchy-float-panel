@@ -55,7 +55,6 @@ for required in (
     "active.workspace",
     "Hyprland.focusedWorkspace",
     "workspace.monitor || Hyprland.focusedMonitor",
-    "Qt.callLater(function() { root.dispatchActivation",
     "special:omarchy-minimized-",
     "ipc.mapped !== true",
     "TaskListModel.hasEmbeddedNul(ipc.class)",
@@ -102,5 +101,7 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
     assert forbidden not in qml
     assert forbidden not in switcher
     assert forbidden not in lua
+
+assert "Qt.callLater(function() { root.dispatchActivation" not in switcher
 
 print("STATIC_VALIDATION_OK")

@@ -220,10 +220,7 @@ Item {
     var workspaceName = current.workspace ? String(current.workspace.name || "") : ""
     if (workspaceName !== sourceName && workspaceName !== minimizedName) return "moved-window"
 
-    var restore = workspaceName === minimizedName
-    // Let the overlay unmap before focusing across monitors; otherwise layer
-    // teardown can restore pointer-monitor focus after our window dispatch.
-    Qt.callLater(function() { root.dispatchActivation(target, restore, destination) })
+    dispatchActivation(target, workspaceName === minimizedName, destination)
     return "activated:" + address
   }
 
