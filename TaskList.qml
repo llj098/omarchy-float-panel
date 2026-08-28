@@ -83,6 +83,7 @@ BarWidget {
             "iconSource": iconSource(entry ? entry.icon : appId),
             "address": String(toplevel.address || ""),
             "title": String(toplevel.title || ""),
+            "order": TaskListModel.launchOrderFromTags(ipc.tags),
             "activated": toplevel.activated === true,
             "urgent": toplevel.urgent === true
         };
@@ -142,6 +143,22 @@ BarWidget {
 
         move = "hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = " + luaString(target) + " })";
         bar.run(dispatchExpression(move) + " && " + dispatchExpression(focus) + " && " + dispatchExpression(raise));
+    }
+
+    Timer {
+        id: ipcRefreshTimer
+
+        interval: 75
+        repeat: false
+        onTriggered: Hyprland.refreshToplevels()
+    }
+
+    Connections {
+        target: Hyprland.toplevels
+
+        function onValuesChanged() {
+            ipcRefreshTimer.restart();
+        }
     }
 
     moduleName: "fatlj.float-panel"

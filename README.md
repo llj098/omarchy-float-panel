@@ -6,6 +6,7 @@ An Omarchy 4 bar widget that shows one icon per application on each monitor's ac
 
 - The TaskList is shown on every normal workspace that has visible or minimized applications.
 - Each application is represented by one icon, even when it owns multiple windows.
+- Icons stay sorted by application process launch time; focus, raise, minimize, restore, and Shell restarts do not reorder them.
 - Left click behaves like a taskbar toggle for the representative window.
   - An inactive visible window is focused and raised to the top.
   - If the representative is active, that window is hidden in the workspace's minimized special workspace.
@@ -110,6 +111,8 @@ The widget reads Quickshell's reactive `HyprlandWorkspace.toplevels` models. App
 Desktop icons use an exact desktop-entry lookup, then `DesktopEntries.heuristicLookup()`, then the generic executable icon. Heuristic desktop-entry matching can be imperfect for unusual XWayland, Electron, PWA, and terminal-hosted applications.
 
 When an app has multiple windows, the representative prefers an active visible window, then any visible window, then a minimized window. Clicking an active group hides only its active representative, not every window owned by the app. Clicking never cycles windows.
+
+The Lua integration tags each managed window with its process start ticks from `/proc/PID/stat`. Task groups sort by the earliest such value among their windows, while untagged windows remain in first-observed order at the end. The tags remain attached when Hyprland changes workspace or Z-order and are reconstructed on config reload, so the TaskList does not need a separate ordering database.
 
 The model admits only toplevels whose Hyprland IPC object explicitly reports `mapped === true`; an associated toplevel with an absent or not-yet-populated IPC mapping is not enough. This excludes the observed Fcitx X11 combo/input surface, which reaches Quickshell with an address and title but empty IPC identity/mapping fields. Malformed identities containing embedded NUL bytes are rejected as a secondary guard. Neither filter matches a window title or executable name.
 

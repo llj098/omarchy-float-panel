@@ -37,6 +37,22 @@ function descriptor(values) {
 }
 
 {
+  const visible = [top("late"), top("untagged")]
+  const minimized = [top("early")]
+  const groups = context.groupToplevels(visible, minimized, descriptor({
+    late: { appId: "late.app", order: 200 },
+    untagged: { appId: "untagged.app" },
+    early: { appId: "early.app", order: 100 }
+  }))
+
+  assert.deepEqual(
+    Array.from(groups, group => group.key),
+    ["early.app", "late.app", "untagged.app"],
+    "groups must follow process launch order instead of visible/minimized list order"
+  )
+}
+
+{
   const visible = [top("visible")]
   const minimized = [top("hidden")]
   const groups = context.groupToplevels(visible, minimized, descriptor({
@@ -94,4 +110,6 @@ assert.equal(context.actionForGroup({ representative: { minimized: false }, acti
 assert.equal(context.actionForGroup({ representative: { minimized: false }, active: false }), "focus")
 assert.equal(context.actionForGroup({ representative: { minimized: true }, active: false }), "restore")
 assert.equal(context.normalizeAppId(" Org.Example.App.desktop "), "org.example.app")
+assert.equal(context.launchOrderFromTags(["default-opacity*", "float-panel-order-42"]), 42)
+assert.equal(context.launchOrderFromTags(["float-panel-order-invalid"]), null)
 console.log("MODEL_TESTS_OK")

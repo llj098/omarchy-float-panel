@@ -14,8 +14,8 @@ end
 local ws1 = workspace(1, "1", false)
 local ws2 = workspace(2, "2", false)
 local special = workspace(-99, "special:test", true)
-local w1 = { workspace = ws1, floating = false }
-local w2 = { workspace = ws1, floating = false }
+local w1 = { workspace = ws1, floating = false, pid = 1 }
+local w2 = { workspace = ws1, floating = false, pid = 1 }
 ws1.windows = { w1, w2 }
 
 local active_workspace = ws1
@@ -27,6 +27,7 @@ hl = {
       float = function(params) return { kind = "float", params = params } end,
       move = function(params) return { kind = "move", params = params } end,
       resize = function(params) return { kind = "resize", params = params } end,
+      tag = function(params) return { kind = "tag", params = params } end,
     },
     focus = function(params) return { kind = "focus", params = params } end,
   },
@@ -39,11 +40,14 @@ hl = {
       action.params.window.position = { x = action.params.x, y = action.params.y }
     elseif action.kind == "resize" then
       action.params.window.size = { width = action.params.x, height = action.params.y }
+    elseif action.kind == "tag" then
+      action.params.window.order_tag = action.params.tag
     end
   end,
   exec_cmd = function(command) table.insert(commands, command) end,
   get_active_workspace = function() return active_workspace end,
   get_active_window = function() return active_window end,
+  get_windows = function() return { w1, w2 } end,
   get_active_monitor = function()
     return {
       x = 10,
@@ -84,6 +88,8 @@ assert(type(handlers["window.move_to_workspace"]) == "function")
 assert(#window_rules == 1, "the WeChat size override must be registered once")
 assert(window_rules[1].match.class == "^wechat$" and window_rules[1].match.xwayland == true)
 assert(window_rules[1].min_size[1] == 1 and window_rules[1].min_size[2] == 1)
+assert(w1.order_tag and w1.order_tag:match("^%+float%-panel%-order%-%d+$"), "existing windows must receive a launch-order tag")
+assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all existing windows must receive a launch-order tag")
 
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")
@@ -96,9 +102,10 @@ binds["SUPER + RIGHT"]()
 assert(w1.position.x == 512 and w1.position.y == 62, "right snap must preserve the tiling inner gap")
 assert(w1.size.width == 466 and w1.size.height == 406, "right snap must fill the other gapped half")
 
-local opened = { workspace = ws1, floating = false }
+local opened = { workspace = ws1, floating = false, pid = 1 }
 handlers["window.open"](opened)
 assert(opened.floating, "new windows on a floating workspace must float")
+assert(opened.order_tag and opened.order_tag:match("^%+float%-panel%-order%-%d+$"), "new windows must receive a launch-order tag")
 
 handlers["window.move_to_workspace"](opened, ws2)
 assert(not opened.floating, "a window moved to a tiling workspace must tile")

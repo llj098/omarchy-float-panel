@@ -14,6 +14,39 @@ hl.window_rule({
   min_size = { 1, 1 },
 })
 
+local order_tag_prefix = "float-panel-order-"
+
+local function process_start_ticks(pid)
+  pid = tonumber(pid)
+  if not pid or pid <= 0 then return nil end
+
+  local file = io.open("/proc/" .. tostring(math.floor(pid)) .. "/stat", "r")
+  if not file then return nil end
+  local line = file:read("*l")
+  file:close()
+  if not line then return nil end
+
+  -- Fields after the final ") " start at proc stat field 3; starttime is field 22.
+  local fields = line:match("^%d+ %(.+%) (.+)$")
+  if not fields then return nil end
+  local index = 0
+  for value in fields:gmatch("%S+") do
+    index = index + 1
+    if index == 20 then return tonumber(value) end
+  end
+  return nil
+end
+
+local function tag_window_launch_order(window)
+  local start_ticks = window and process_start_ticks(window.pid) or nil
+  if not start_ticks then return end
+
+  hl.dispatch(hl.dsp.window.tag({
+    tag = "+" .. order_tag_prefix .. string.format("%.0f", start_ticks),
+    window = window,
+  }))
+end
+
 local function workspace_is_regular(workspace)
   return workspace ~= nil and workspace.special ~= true
 end
@@ -183,12 +216,19 @@ end
 
 load_float_workspaces()
 
+-- Process start ticks survive focus/Z-order changes and let the shell reconstruct
+-- launch order after its own restart without a separate ordering database.
+for _, window in ipairs(hl.get_windows()) do
+  tag_window_launch_order(window)
+end
+
 -- Re-apply persisted floating modes when this module is loaded after a config reload.
 for _, workspace in ipairs(hl.get_workspaces()) do
   if workspace_float_enabled(workspace) then apply_workspace_mode(workspace) end
 end
 
 hl.on("window.open", function(window)
+  tag_window_launch_order(window)
   local workspace = window and window.workspace or nil
   if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
     set_window_floating(window, true)

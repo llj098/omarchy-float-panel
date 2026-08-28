@@ -13,6 +13,27 @@ function normalizeAppId(value) {
   return normalized
 }
 
+function launchOrderFromTags(tags) {
+  var values = tags || []
+  var prefix = "float-panel-order-"
+  var earliest = null
+  for (var i = 0; i < values.length; i++) {
+    var tag = stringValue(values[i])
+    if (tag.slice(0, prefix.length) !== prefix) continue
+
+    var order = Number(tag.slice(prefix.length))
+    if (!isFinite(order) || order < 0) continue
+    if (earliest === null || order < earliest) earliest = order
+  }
+  return earliest
+}
+
+function numericOrder(value) {
+  if (value === undefined || value === null || value === "") return null
+  var order = Number(value)
+  return isFinite(order) && order >= 0 ? order : null
+}
+
 function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
   var groups = []
   var byKey = {}
@@ -41,7 +62,9 @@ function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
         minimizedWindows: [],
         active: false,
         urgent: false,
-        representative: null
+        representative: null,
+        order: numericOrder(description.order),
+        appearanceOrder: groups.length
       }
       byKey[key] = group
       groups.push(group)
@@ -64,6 +87,10 @@ function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
     group.active = group.active || item.activated
     group.urgent = group.urgent || description.urgent === true
 
+    var itemOrder = numericOrder(description.order)
+    if (itemOrder !== null && (group.order === null || itemOrder < group.order))
+      group.order = itemOrder
+
     if (!group.representative || (item.activated && !item.minimized) ||
         (group.representative.minimized && !item.minimized))
       group.representative = item
@@ -73,6 +100,14 @@ function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
   var minimized = minimizedToplevels || []
   for (var i = 0; i < visible.length; i++) add(visible[i], false)
   for (var j = 0; j < minimized.length; j++) add(minimized[j], true)
+
+  groups.sort(function(a, b) {
+    if (a.order === null && b.order === null) return a.appearanceOrder - b.appearanceOrder
+    if (a.order === null) return 1
+    if (b.order === null) return -1
+    if (a.order !== b.order) return a.order - b.order
+    return a.appearanceOrder - b.appearanceOrder
+  })
 
   for (var k = 0; k < groups.length; k++) {
     var current = groups[k]
