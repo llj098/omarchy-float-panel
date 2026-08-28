@@ -131,8 +131,9 @@ local function snap_active_window(side)
   local x = side == "left" and area.x or area.x + left_width
 
   set_window_floating(window, true)
-  hl.dispatch(hl.dsp.window.move({ x = x, y = area.y, window = window }))
+  -- Resize first so Hyprland does not clamp the old, wider window before placing it.
   hl.dispatch(hl.dsp.window.resize({ x = width, y = area.height, window = window }))
+  hl.dispatch(hl.dsp.window.move({ x = x, y = area.y, window = window }))
 end
 
 local function focus_or_snap(direction)
