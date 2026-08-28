@@ -229,7 +229,8 @@ local function fit_window_to_floating_bounds(window)
 
   local x = math.max(bounds.left, math.min(bounds.right - width, tonumber(at.x) or bounds.left))
   local y = math.max(bounds.top, math.min(bounds.bottom - height, tonumber(at.y) or bounds.top))
-  if x ~= tonumber(at.x) or y ~= tonumber(at.y) then
+  local current_at = window.at or at
+  if x ~= tonumber(current_at.x) or y ~= tonumber(current_at.y) then
     hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
   end
 end

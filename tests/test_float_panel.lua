@@ -63,7 +63,15 @@ hl = {
         action.params.window.at = { x = action.params.x, y = action.params.y }
       end
     elseif action.kind == "resize" and action.params.window then
-      action.params.window.size = { x = action.params.x, y = action.params.y }
+      local window = action.params.window
+      local old_size = window.size or { x = action.params.x, y = action.params.y }
+      if action.params.relative ~= true and window.at then
+        window.at = {
+          x = window.at.x - (action.params.x - old_size.x) / 2,
+          y = window.at.y - (action.params.y - old_size.y) / 2,
+        }
+      end
+      window.size = { x = action.params.x, y = action.params.y }
     elseif action.kind == "tag" then
       action.params.window.order_tag = action.params.tag
     end
