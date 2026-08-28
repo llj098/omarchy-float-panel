@@ -314,12 +314,45 @@ binds["SUPER + CTRL + SHIFT + code:21"]()
 assert(w1.at.y == 62 and w1.size.y == 406, "large vertical growth must clamp to the usable work area")
 active_monitor = own_monitor
 
+local function side_tag(window)
+  for _, tag in ipairs(window.tags) do
+    if tag:match("^float%-panel%-side%-v1%-") then return tag end
+  end
+end
+
 binds["SUPER + LEFT"]()
 assert(w1.position.x == 32 and w1.position.y == 62, "left snap must preserve tiling outer gaps and borders")
-assert(w1.size.x == 466 and w1.size.y == 406, "left snap must fill half the gapped work area")
+assert(w1.size.x == 466 and w1.size.y == 406 and side_tag(w1):match("%-l%-"),
+  "left snap must fill half the gapped work area and record left intent")
+local before_side_resize = #dispatched
+binds["SUPER + ALT + code:21"]()
+assert(not side_tag(w1) and #dispatched == before_side_resize + 3,
+  "explicit keyboard resize must clear side intent before resizing")
+
+binds["SUPER + LEFT"]()
+w1.at.x = w1.at.x + 1
+handlers["monitor.layout_changed"]()
+assert(not side_tag(w1), "reflow must clear stale side intent after manual geometry changes")
+
 binds["SUPER + RIGHT"]()
 assert(w1.position.x == 512 and w1.position.y == 62, "right snap must preserve the tiling inner gap")
-assert(w1.size.x == 466 and w1.size.y == 406, "right snap must fill the other gapped half")
+assert(w1.size.x == 466 and w1.size.y == 406 and side_tag(w1):match("%-r%-"),
+  "right snap must fill the other gapped half and replace side intent")
+
+-- Simulate Hyprland's workspace-origin translation before each authoritative
+-- workspace.move_to_monitor event; managed halves must recompute, not fit-only.
+ws1.windows = { w1 }
+w1.monitor = migrated_monitor
+w1.at = { x = -1098, y = 242 }
+handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
+assert(w1.at.x == -998 and w1.at.y == 242 and w1.size.x == 566 and w1.size.y == 696,
+  "a managed right half must recompute exactly on the destination monitor")
+w1.monitor = own_monitor
+w1.at = { x = 612, y = 62 }
+handlers["workspace.move_to_monitor"](ws1, own_monitor)
+assert(w1.at.x == 512 and w1.at.y == 62 and w1.size.x == 466 and w1.size.y == 406,
+  "small/large round trips must regrow a managed half to exact current-monitor geometry")
+ws1.windows = { w1, w2 }
 
 local function geometric_tag(window)
   for _, tag in ipairs(window.tags) do
@@ -401,9 +434,13 @@ assert(w2.at.x == -1578 and w2.at.y == 242 and w2.size.x == 1146 and w2.size.y =
 active_window = w1
 binds["SUPER + DOWN"]()
 assert(not geometric_tag(w1) and geometric_tag(w2), "post-migration restore must remain per-window")
+assert(w1.at.x == -998 and w1.at.y == 242 and w1.size.x == 566 and w1.size.y == 696 and side_tag(w1),
+  "Down after monitor/scale changes must restore max-from-half to the current-monitor half")
 active_window = w2
 binds["SUPER + DOWN"]()
 assert(not geometric_tag(w2), "restoring the second peer must clear only its own tag")
+assert(w2.at.x == -792 and w2.at.y == 242 and w2.size.x == w2_restore.width and w2.size.y == w2_restore.height,
+  "max-from-free must retain defensive exact free-geometry restore semantics")
 
 w1.monitor = own_monitor
 w2.monitor = own_monitor
@@ -414,13 +451,15 @@ w1.floating = true
 active_window = w1
 binds["SUPER + UP"]()
 handlers["window.move_to_workspace"](w1, ws2)
-assert(not geometric_tag(w1) and not w1.floating, "moving a tagged max to another regular Tiling workspace must clear metadata")
+assert(not geometric_tag(w1) and not side_tag(w1) and not w1.floating,
+  "moving a tagged max/half to another regular Tiling workspace must clear placement metadata")
 w1.workspace = ws1
 w1.floating = true
+binds["SUPER + RIGHT"]()
 binds["SUPER + UP"]()
 binds["SUPER + SHIFT + T"]()
-assert(not geometric_tag(w1) and not w1.floating and not w2.floating,
-  "switching the source workspace to Tiling must clear max metadata and tile its windows")
+assert(not geometric_tag(w1) and not side_tag(w1) and not w1.floating and not w2.floating,
+  "switching the source workspace to Tiling must clear max and side metadata and tile its windows")
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "the Float workspace must remain usable after deterministic tag cleanup")
 

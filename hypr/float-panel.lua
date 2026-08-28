@@ -20,6 +20,7 @@ hl.window_rule({
 
 local order_tag_prefix = "float-panel-order-"
 local geometric_max_tag_prefix = "float-panel-geometric-max-v1-"
+local side_intent_tag_prefix = "float-panel-side-v1-"
 
 local function process_start_ticks(pid)
   pid = tonumber(pid)
@@ -275,6 +276,76 @@ local function remove_window_tag(window, tag)
   hl.dispatch(hl.dsp.window.tag({ tag = "-" .. tag, window = window }))
 end
 
+local function side_geometry(side, monitor)
+  local area = monitor_work_area(monitor)
+  if not area then return nil end
+  local gaps_out = config_gap("general.gaps_out")
+  local gaps_in = config_gap("general.gaps_in")
+  local border = math.max(0, tonumber(hl.get_config("general.border_size")) or 0)
+  local outer_x = area.x + gaps_out.left
+  local outer_y = area.y + gaps_out.top
+  local outer_width = math.max(1, area.width - gaps_out.left - gaps_out.right)
+  local outer_height = math.max(1, area.height - gaps_out.top - gaps_out.bottom)
+  local middle_gap = math.max(0, gaps_in.left + gaps_in.right)
+  local halves_width = math.max(2, outer_width - middle_gap)
+  local left_outer_width = math.floor(halves_width / 2)
+  local outer_half_width = side == "left" and left_outer_width or halves_width - left_outer_width
+  return {
+    x = side == "left" and outer_x + border or outer_x + left_outer_width + middle_gap + border,
+    y = outer_y + border,
+    width = math.max(1, outer_half_width - border * 2),
+    height = math.max(1, outer_height - border * 2),
+  }
+end
+
+local function parse_side_intent_tag(tag)
+  if type(tag) ~= "string" or tag:sub(1, #side_intent_tag_prefix) ~= side_intent_tag_prefix then return nil end
+  local body = tag:sub(#side_intent_tag_prefix + 1)
+  local side, x, y, width, height, monitor_x, monitor_y, workspace_id, source_hex =
+    body:match("^([lr])%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([0-9a-f]+)$")
+  if not side then return nil end
+  local result = {
+    raw = tag, side = side == "l" and "left" or "right",
+    x = decode_integer(x), y = decode_integer(y), width = decode_integer(width), height = decode_integer(height),
+    monitor_x = decode_integer(monitor_x), monitor_y = decode_integer(monitor_y),
+    workspace_id = decode_integer(workspace_id), source = decode_hex(source_hex),
+  }
+  if not result.x or not result.y or not result.width or not result.height or result.width < 1 or result.height < 1 or
+      not result.monitor_x or not result.monitor_y or not result.workspace_id or not result.source or result.source == "" then return nil end
+  return result
+end
+
+local function window_side_intent(window)
+  for _, tag in ipairs(window and window.tags or {}) do
+    local metadata = parse_side_intent_tag(tag)
+    if metadata then return metadata end
+  end
+  return nil
+end
+
+local function make_side_intent_tag(window, workspace, side, geometry)
+  local monitor = window and window.monitor or nil
+  if not monitor or not geometry then return nil end
+  return side_intent_tag_prefix .. table.concat({
+    side == "left" and "l" or "r",
+    encode_integer(geometry.x), encode_integer(geometry.y), encode_integer(geometry.width), encode_integer(geometry.height),
+    encode_integer(monitor.x), encode_integer(monitor.y), encode_integer(workspace.id), encode_hex(workspace_selector(workspace)),
+  }, "-")
+end
+
+local function clear_side_intent(window)
+  local metadata = window_side_intent(window)
+  if metadata then remove_window_tag(window, metadata.raw) end
+end
+
+local function update_side_intent(window, workspace, side, geometry)
+  local old = window_side_intent(window)
+  local tag = make_side_intent_tag(window, workspace, side, geometry)
+  if not tag or (old and old.raw == tag) then return end
+  if old then remove_window_tag(window, old.raw) end
+  add_window_tag(window, tag)
+end
+
 local function geometry_clamped_to_bounds(metadata, bounds)
   local width = math.max(1, math.min(metadata.width, bounds.width))
   local height = math.max(1, math.min(metadata.height, bounds.height))
@@ -307,6 +378,33 @@ local function fit_window_to_floating_bounds(window)
     return
   end
 
+  local side = window_side_intent(window)
+  if side then
+    local monitor_x = math.floor(tonumber(window.monitor and window.monitor.x) or 0)
+    local monitor_y = math.floor(tonumber(window.monitor and window.monitor.y) or 0)
+    local translated_x = side.x + monitor_x - side.monitor_x
+    local translated_y = side.y + monitor_y - side.monitor_y
+    local current_x, current_y = tonumber(at.x), tonumber(at.y)
+    local same_size = tonumber(size.x) == side.width and tonumber(size.y) == side.height
+    local still_managed = same_size and ((current_x == side.x and current_y == side.y) or
+      (current_x == translated_x and current_y == translated_y))
+    if not still_managed then
+      remove_window_tag(window, side.raw)
+    else
+      local geometry = side_geometry(side.side, window.monitor)
+      if not geometry then return end
+      if tonumber(size.x) ~= geometry.width or tonumber(size.y) ~= geometry.height then
+        hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
+      end
+      local current_at = window.at or at
+      if tonumber(current_at.x) ~= geometry.x or tonumber(current_at.y) ~= geometry.y then
+        hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
+      end
+      update_side_intent(window, window.workspace, side.side, geometry)
+      return
+    end
+  end
+
   local old_width = math.max(1, tonumber(size.x) or 1)
   local old_height = math.max(1, tonumber(size.y) or 1)
   local width = math.min(old_width, bounds.width)
@@ -329,10 +427,13 @@ local function restore_geometric_max(window)
   local metadata = window_geometric_max_metadata(window)
   local bounds = window and floating_window_bounds(window.monitor) or nil
   if not metadata or not bounds then return false end
-  local geometry = geometry_clamped_to_bounds(metadata, bounds)
+  local side = window_side_intent(window)
+  local geometry = side and side_geometry(side.side, window.monitor) or geometry_clamped_to_bounds(metadata, bounds)
+  if not geometry then return false end
   hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
   hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
   remove_window_tag(window, metadata.raw)
+  if side then update_side_intent(window, window.workspace, side.side, geometry) end
   return true
 end
 
@@ -353,6 +454,8 @@ local function clear_geometric_max_metadata_for_workspace(workspace)
   for _, window in ipairs(hl.get_windows()) do
     local metadata = window_geometric_max_metadata(window)
     if metadata and metadata.source == selector then remove_window_tag(window, metadata.raw) end
+    local side = window_side_intent(window)
+    if side and side.source == selector then remove_window_tag(window, side.raw) end
   end
 end
 
@@ -380,6 +483,7 @@ local function mode_aware_resize(dx, dy)
 
   local window = hl.get_active_window()
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
+  clear_side_intent(window)
   local bounds = window and floating_window_bounds(window.monitor) or nil
   local at = window and window.at or nil
   local size = window and window.size or nil
@@ -399,29 +503,15 @@ end
 local function snap_active_window(side)
   local window = hl.get_active_window()
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
-  local area = monitor_work_area(window and window.monitor or hl.get_active_monitor())
-  if not window or not area then return end
-
-  local gaps_out = config_gap("general.gaps_out")
-  local gaps_in = config_gap("general.gaps_in")
-  local border = math.max(0, tonumber(hl.get_config("general.border_size")) or 0)
-  local outer_x = area.x + gaps_out.left
-  local outer_y = area.y + gaps_out.top
-  local outer_width = math.max(1, area.width - gaps_out.left - gaps_out.right)
-  local outer_height = math.max(1, area.height - gaps_out.top - gaps_out.bottom)
-  local middle_gap = math.max(0, gaps_in.left + gaps_in.right)
-  local halves_width = math.max(2, outer_width - middle_gap)
-  local left_outer_width = math.floor(halves_width / 2)
-  local outer_half_width = side == "left" and left_outer_width or halves_width - left_outer_width
-  local x = side == "left" and outer_x + border or outer_x + left_outer_width + middle_gap + border
-  local y = outer_y + border
-  local width = math.max(1, outer_half_width - border * 2)
-  local height = math.max(1, outer_height - border * 2)
+  local workspace = hl.get_active_workspace()
+  local geometry = window and side_geometry(side, window.monitor or hl.get_active_monitor()) or nil
+  if not window or not geometry then return end
 
   set_window_floating(window, true)
   -- Resize first so Hyprland does not clamp the old, wider window before placing it.
-  hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
-  hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
+  hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
+  hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
+  update_side_intent(window, workspace, side, geometry)
 end
 
 local function mode_aware_direction(direction)
@@ -487,17 +577,23 @@ end)
 
 hl.on("window.move_to_workspace", function(window, workspace)
   local metadata = window_geometric_max_metadata(window)
-  if metadata then
-    local expected_special = "special:omarchy-minimized-" .. tostring(metadata.workspace_id)
-    local returning_to_source = workspace_is_regular(workspace) and workspace_selector(workspace) == metadata.source and workspace_float_enabled(workspace)
-    if not (workspace and workspace.special == true and workspace.name == expected_special) and not returning_to_source then
-      remove_window_tag(window, metadata.raw)
-      metadata = nil
+  local side = window_side_intent(window)
+  local placements = {}
+  if metadata then table.insert(placements, metadata) end
+  if side then table.insert(placements, side) end
+  for _, placement in ipairs(placements) do
+    if placement then
+      local expected_special = "special:omarchy-minimized-" .. tostring(placement.workspace_id)
+      local returning_to_source = workspace_is_regular(workspace) and workspace_selector(workspace) == placement.source and workspace_float_enabled(workspace)
+      if not (workspace and workspace.special == true and workspace.name == expected_special) and not returning_to_source then
+        remove_window_tag(window, placement.raw)
+        if placement == metadata then metadata = nil else side = nil end
+      end
     end
   end
   if workspace_is_regular(workspace) then
     set_window_floating(window, workspace_float_enabled(workspace))
-  elseif metadata then
+  elseif metadata or side then
     set_window_floating(window, true)
   end
 end)
