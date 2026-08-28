@@ -49,9 +49,10 @@ Add the Hyprland integration near the end of `~/.config/hypr/hyprland.lua`, afte
 dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/hypr/float-panel.lua")
 ```
 
-Hyprland should reload the configuration automatically. A manual shell restart is only needed if normal Omarchy plugin rescan/hot reload does not pick up the widget:
+Hyprland should reload the configuration automatically. After updating an already loaded plugin checkout, let the file watcher settle and then restart Omarchy Shell once: the watcher notices QML/JavaScript changes, but the running engine can retain an imported JavaScript module cache. Do not overlap the restart with an in-progress file copy/hot reload.
 
 ```bash
+sleep 2
 omarchy-restart-shell
 ```
 
