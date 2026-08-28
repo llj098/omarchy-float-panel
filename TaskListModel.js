@@ -1,0 +1,77 @@
+function stringValue(value) {
+  return value === undefined || value === null ? "" : String(value)
+}
+
+function normalizeAppId(value) {
+  var normalized = stringValue(value).trim().toLowerCase()
+  if (normalized.slice(-8) === ".desktop")
+    normalized = normalized.slice(0, -8)
+  return normalized
+}
+
+function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
+  var groups = []
+  var byKey = {}
+
+  function add(toplevel, minimized) {
+    if (!toplevel) return
+
+    var description = describe(toplevel) || {}
+    var key = normalizeAppId(description.key || description.appId)
+    if (!key)
+      key = "window:" + stringValue(description.address || description.title)
+    if (!key || key === "window:") return
+
+    var group = byKey[key]
+    if (!group) {
+      group = {
+        key: key,
+        appId: stringValue(description.appId),
+        name: stringValue(description.name || description.appId || description.title || "Application"),
+        iconSource: stringValue(description.iconSource),
+        windows: [],
+        visibleWindows: [],
+        minimizedWindows: [],
+        active: false,
+        urgent: false,
+        representative: null
+      }
+      byKey[key] = group
+      groups.push(group)
+    }
+
+    var item = {
+      toplevel: toplevel,
+      address: stringValue(description.address),
+      title: stringValue(description.title),
+      activated: description.activated === true,
+      minimized: minimized === true
+    }
+
+    group.windows.push(item)
+    if (item.minimized)
+      group.minimizedWindows.push(item)
+    else
+      group.visibleWindows.push(item)
+
+    group.active = group.active || item.activated
+    group.urgent = group.urgent || description.urgent === true
+
+    if (!group.representative || (item.activated && !item.minimized) ||
+        (group.representative.minimized && !item.minimized))
+      group.representative = item
+  }
+
+  var visible = visibleToplevels || []
+  var minimized = minimizedToplevels || []
+  for (var i = 0; i < visible.length; i++) add(visible[i], false)
+  for (var j = 0; j < minimized.length; j++) add(minimized[j], true)
+
+  for (var k = 0; k < groups.length; k++) {
+    var current = groups[k]
+    current.allMinimized = current.visibleWindows.length === 0
+    current.count = current.windows.length
+  }
+
+  return groups
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "fatlj.float-panel",
+  "name": "Float Panel Task List",
+  "version": "0.1.0",
+  "author": "fatlj",
+  "description": "A per-workspace application task list with activate and restore behavior for Omarchy.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "TaskList.qml"
+  },
+  "barWidget": {
+    "displayName": "Float Panel Task List",
+    "description": "Application icons for the active workspace and its minimized windows",
+    "category": "Compositor",
+    "defaultSection": "left",
+    "allowMultiple": false
+  }
+}
