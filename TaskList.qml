@@ -68,6 +68,12 @@ BarWidget {
     }
 
     function describeToplevel(toplevel) {
+        var ipc = toplevel ? toplevel.lastIpcObject : null;
+        if (!ipc || ipc.mapped === false)
+            return {
+            "ignored": true
+        };
+
         var appId = rawAppId(toplevel);
         var entry = desktopEntry(appId);
         return {
@@ -114,20 +120,28 @@ BarWidget {
 
         var item = group.representative;
         var target = windowSelector(item.address);
-        if (!target)
+        var action = TaskListModel.actionForGroup(group);
+        if (!target || !action)
             return ;
 
+        var move;
+        if (action === "hide") {
+            move = "hl.dsp.window.move({ workspace = " + luaString(minimizedWorkspaceName) + ", follow = false, window = " + luaString(target) + " })";
+            bar.run(dispatchExpression(move));
+            return ;
+        }
         var focus = "hl.dsp.focus({ window = " + luaString(target) + " })";
-        if (!item.minimized) {
-            bar.run(dispatchExpression(focus));
+        var raise = "hl.dsp.window.alter_zorder({ mode = \"top\", window = " + luaString(target) + " })";
+        if (action === "focus") {
+            bar.run(dispatchExpression(focus) + " && " + dispatchExpression(raise));
             return ;
         }
         var destination = workspaceSelector(workspace);
         if (!destination)
             return ;
 
-        var move = "hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = " + luaString(target) + " })";
-        bar.run(dispatchExpression(move) + " && " + dispatchExpression(focus));
+        move = "hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = " + luaString(target) + " })";
+        bar.run(dispatchExpression(move) + " && " + dispatchExpression(focus) + " && " + dispatchExpression(raise));
     }
 
     moduleName: "fatlj.float-panel"

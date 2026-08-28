@@ -4,7 +4,7 @@
   "name": "Float Panel Task List",
   "version": "0.1.0",
   "author": "fatlj",
-  "description": "A per-workspace application task list with activate and restore behavior for Omarchy.",
+  "description": "A per-workspace application task list with hide, restore, focus, and raise behavior for Omarchy.",
   "kinds": [
     "bar-widget"
   ],

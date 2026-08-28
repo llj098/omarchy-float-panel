@@ -69,5 +69,19 @@ function descriptor(values) {
   assert.deepEqual(Array.from(groups, group => group.key), ["window:1", "window:2"])
 }
 
+{
+  const groups = context.groupToplevels([top("app"), top("popup")], [], descriptor({
+    app: { appId: "org.example.App", name: "App" },
+    popup: { ignored: true, appId: "org.fcitx.Fcitx5" }
+  }))
+
+  assert.equal(groups.length, 1, "unmanaged input-method and popup surfaces must be ignored")
+  assert.equal(groups[0].key, "org.example.app")
+}
+
+assert.equal(context.actionForGroup(null), "")
+assert.equal(context.actionForGroup({ representative: { minimized: false }, active: true }), "hide")
+assert.equal(context.actionForGroup({ representative: { minimized: false }, active: false }), "focus")
+assert.equal(context.actionForGroup({ representative: { minimized: true }, active: false }), "restore")
 assert.equal(context.normalizeAppId(" Org.Example.App.desktop "), "org.example.app")
 console.log("MODEL_TESTS_OK")

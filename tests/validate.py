@@ -22,7 +22,10 @@ for required in (
     "Qt.LeftButton",
     "address:0x",
     "hl.dsp.window.move",
+    "hl.dsp.window.alter_zorder",
     "hl.dsp.focus",
+    "TaskListModel.actionForGroup",
+    '"ignored": true',
 ):
     assert required in qml, f"TaskList.qml missing required contract: {required}"
 

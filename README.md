@@ -6,9 +6,10 @@ An Omarchy 4 bar widget that shows one icon per application on each monitor's ac
 
 - The TaskList is shown on every normal workspace that has visible or minimized applications.
 - Each application is represented by one icon, even when it owns multiple windows.
-- Left click has one user-facing action: activate the application.
-  - A visible representative window is focused.
-  - If all of the application's windows are minimized, one is restored to the active workspace and focused.
+- Left click behaves like a taskbar toggle for the representative window.
+  - An inactive visible window is focused and raised to the top.
+  - If the representative is active, that window is hidden in the workspace's minimized special workspace.
+  - If all of the application's windows are minimized, one is restored, focused, and raised.
 - `Super+M` minimizes the active window by moving it silently to a special workspace dedicated to its source workspace.
 - `Super+Shift+T` toggles the focused regular workspace between all-floating and normal tiling behavior.
 - `Super+Left/Right` keeps Omarchy's directional focus behavior in tiling mode and snaps the active window to the corresponding monitor half in floating mode.
@@ -89,7 +90,7 @@ hyprctl dispatch 'hl.dsp.workspace.toggle_special("omarchy-minimized-1")'
 
 Replace `1` with the source workspace ID, then move the windows back normally.
 
-## Application grouping and activation
+## Application grouping and task actions
 
 The widget reads Quickshell's reactive `HyprlandWorkspace.toplevels` models. Application identity is resolved in this order:
 
@@ -99,7 +100,16 @@ The widget reads Quickshell's reactive `HyprlandWorkspace.toplevels` models. App
 
 Desktop icons use an exact desktop-entry lookup, then `DesktopEntries.heuristicLookup()`, then the generic executable icon. Heuristic desktop-entry matching can be imperfect for unusual XWayland, Electron, PWA, and terminal-hosted applications.
 
-When an app has multiple windows, activation prefers an active visible window, then any visible window, then a minimized window. Left click never minimizes or cycles windows.
+When an app has multiple windows, the representative prefers an active visible window, then any visible window, then a minimized window. Clicking an active group hides only its active representative, not every window owned by the app. Clicking never cycles windows.
+
+The model admits only toplevels backed by a mapped Hyprland IPC client. Input-method candidates, tooltips, and other protocol-only transient surfaces are ignored structurally rather than through application-name blacklists.
+
+Hyprland's focus dispatcher normally warps the pointer. To keep the pointer stationary and make focus click-driven, add native overrides to the user config:
+
+```lua
+hl.config({ input = { follow_mouse = 0 } })
+hl.config({ cursor = { no_warps = true } })
+```
 
 ## Validation
 

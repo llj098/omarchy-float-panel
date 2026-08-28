@@ -17,6 +17,8 @@ function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
     if (!toplevel) return
 
     var description = describe(toplevel) || {}
+    if (description.ignored === true) return
+
     var key = normalizeAppId(description.key || description.appId)
     if (!key)
       key = "window:" + stringValue(description.address || description.title)
@@ -74,4 +76,10 @@ function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
   }
 
   return groups
+}
+
+function actionForGroup(group) {
+  if (!group || !group.representative) return ""
+  if (group.active && !group.representative.minimized) return "hide"
+  return group.representative.minimized ? "restore" : "focus"
 }
