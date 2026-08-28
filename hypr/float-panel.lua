@@ -92,6 +92,59 @@ local function minimize_active_window()
   }))
 end
 
+local function monitor_work_area(monitor)
+  if not monitor then return nil end
+
+  local scale = tonumber(monitor.scale) or 1
+  if scale <= 0 then scale = 1 end
+
+  local pixel_width = tonumber(monitor.width) or 0
+  local pixel_height = tonumber(monitor.height) or 0
+  local transform = tonumber(monitor.transform) or 0
+  if transform % 2 == 1 then
+    pixel_width, pixel_height = pixel_height, pixel_width
+  end
+
+  local reserved = monitor.reserved or {}
+  local left = tonumber(reserved.left) or 0
+  local right = tonumber(reserved.right) or 0
+  local top = tonumber(reserved.top) or 0
+  local bottom = tonumber(reserved.bottom) or 0
+  local width = math.max(1, math.floor(pixel_width / scale - left - right))
+  local height = math.max(1, math.floor(pixel_height / scale - top - bottom))
+
+  return {
+    x = math.floor((tonumber(monitor.x) or 0) + left),
+    y = math.floor((tonumber(monitor.y) or 0) + top),
+    width = width,
+    height = height,
+  }
+end
+
+local function snap_active_window(side)
+  local window = hl.get_active_window()
+  local area = monitor_work_area(hl.get_active_monitor())
+  if not window or not area then return end
+
+  local left_width = math.floor(area.width / 2)
+  local width = side == "left" and left_width or area.width - left_width
+  local x = side == "left" and area.x or area.x + left_width
+
+  set_window_floating(window, true)
+  hl.dispatch(hl.dsp.window.move({ x = x, y = area.y, window = window }))
+  hl.dispatch(hl.dsp.window.resize({ x = width, y = area.height, window = window }))
+end
+
+local function focus_or_snap(direction)
+  local workspace = hl.get_active_workspace()
+  if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
+    snap_active_window(direction == "l" and "left" or "right")
+    return
+  end
+
+  hl.dispatch(hl.dsp.focus({ direction = direction }))
+end
+
 load_float_workspaces()
 
 -- Re-apply persisted floating modes when this module is loaded after a config reload.
@@ -111,5 +164,9 @@ hl.on("window.move_to_workspace", function(window, workspace)
   set_window_floating(window, workspace_float_enabled(workspace))
 end)
 
+hl.unbind("SUPER + LEFT")
+hl.unbind("SUPER + RIGHT")
+o.bind("SUPER + LEFT", "Focus left / snap left in floating mode", function() focus_or_snap("l") end)
+o.bind("SUPER + RIGHT", "Focus right / snap right in floating mode", function() focus_or_snap("r") end)
 o.bind("SUPER + SHIFT + T", "Toggle workspace floating mode", toggle_active_workspace_mode)
 o.bind("SUPER + M", "Minimize window", minimize_active_window)

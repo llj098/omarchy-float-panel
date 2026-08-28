@@ -2,6 +2,7 @@ local binds = {}
 local handlers = {}
 local dispatched = {}
 local commands = {}
+local unbound = {}
 
 local function workspace(id, name, special)
   local value = { id = id, name = name, special = special == true, windows = {} }
@@ -24,7 +25,9 @@ hl = {
     window = {
       float = function(params) return { kind = "float", params = params } end,
       move = function(params) return { kind = "move", params = params } end,
+      resize = function(params) return { kind = "resize", params = params } end,
     },
+    focus = function(params) return { kind = "focus", params = params } end,
   },
   dispatch = function(action)
     table.insert(dispatched, action)
@@ -32,13 +35,28 @@ hl = {
       action.params.window.floating = action.params.action == "on"
     elseif action.kind == "move" then
       action.params.window.moved_to = action.params.workspace
+      action.params.window.position = { x = action.params.x, y = action.params.y }
+    elseif action.kind == "resize" then
+      action.params.window.size = { width = action.params.x, height = action.params.y }
     end
   end,
   exec_cmd = function(command) table.insert(commands, command) end,
   get_active_workspace = function() return active_workspace end,
   get_active_window = function() return active_window end,
+  get_active_monitor = function()
+    return {
+      x = 10,
+      y = 20,
+      width = 2000,
+      height = 1000,
+      scale = 2,
+      transform = 0,
+      reserved = { left = 10, right = 20, top = 30, bottom = 40 },
+    }
+  end,
   get_workspaces = function() return { ws1, ws2, special } end,
   on = function(name, callback) handlers[name] = callback end,
+  unbind = function(keys) table.insert(unbound, keys) end,
 }
 
 o = {
@@ -48,14 +66,24 @@ o = {
 
 dofile("hypr/float-panel.lua")
 
+assert(type(binds["SUPER + LEFT"]) == "function")
+assert(type(binds["SUPER + RIGHT"]) == "function")
 assert(type(binds["SUPER + SHIFT + T"]) == "function")
 assert(type(binds["SUPER + M"]) == "function")
+assert(unbound[1] == "SUPER + LEFT" and unbound[2] == "SUPER + RIGHT")
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
 
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")
 assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must notify its mode")
+
+binds["SUPER + LEFT"]()
+assert(w1.position.x == 20 and w1.position.y == 50, "left snap must use the monitor work area origin")
+assert(w1.size.width == 485 and w1.size.height == 430, "left snap must fill half the scaled work area")
+binds["SUPER + RIGHT"]()
+assert(w1.position.x == 505 and w1.position.y == 50, "right snap must start at the second half")
+assert(w1.size.width == 485 and w1.size.height == 430, "right snap must fill the other half")
 
 local opened = { workspace = ws1, floating = false }
 handlers["window.open"](opened)
@@ -70,6 +98,10 @@ assert(not opened.floating, "special workspaces must not change floating state")
 active_workspace = ws2
 opened.workspace = ws2
 ws2.windows = { opened }
+local before_focus = #dispatched
+binds["SUPER + LEFT"]()
+assert(#dispatched == before_focus + 1, "tiling mode must dispatch directional focus")
+assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.direction == "l")
 binds["SUPER + SHIFT + T"]()
 assert(opened.floating, "each workspace must toggle independently")
 

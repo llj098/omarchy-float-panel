@@ -32,6 +32,9 @@ for required in (
     'hl.on("window.move_to_workspace"',
     'o.bind("SUPER + SHIFT + T"',
     'o.bind("SUPER + M"',
+    'hl.unbind("SUPER + LEFT")',
+    "hl.get_active_monitor()",
+    "hl.dsp.window.resize",
     "special:omarchy-minimized-",
 ):
     assert required in lua, f"float-panel.lua missing required contract: {required}"
