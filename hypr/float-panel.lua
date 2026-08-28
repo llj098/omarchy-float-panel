@@ -347,9 +347,13 @@ for _, window in ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
 end
 
--- Re-apply persisted floating modes when this module is loaded after a config reload.
+-- Re-apply persisted floating modes and repair geometry if this module loads
+-- after a monitor migration already happened.
 for _, workspace in ipairs(hl.get_workspaces()) do
-  if workspace_float_enabled(workspace) then apply_workspace_mode(workspace) end
+  if workspace_float_enabled(workspace) then
+    apply_workspace_mode(workspace)
+    fit_migrated_float_workspace(workspace)
+  end
 end
 
 hl.on("window.open", function(window)
