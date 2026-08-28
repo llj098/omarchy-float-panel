@@ -4,7 +4,7 @@ An Omarchy 4 bar widget that shows one icon per application on each monitor's ac
 
 ## Behavior
 
-- The TaskList is shown on every normal workspace that has visible or minimized applications.
+- The TaskList is shown only when the active normal workspace is in Float mode and has visible or minimized applications.
 - Each application is represented by one icon, even when it owns multiple windows.
 - Icons stay sorted by application process launch time; focus, raise, minimize, restore, and Shell restarts do not reorder them.
 - Left click behaves like a taskbar toggle for the representative window.
@@ -90,7 +90,7 @@ For a source workspace with internal ID `N`, `Super+M` moves the active window t
 special:omarchy-minimized-N
 ```
 
-The TaskList combines the active workspace with that matching special workspace. Because the source workspace is encoded in the special workspace name, no per-window origin database is needed.
+The TaskList combines the active workspace with that matching special workspace. It watches the existing Float workspace state file, so switching workspaces or toggling Float/Tiling updates its visibility without restarting the Shell. Because the source workspace is encoded in the special workspace name, no per-window origin database is needed.
 
 Before disabling/removing the plugin, restore minimized windows through their TaskList icons. For manual recovery, reveal a workspace's hidden windows with:
 

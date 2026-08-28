@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Hyprland
+import Quickshell.Io
 import "TaskListModel.js" as TaskListModel
 import qs.Commons
 import qs.Ui
@@ -14,9 +15,23 @@ BarWidget {
     readonly property var workspace: monitor ? monitor.activeWorkspace : null
     readonly property string minimizedWorkspaceName: workspace ? "special:omarchy-minimized-" + workspace.id : ""
     readonly property var minimizedWorkspace: findWorkspaceByName(minimizedWorkspaceName)
+    property var floatWorkspaceNames: ({})
+    readonly property bool workspaceFloatEnabled: workspace && workspace.id > 0 && floatWorkspaceNames[String(workspace.name || "")] === true
     readonly property var taskGroups: TaskListModel.groupToplevels(workspace ? workspace.toplevels.values : [], minimizedWorkspace ? minimizedWorkspace.toplevels.values : [], function(toplevel) {
         return root.describeToplevel(toplevel);
     })
+
+    function setFloatWorkspaceState(contents) {
+        var names = {};
+        var lines = String(contents || "").split("\n");
+        for (var i = 0; i < lines.length; i++) {
+            var name = lines[i].replace(/\r$/, "");
+            if (name)
+                names[name] = true;
+
+        }
+        floatWorkspaceNames = names;
+    }
 
     function findWorkspaceByName(name) {
         if (!name)
@@ -145,6 +160,15 @@ BarWidget {
         bar.run(dispatchExpression(move) + " && " + dispatchExpression(focus) + " && " + dispatchExpression(raise));
     }
 
+    FileView {
+        path: Quickshell.env("HOME") + "/.local/state/omarchy/float-panel-workspaces"
+        watchChanges: true
+        printErrors: false
+        onLoaded: root.setFloatWorkspaceState(text())
+        onLoadFailed: root.setFloatWorkspaceState("")
+        onFileChanged: reload()
+    }
+
     Timer {
         id: ipcRefreshTimer
 
@@ -162,7 +186,7 @@ BarWidget {
     }
 
     moduleName: "fatlj.float-panel"
-    visible: taskGroups.length > 0
+    visible: workspaceFloatEnabled && taskGroups.length > 0
     implicitWidth: visible ? taskGrid.implicitWidth : 0
     implicitHeight: visible ? taskGrid.implicitHeight : 0
 

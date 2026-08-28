@@ -17,6 +17,12 @@ qml = (ROOT / "TaskList.qml").read_text()
 for required in (
     "Hyprland.monitorFor",
     "monitor.activeWorkspace",
+    'import Quickshell.Io',
+    'float-panel-workspaces',
+    "watchChanges: true",
+    "onFileChanged: reload()",
+    "workspace.id > 0",
+    "workspaceFloatEnabled && taskGroups.length > 0",
     "workspace.toplevels.values",
     "minimizedWorkspace.toplevels.values",
     "Hyprland.toplevels",
