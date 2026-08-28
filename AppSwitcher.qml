@@ -187,10 +187,12 @@ Item {
     return JSON.stringify(String(value || ""))
   }
 
-  function dispatchActivation(target, restore, destination) {
+  function dispatchActivation(target, restore, destination, fullscreen, workspaceName) {
     var actions = []
     if (restore)
       actions.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = " + luaString(target) + " }))")
+    if (fullscreen === 1 || fullscreen === 2)
+      actions.push("local windows = hl.get_windows(); for i = #windows, 1, -1 do local window = windows[i]; if window.workspace and window.workspace.name == " + luaString(workspaceName) + " and window.floating and not window.pinned and tonumber(window.fullscreen) == 0 and window.allowed_over_fullscreen then hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"bottom\", window = window })) end end")
     actions.push("hl.dispatch(hl.dsp.focus({ window = " + luaString(target) + " }))")
     actions.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = " + luaString(target) + " }))")
     Hyprland.dispatch("(function() return function() " + actions.join("; ") + " end end)()")
@@ -220,7 +222,8 @@ Item {
     var workspaceName = current.workspace ? String(current.workspace.name || "") : ""
     if (workspaceName !== sourceName && workspaceName !== minimizedName) return "moved-window"
 
-    dispatchActivation(target, workspaceName === minimizedName, destination)
+    var fullscreen = Number(ipc.fullscreen)
+    dispatchActivation(target, workspaceName === minimizedName, destination, fullscreen, sourceName)
     return "activated:" + address
   }
 
