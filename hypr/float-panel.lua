@@ -19,8 +19,7 @@ hl.window_rule({
 })
 
 local order_tag_prefix = "float-panel-order-"
-local monocle_tag_prefix = "float-panel-monocle-v1-"
-local workspace_base_layouts = {}
+local geometric_max_tag_prefix = "float-panel-geometric-max-v1-"
 
 local function process_start_ticks(pid)
   pid = tonumber(pid)
@@ -105,7 +104,6 @@ local function set_window_floating(window, enabled)
 end
 
 local apply_workspace_mode
-local suspend_monocle_window
 
 local function toggle_active_workspace_mode()
   local workspace = hl.get_active_workspace()
@@ -126,7 +124,6 @@ local function minimize_active_window()
   local workspace = window and window.workspace or nil
   if not workspace_is_regular(workspace) then return end
 
-  suspend_monocle_window(window, workspace)
   local minimized_workspace = "special:omarchy-minimized-" .. tostring(workspace.id)
   hl.dispatch(hl.dsp.window.move({
     workspace = minimized_workspace,
@@ -231,15 +228,13 @@ local function workspace_selector(workspace)
   return tostring(workspace.config_name or workspace.name or "")
 end
 
-local function parse_monocle_tag(tag)
-  if type(tag) ~= "string" or tag:sub(1, #monocle_tag_prefix) ~= monocle_tag_prefix then return nil end
-  local body = tag:sub(#monocle_tag_prefix + 1)
-  local x, y, width, height, workspace_id, source_hex, layout_hex =
-    body:match("^([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([0-9a-f]+)%-([0-9a-f]+)$")
+local function parse_geometric_max_tag(tag)
+  if type(tag) ~= "string" or tag:sub(1, #geometric_max_tag_prefix) ~= geometric_max_tag_prefix then return nil end
+  local body = tag:sub(#geometric_max_tag_prefix + 1)
+  local x, y, width, height, workspace_id, source_hex =
+    body:match("^([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([0-9a-f]+)$")
   if not x then return nil end
 
-  local source = decode_hex(source_hex)
-  local layout = decode_hex(layout_hex)
   local result = {
     raw = tag,
     x = decode_integer(x),
@@ -247,39 +242,29 @@ local function parse_monocle_tag(tag)
     width = decode_integer(width),
     height = decode_integer(height),
     workspace_id = decode_integer(workspace_id),
-    source = source,
-    layout = layout,
+    source = decode_hex(source_hex),
   }
   if not result.x or not result.y or not result.width or not result.height or result.width < 1 or result.height < 1 or
-      not result.workspace_id or not result.source or result.source == "" or not result.layout or result.layout == "" then
-    return nil
-  end
+      not result.workspace_id or not result.source or result.source == "" then return nil end
   return result
 end
 
-local function window_monocle_metadata(window)
+local function window_geometric_max_metadata(window)
   for _, tag in ipairs(window and window.tags or {}) do
-    local metadata = parse_monocle_tag(tag)
+    local metadata = parse_geometric_max_tag(tag)
     if metadata then return metadata end
   end
   return nil
 end
 
-local function make_monocle_tag(window, workspace, layout)
+local function make_geometric_max_tag(window, workspace)
   local at = window and window.at or nil
   local size = window and window.size or nil
   if not at or not size then return nil end
-
-  local values = {
-    encode_integer(at.x),
-    encode_integer(at.y),
-    encode_integer(size.x),
-    encode_integer(size.y),
-    encode_integer(workspace.id),
-    encode_hex(workspace_selector(workspace)),
-    encode_hex(layout),
-  }
-  return monocle_tag_prefix .. table.concat(values, "-")
+  return geometric_max_tag_prefix .. table.concat({
+    encode_integer(at.x), encode_integer(at.y), encode_integer(size.x), encode_integer(size.y),
+    encode_integer(workspace.id), encode_hex(workspace_selector(workspace)),
+  }, "-")
 end
 
 local function add_window_tag(window, tag)
@@ -290,58 +275,19 @@ local function remove_window_tag(window, tag)
   hl.dispatch(hl.dsp.window.tag({ tag = "-" .. tag, window = window }))
 end
 
-local function find_workspace_by_selector(selector)
-  for _, workspace in ipairs(hl.get_workspaces()) do
-    if workspace_is_regular(workspace) and workspace_selector(workspace) == selector then return workspace end
-  end
-  return nil
-end
-
-local function workspace_has_monocle_members(workspace, excluded)
-  if not workspace then return false end
-  local selector = workspace_selector(workspace)
-  for _, window in ipairs(workspace:get_windows()) do
-    local metadata = window ~= excluded and window_monocle_metadata(window) or nil
-    if metadata and metadata.source == selector and window.floating ~= true then return true end
-  end
-  return false
-end
-
-local function tagged_base_layout(workspace)
-  local selector = workspace_selector(workspace)
-  if workspace_base_layouts[selector] then return workspace_base_layouts[selector] end
-  for _, window in ipairs(hl.get_windows()) do
-    local metadata = window_monocle_metadata(window)
-    if metadata and metadata.source == selector then
-      workspace_base_layouts[selector] = metadata.layout
-      return metadata.layout
-    end
-  end
-  return nil
-end
-
-local function set_workspace_layout(workspace, layout)
-  if not workspace_is_regular(workspace) or not layout or layout == "" then return end
-  hl.workspace_rule({ workspace = workspace_selector(workspace), layout = layout })
-end
-
-local function apply_monocle_layout(workspace, base_layout)
-  local selector = workspace_selector(workspace)
-  workspace_base_layouts[selector] = base_layout
-  set_workspace_layout(workspace, "monocle")
-end
-
-local function restore_workspace_layout_if_unused(workspace, base_layout, excluded)
-  if not workspace_is_regular(workspace) or workspace_has_monocle_members(workspace, excluded) then return end
-  local selector = workspace_selector(workspace)
-  local layout = base_layout or tagged_base_layout(workspace)
-  if layout then set_workspace_layout(workspace, layout) end
-  workspace_base_layouts[selector] = nil
+local function geometry_clamped_to_bounds(metadata, bounds)
+  local width = math.max(1, math.min(metadata.width, bounds.width))
+  local height = math.max(1, math.min(metadata.height, bounds.height))
+  return {
+    x = math.max(bounds.left, math.min(bounds.right - width, metadata.x)),
+    y = math.max(bounds.top, math.min(bounds.bottom - height, metadata.y)),
+    width = width,
+    height = height,
+  }
 end
 
 local function fit_window_to_floating_bounds(window)
   if not window or window.mapped ~= true or window.hidden == true or window.floating ~= true then return end
-  -- Hyprland natively reflows maximized/fullscreen windows during monitor moves.
   if (tonumber(window.fullscreen) or 0) ~= 0 then return end
 
   local bounds = floating_window_bounds(window.monitor)
@@ -349,18 +295,28 @@ local function fit_window_to_floating_bounds(window)
   local size = window.size
   if not bounds or not at or not size then return end
 
+  local metadata = window_geometric_max_metadata(window)
+  if metadata then
+    if tonumber(size.x) ~= bounds.width or tonumber(size.y) ~= bounds.height then
+      hl.dispatch(hl.dsp.window.resize({ x = bounds.width, y = bounds.height, window = window }))
+    end
+    local current_at = window.at or at
+    if tonumber(current_at.x) ~= bounds.left or tonumber(current_at.y) ~= bounds.top then
+      hl.dispatch(hl.dsp.window.move({ x = bounds.left, y = bounds.top, window = window }))
+    end
+    return
+  end
+
   local old_width = math.max(1, tonumber(size.x) or 1)
   local old_height = math.max(1, tonumber(size.y) or 1)
   local width = math.min(old_width, bounds.width)
   local height = math.min(old_height, bounds.height)
-
   if width ~= old_width or height ~= old_height then
     hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
     local resized = window.size or {}
     width = math.max(1, tonumber(resized.x) or width)
     height = math.max(1, tonumber(resized.y) or height)
   end
-
   local x = math.max(bounds.left, math.min(bounds.right - width, tonumber(at.x) or bounds.left))
   local y = math.max(bounds.top, math.min(bounds.bottom - height, tonumber(at.y) or bounds.top))
   local current_at = window.at or at
@@ -369,84 +325,42 @@ local function fit_window_to_floating_bounds(window)
   end
 end
 
-local function restored_geometry(window, metadata)
-  local bounds = floating_window_bounds(window and window.monitor or nil)
-  if not bounds then return nil end
-
-  local width = math.max(1, math.min(metadata.width, bounds.width))
-  local height = math.max(1, math.min(metadata.height, bounds.height))
-  local x = math.max(bounds.left, math.min(bounds.right - width, metadata.x))
-  local y = math.max(bounds.top, math.min(bounds.bottom - height, metadata.y))
-  return { x = x, y = y, width = width, height = height }
-end
-
-local function restore_monocle_window(window)
-  local metadata = window_monocle_metadata(window)
-  if not metadata then return false end
-
-  local source_workspace = find_workspace_by_selector(metadata.source)
-  local geometry = restored_geometry(window, metadata)
-  set_window_floating(window, true)
-  if geometry then
-    hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
-    hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
-  end
+local function restore_geometric_max(window)
+  local metadata = window_geometric_max_metadata(window)
+  local bounds = window and floating_window_bounds(window.monitor) or nil
+  if not metadata or not bounds then return false end
+  local geometry = geometry_clamped_to_bounds(metadata, bounds)
+  hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
+  hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
   remove_window_tag(window, metadata.raw)
-  restore_workspace_layout_if_unused(source_workspace, metadata.layout)
   return true
 end
 
-suspend_monocle_window = function(window, workspace)
-  local metadata = window_monocle_metadata(window)
-  if not metadata then return false end
-
-  set_window_floating(window, true)
-  restore_workspace_layout_if_unused(workspace, metadata.layout)
-  return true
-end
-
-local function maximize_monocle_window(window, workspace)
-  if not window or window_monocle_metadata(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
-
-  local base_layout = tagged_base_layout(workspace) or tostring(workspace.tiled_layout or "")
-  if base_layout == "" or base_layout == "unknown" then return false end
-  local tag = make_monocle_tag(window, workspace, base_layout)
-  if not tag then return false end
-
+local function maximize_geometric_window(window, workspace)
+  if not window or window_geometric_max_metadata(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
+  local bounds = floating_window_bounds(window.monitor)
+  local tag = make_geometric_max_tag(window, workspace)
+  if not bounds or not tag then return false end
   add_window_tag(window, tag)
-  apply_monocle_layout(workspace, base_layout)
-  set_window_floating(window, false)
+  hl.dispatch(hl.dsp.window.resize({ x = bounds.width, y = bounds.height, window = window }))
+  hl.dispatch(hl.dsp.window.move({ x = bounds.left, y = bounds.top, window = window }))
+  hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
   return true
 end
 
-local function clear_monocle_metadata_for_workspace(workspace)
+local function clear_geometric_max_metadata_for_workspace(workspace)
   local selector = workspace_selector(workspace)
-  local base_layout = tagged_base_layout(workspace)
   for _, window in ipairs(hl.get_windows()) do
-    local metadata = window_monocle_metadata(window)
+    local metadata = window_geometric_max_metadata(window)
     if metadata and metadata.source == selector then remove_window_tag(window, metadata.raw) end
   end
-  if base_layout then set_workspace_layout(workspace, base_layout) end
-  workspace_base_layouts[selector] = nil
 end
 
 apply_workspace_mode = function(workspace)
   if not workspace_is_regular(workspace) then return end
-
   local enabled = workspace_float_enabled(workspace)
-  if not enabled then
-    clear_monocle_metadata_for_workspace(workspace)
-    for _, window in ipairs(workspace:get_windows()) do set_window_floating(window, false) end
-    return
-  end
-
-  local selector = workspace_selector(workspace)
-  local base_layout = tagged_base_layout(workspace)
-  if base_layout then apply_monocle_layout(workspace, base_layout) end
-  for _, window in ipairs(workspace:get_windows()) do
-    local metadata = window_monocle_metadata(window)
-    set_window_floating(window, not (metadata and metadata.source == selector))
-  end
+  if not enabled then clear_geometric_max_metadata_for_workspace(workspace) end
+  for _, window in ipairs(workspace:get_windows()) do set_window_floating(window, enabled) end
 end
 
 local function fit_migrated_float_workspace(workspace)
@@ -465,7 +379,7 @@ local function mode_aware_resize(dx, dy)
   end
 
   local window = hl.get_active_window()
-  if window_monocle_metadata(window) then restore_monocle_window(window) end
+  if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   local bounds = window and floating_window_bounds(window.monitor) or nil
   local at = window and window.at or nil
   local size = window and window.size or nil
@@ -484,7 +398,7 @@ end
 
 local function snap_active_window(side)
   local window = hl.get_active_window()
-  if window_monocle_metadata(window) then restore_monocle_window(window) end
+  if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   local area = monitor_work_area(window and window.monitor or hl.get_active_monitor())
   if not window or not area then return end
 
@@ -516,9 +430,9 @@ local function mode_aware_direction(direction)
     if direction == "l" or direction == "r" then
       snap_active_window(direction == "l" and "left" or "right")
     elseif direction == "u" then
-      maximize_monocle_window(hl.get_active_window(), workspace)
+      maximize_geometric_window(hl.get_active_window(), workspace)
     else
-      restore_monocle_window(hl.get_active_window())
+      restore_geometric_max(hl.get_active_window())
     end
     return
   end
@@ -570,29 +484,20 @@ hl.on("window.open", function(window)
 end)
 
 hl.on("window.move_to_workspace", function(window, workspace)
-  local metadata = window_monocle_metadata(window)
+  local metadata = window_geometric_max_metadata(window)
   if metadata then
-    local source_workspace = find_workspace_by_selector(metadata.source)
-    if not workspace_is_regular(workspace) then
-      set_window_floating(window, true)
-      restore_workspace_layout_if_unused(source_workspace, metadata.layout)
-      return
+    local expected_special = "special:omarchy-minimized-" .. tostring(metadata.workspace_id)
+    local returning_to_source = workspace_is_regular(workspace) and workspace_selector(workspace) == metadata.source and workspace_float_enabled(workspace)
+    if not (workspace and workspace.special == true and workspace.name == expected_special) and not returning_to_source then
+      remove_window_tag(window, metadata.raw)
+      metadata = nil
     end
-    if workspace_float_enabled(workspace) and workspace_selector(workspace) == metadata.source then
-      apply_monocle_layout(workspace, metadata.layout)
-      set_window_floating(window, false)
-      return
-    end
-    remove_window_tag(window, metadata.raw)
-    restore_workspace_layout_if_unused(source_workspace, metadata.layout)
   end
-  if workspace_is_regular(workspace) then set_window_floating(window, workspace_float_enabled(workspace)) end
-end)
-
-hl.on("window.close", function(window)
-  local metadata = window_monocle_metadata(window)
-  if not metadata then return end
-  restore_workspace_layout_if_unused(find_workspace_by_selector(metadata.source), metadata.layout, window)
+  if workspace_is_regular(workspace) then
+    set_window_floating(window, workspace_float_enabled(workspace))
+  elseif metadata then
+    set_window_floating(window, true)
+  end
 end)
 
 -- Hyprland emits this only after the workspace monitor, every member window's

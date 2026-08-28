@@ -5,18 +5,17 @@ local commands = {}
 local unbound = {}
 local bind_options = {}
 local window_rules = {}
-local workspace_rules = {}
 local configs = {}
 
 local function workspace(id, name, special)
-  local value = { id = id, name = name, config_name = tostring(name), tiled_layout = "dwindle", special = special == true, windows = {} }
+  local value = { id = id, name = name, config_name = tostring(name), special = special == true, windows = {} }
   function value:get_windows() return self.windows end
   return value
 end
 
 local ws1 = workspace(1, "1", false)
 local ws2 = workspace(2, "2", false)
-local special = workspace(-99, "special:test", true)
+local special = workspace(-99, "special:omarchy-minimized-1", true)
 local w1 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1, tags = {} }
 local w2 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1, tags = {} }
 ws1.windows = { w1, w2 }
@@ -49,6 +48,7 @@ hl = {
       bring_to_top = function() return { kind = "bring_to_top", params = {} } end,
       fullscreen = function(params) return { kind = "fullscreen", params = params } end,
       fullscreen_state = function(params) return { kind = "fullscreen_state", params = params } end,
+      alter_zorder = function(params) return { kind = "alter_zorder", params = params } end,
     },
     focus = function(params) return { kind = "focus", params = params } end,
     global = function(name) return { kind = "global", name = name } end,
@@ -103,13 +103,6 @@ hl = {
   on = function(name, callback) handlers[name] = callback end,
   unbind = function(keys) table.insert(unbound, keys) end,
   window_rule = function(rule) table.insert(window_rules, rule) end,
-  workspace_rule = function(rule)
-    table.insert(workspace_rules, rule)
-    for _, candidate in ipairs({ ws1, ws2 }) do
-      if candidate.config_name == rule.workspace then candidate.tiled_layout = rule.layout end
-    end
-    return {}
-  end,
   config = function(config) table.insert(configs, config) end,
 }
 
@@ -166,7 +159,6 @@ assert(#configs == 1 and configs[1].general.float_gaps == -1,
   "native floating work areas must inherit the configured outer gaps")
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
-assert(type(handlers["window.close"]) == "function")
 assert(type(handlers["workspace.move_to_monitor"]) == "function")
 assert(handlers["monitor.removed"] == nil,
   "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
@@ -299,29 +291,39 @@ binds["SUPER + RIGHT"]()
 assert(w1.position.x == 512 and w1.position.y == 62, "right snap must preserve the tiling inner gap")
 assert(w1.size.x == 466 and w1.size.y == 406, "right snap must fill the other gapped half")
 
-local w1_restore = { x = w1.at.x, y = w1.at.y, width = w1.size.x, height = w1.size.y }
-local before_monocle = #dispatched
-binds["SUPER + UP"]()
-assert(ws1.tiled_layout == "monocle" and not w1.floating,
-  "Float Super+Up must route the window into the native Monocle tiled subset")
-assert(#workspace_rules == 1 and workspace_rules[1].workspace == ws1.config_name and workspace_rules[1].layout == "monocle",
-  "the active workspace must receive an exact dynamic Monocle rule")
-local w1_monocle_tag
-for _, tag in ipairs(w1.tags) do if tag:match("^float%-panel%-monocle%-v1%-") then w1_monocle_tag = tag end end
-assert(w1_monocle_tag and w1_monocle_tag:find("p" .. tostring(w1_restore.width), 1, true),
-  "the max tag must durably encode exact restore geometry")
-for index = before_monocle + 1, #dispatched do
-  assert(dispatched[index].kind ~= "fullscreen", "Float Super+Up must not use native fullscreen/maximize owner state")
+local function geometric_tag(window)
+  for _, tag in ipairs(window.tags) do
+    if tag:match("^float%-panel%-geometric%-max%-v1%-") then return tag end
+  end
 end
 
--- A config reload recreates the module's Lua state. Live-window metadata must
--- reconstruct Monocle membership instead of blanket-floating the tagged member.
-dofile("hypr/float-panel.lua")
-assert(not w1.floating and w2.floating and ws1.tiled_layout == "monocle",
-  "reload must exempt tagged Monocle members from Float workspace reapplication")
+local w1_restore = { x = w1.at.x, y = w1.at.y, width = w1.size.x, height = w1.size.y }
+local before_max = #dispatched
+binds["SUPER + UP"]()
+assert(w1.floating and w1.fullscreen == 0, "geometry-maximized windows must remain non-fullscreen floats")
+assert(w1.at.x == 32 and w1.at.y == 62 and w1.size.x == 946 and w1.size.y == 406,
+  "Float Super+Up must fill the active window monitor's floating work area")
+assert(geometric_tag(w1) == "float-panel-geometric-max-v1-p512-p62-p466-p406-p1-31",
+  "Float Super+Up must save exact restore geometry and source identity in one versioned tag")
+assert(#dispatched == before_max + 4 and dispatched[before_max + 1].kind == "tag" and
+  dispatched[before_max + 2].kind == "resize" and dispatched[before_max + 3].kind == "move" and
+  dispatched[before_max + 4].kind == "alter_zorder",
+  "geometry maximize must tag, resize, move, and raise synchronously")
+local before_repeat = #dispatched
+binds["SUPER + UP"]()
+assert(#dispatched == before_repeat, "repeated Super+Up on a tagged window must be idempotent")
 
-w1.at = { x = 12, y = 12 }
-w1.size = { x = 976, y = 456 }
+local tag_before_reload = geometric_tag(w1)
+local before_reload = #dispatched
+dofile("hypr/float-panel.lua")
+assert(w1.floating and geometric_tag(w1) == tag_before_reload and w1.at.x == 32 and w1.size.x == 946,
+  "reload must preserve a tagged geometry-maximized floating window")
+for index = before_reload + 1, #dispatched do
+  local action = dispatched[index]
+  assert(not ((action.kind == "resize" or action.kind == "move") and action.params.window == w1),
+    "reload must not perturb an already exact max geometry")
+end
+
 w2.at = { x = 150, y = 120 }
 w2.size = { x = 360, y = 240 }
 w2.monitor = own_monitor
@@ -329,27 +331,69 @@ w2.floating = true
 active_window = w2
 local w2_restore = { x = w2.at.x, y = w2.at.y, width = w2.size.x, height = w2.size.y }
 binds["SUPER + UP"]()
-assert(not w1.floating and not w2.floating and ws1.tiled_layout == "monocle",
-  "multiple tagged windows must coexist in the same Monocle subset")
+local ordinary_float = {
+  workspace = ws1, floating = true, mapped = true, fullscreen = 0, monitor = own_monitor,
+  at = { x = 250, y = 180 }, size = { x = 200, y = 120 }, tags = {},
+}
+ws1.windows = { w1, w2, ordinary_float }
+assert(w1.floating and w2.floating and ordinary_float.floating and geometric_tag(w1) and geometric_tag(w2),
+  "multiple geometry-maximized windows and ordinary workspace windows must all remain floating")
+assert(w1.size.x == 946 and w2.size.x == 946, "independent max peers must keep the same full work-area geometry")
+
+local before_minimize = #dispatched
+binds["SUPER + M"]()
+assert(dispatched[#dispatched].kind == "move" and geometric_tag(w2), "minimize must retain geometry-max metadata")
+handlers["window.move_to_workspace"](w2, special)
+assert(w2.floating and geometric_tag(w2), "the source minimized special workspace must retain max metadata")
+handlers["window.move_to_workspace"](w2, ws1)
+assert(w2.floating and geometric_tag(w2), "restoring to the source Float workspace must retain max metadata")
 
 active_window = w1
 binds["SUPER + DOWN"]()
-assert(w1.floating and w1.at.x == w1_restore.x and w1.at.y == w1_restore.y and
+assert(w1.floating and not geometric_tag(w1) and w1.at.x == w1_restore.x and w1.at.y == w1_restore.y and
   w1.size.x == w1_restore.width and w1.size.y == w1_restore.height,
-  "Float Super+Down must restore the selected member's exact geometry")
-assert(ws1.tiled_layout == "monocle" and not w2.floating,
-  "restoring one member must leave Monocle active for remaining members")
+  "Float Super+Down must restore only the selected window's exact geometry")
+assert(geometric_tag(w2) and w2.size.x == 946, "restoring one max peer must not alter another")
+binds["SUPER + UP"]()
+assert(geometric_tag(w1), "a restored float must be independently maximizable again")
+
+w1.monitor = migrated_monitor
+w2.monitor = migrated_monitor
+ws1.windows = { w1, w2 }
+local before_max_migration = #dispatched
+handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
+assert(#dispatched == before_max_migration + 4, "migration must resize then move each tagged max peer")
+assert(w1.floating and w2.floating and w1.at.x == -1578 and w1.at.y == 242 and w1.size.x == 1146 and w1.size.y == 696,
+  "migration must refill the first tagged max against the new work area")
+assert(w2.at.x == -1578 and w2.at.y == 242 and w2.size.x == 1146 and w2.size.y == 696,
+  "migration must refill every tagged max peer")
+
+active_window = w1
+binds["SUPER + DOWN"]()
+assert(not geometric_tag(w1) and geometric_tag(w2), "post-migration restore must remain per-window")
 active_window = w2
 binds["SUPER + DOWN"]()
-assert(w2.floating and w2.at.x == w2_restore.x and w2.at.y == w2_restore.y and
-  w2.size.x == w2_restore.width and w2.size.y == w2_restore.height,
-  "each Monocle member must carry independent restore geometry")
-assert(ws1.tiled_layout == "dwindle" and workspace_rules[#workspace_rules].layout == "dwindle",
-  "restoring the final member must restore the workspace's captured tiled layout")
-local last = dispatched[#dispatched]
-for _, window in ipairs({ w1, w2 }) do
-  for _, tag in ipairs(window.tags) do assert(not tag:match("^float%-panel%-monocle%-v1%-"), "restore must remove max metadata") end
-end
+assert(not geometric_tag(w2), "restoring the second peer must clear only its own tag")
+
+w1.monitor = own_monitor
+w2.monitor = own_monitor
+ws1.windows = { w1, w2 }
+w1.at = { x = 100, y = 100 }
+w1.size = { x = 300, y = 200 }
+w1.floating = true
+active_window = w1
+binds["SUPER + UP"]()
+handlers["window.move_to_workspace"](w1, ws2)
+assert(not geometric_tag(w1) and not w1.floating, "moving a tagged max to another regular Tiling workspace must clear metadata")
+w1.workspace = ws1
+w1.floating = true
+binds["SUPER + UP"]()
+binds["SUPER + SHIFT + T"]()
+assert(not geometric_tag(w1) and not w1.floating and not w2.floating,
+  "switching the source workspace to Tiling must clear max metadata and tile its windows")
+binds["SUPER + SHIFT + T"]()
+assert(w1.floating and w2.floating, "the Float workspace must remain usable after deterministic tag cleanup")
+
 binds["SUPER + F"]()
 last = dispatched[#dispatched]
 assert(last.kind == "fullscreen_state" and last.params.internal == 2 and last.params.client == 0 and last.params.action == "toggle",

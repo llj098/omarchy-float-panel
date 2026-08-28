@@ -133,12 +133,11 @@ for required in (
     'hl.config({ general = { float_gaps = -1 } })',
     'hl.dsp.window.fullscreen({',
     'hl.dsp.window.fullscreen_state({',
-    'monocle_tag_prefix = "float-panel-monocle-v1-"',
-    'hl.workspace_rule({ workspace = workspace_selector(workspace), layout = layout })',
-    'set_workspace_layout(workspace, "monocle")',
-    'workspace.tiled_layout',
-    'make_monocle_tag(window, workspace, base_layout)',
-    'set_window_floating(window, not (metadata and metadata.source == selector))',
+    'geometric_max_tag_prefix = "float-panel-geometric-max-v1-"',
+    'make_geometric_max_tag(window, workspace)',
+    'window_geometric_max_metadata(window)',
+    'hl.dsp.window.alter_zorder({ mode = "top", window = window })',
+    'clear_geometric_max_metadata_for_workspace(workspace)',
     "internal = 2",
     "client = 0",
     'action = "toggle"',
@@ -162,6 +161,7 @@ assert "Qt.callLater(function() { root.dispatchActivation" not in switcher
 assert lua.count('hl.on("workspace.move_to_monitor"') == 1
 assert 'hl.on("monitor.removed"' not in lua
 assert 'mode = "maximized"' not in lua, "Float maximize must not use Hyprland's single fullscreen owner"
+assert "monocle" not in lua.lower() and "workspace_rule" not in lua, "geometry maximize must not change tiled layouts"
 assert "hl.dsp.window.cycle_next" not in lua and "hl.dsp.window.bring_to_top" not in lua, "Super+Tab must remain workspace navigation in every mode"
 for forbidden in ("callLater", "Timer", "poll", "mouse_button"):
     assert forbidden not in lua, f"migration repair must not use delayed/blanket workaround: {forbidden}"
