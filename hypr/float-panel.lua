@@ -455,7 +455,9 @@ local function mode_aware_fullscreen()
 end
 
 local function workspace_super_tab(next_workspace)
-  hl.dispatch(hl.dsp.focus({ workspace = next_workspace and "e+1" or "e-1" }))
+  -- m±1 wraps the existing regular workspaces on the compositor's focused
+  -- monitor, excluding special workspaces without creating missing IDs.
+  hl.dispatch(hl.dsp.focus({ workspace = next_workspace and "m+1" or "m-1" }))
 end
 
 load_float_workspaces()
@@ -506,10 +508,12 @@ hl.on("workspace.move_to_monitor", function(workspace, _monitor)
   defensively_fit_float_workspace(workspace)
 end)
 
--- Supplied by patches/hyprland-0.56.2-work-area-event.patch after the
--- workspace's native algorithms have recalculated against the new work area.
-hl.on("workspace.work_area_changed", function(workspace)
-  defensively_fit_float_workspace(workspace)
+-- Hyprland emits this after monitor layout changes. It carries no monitor, so
+-- inspect every plugin-enabled regular Float workspace defensively.
+hl.on("monitor.layout_changed", function()
+  for _, workspace in ipairs(hl.get_workspaces()) do
+    defensively_fit_float_workspace(workspace)
+  end
 end)
 
 local resize_bindings = {

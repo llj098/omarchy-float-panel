@@ -15,6 +15,7 @@ end
 
 local ws1 = workspace(1, "1", false)
 local ws2 = workspace(2, "2", false)
+local ws3 = workspace(3, "3", false)
 local special = workspace(-99, "special:omarchy-minimized-1", true)
 local w1 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1, tags = {} }
 local w2 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, pid = 1, tags = {} }
@@ -92,7 +93,7 @@ hl = {
   get_active_window = function() return active_window end,
   get_windows = function() return { w1, w2 } end,
   get_active_monitor = function() return active_monitor end,
-  get_workspaces = function() return { ws1, ws2, special } end,
+  get_workspaces = function() return { ws1, ws2, ws3, special } end,
   get_config = function(name)
     if name == "general.gaps_out" then return { top = 10, right = 10, bottom = 10, left = 10 } end
     if name == "general.float_gaps" then return -1 end
@@ -160,7 +161,8 @@ assert(#configs == 1 and configs[1].general.float_gaps == -1,
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
 assert(type(handlers["workspace.move_to_monitor"]) == "function")
-assert(type(handlers["workspace.work_area_changed"]) == "function")
+assert(type(handlers["monitor.layout_changed"]) == "function")
+assert(handlers["workspace.work_area_changed"] == nil)
 assert(handlers["monitor.removed"] == nil,
   "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
 assert(#window_rules == 1, "the WeChat size override must be registered once")
@@ -172,6 +174,9 @@ assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")
 assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must notify its mode")
+active_workspace = ws3
+binds["SUPER + SHIFT + T"]()
+active_workspace = ws1
 
 local migrated_monitor = {
   x = -1600,
@@ -213,10 +218,25 @@ local fullscreen = {
   at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
 }
 ws1.windows = { w1, w2, inside, unmapped, hidden, tiled, maximized, fullscreen }
+local other_float = {
+  workspace = ws3, floating = true, mapped = true, fullscreen = 0, monitor = migrated_monitor,
+  at = { x = 4000, y = 300 }, size = { x = 100, y = 100 },
+}
+local tiling_candidate = {
+  workspace = ws2, floating = true, mapped = true, fullscreen = 0, monitor = migrated_monitor,
+  at = { x = 4000, y = 300 }, size = { x = 100, y = 100 },
+}
+local special_candidate = {
+  workspace = special, floating = true, mapped = true, fullscreen = 0, monitor = migrated_monitor,
+  at = { x = 4000, y = 300 }, size = { x = 100, y = 100 },
+}
+ws3.windows = { other_float }
+ws2.windows = { tiling_candidate }
+special.windows = { special_candidate }
 local before_migration = #dispatched
-handlers["workspace.work_area_changed"](ws1)
-assert(#dispatched == before_migration + 3,
-  "a recalculated Float work area must inspect every mapped ordinary float and change only windows needing fitting")
+handlers["monitor.layout_changed"]()
+assert(#dispatched == before_migration + 4,
+  "monitor layout changes must scan every Float workspace and change only windows needing fitting")
 local migrated_resize = dispatched[before_migration + 1]
 local migrated_oversize_move = dispatched[before_migration + 2]
 local migrated_offscreen_move = dispatched[before_migration + 3]
@@ -232,18 +252,20 @@ assert(migrated_offscreen_move.params.x == -1578 and migrated_offscreen_move.par
   "offscreen migration repair must account for reserved bottom space, gaps, and borders")
 assert(w2.size.x == 400 and w2.size.y == 200,
   "a migrated window that already fits must preserve both dimensions")
+assert(dispatched[before_migration + 4].params.window == other_float and other_float.at.x == -532,
+  "the payload-free monitor event must scan another enabled Float workspace")
 assert(inside.at.x == -1000 and inside.at.y == 300,
   "an already-fitting on-screen migrated window must not move")
 assert(unmapped.at.x == 4000 and hidden.at.x == 4000 and tiled.at.x == 4000 and maximized.at.x == 4000 and fullscreen.at.x == 4000,
   "unmapped, hidden, tiled, maximized, and fullscreen windows must be left to native behavior")
+assert(tiling_candidate.at.x == 4000 and special_candidate.at.x == 4000,
+  "the monitor event must skip Tiling and special workspaces")
 local before_idempotent_fit = #dispatched
-handlers["workspace.work_area_changed"](ws1)
+handlers["monitor.layout_changed"]()
 handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
 assert(#dispatched == before_idempotent_fit,
-  "repeated work-area and migration routes must be geometrically idempotent through their common fitter")
+  "repeated layout and migration routes must be geometrically idempotent through their common fitter")
 local before_wrong_routes = #dispatched
-handlers["workspace.work_area_changed"](ws2)
-handlers["workspace.work_area_changed"](special)
 handlers["workspace.move_to_monitor"](ws2, migrated_monitor)
 handlers["workspace.move_to_monitor"](special, migrated_monitor)
 assert(#dispatched == before_wrong_routes, "tiling and special workspaces must not route defensive fitting")
@@ -369,8 +391,8 @@ w1.monitor = migrated_monitor
 w2.monitor = migrated_monitor
 ws1.windows = { w1, w2 }
 local before_max_migration = #dispatched
-handlers["workspace.work_area_changed"](ws1)
-assert(#dispatched == before_max_migration + 4, "work-area recalculation must resize then move each tagged max peer")
+handlers["monitor.layout_changed"]()
+assert(#dispatched == before_max_migration + 4, "monitor layout changes must resize then move each tagged max peer")
 assert(w1.floating and w2.floating and w1.at.x == -1578 and w1.at.y == 242 and w1.size.x == 1146 and w1.size.y == 696,
   "migration must refill the first tagged max against the new work area")
 assert(w2.at.x == -1578 and w2.at.y == 242 and w2.size.x == 1146 and w2.size.y == 696,
@@ -407,12 +429,23 @@ last = dispatched[#dispatched]
 assert(last.kind == "fullscreen_state" and last.params.internal == 2 and last.params.client == 0 and last.params.action == "toggle",
   "floating fullscreen must toggle compositor-only fullscreen")
 
+active_workspace = ws2
+active_window = { workspace = ws2 }
 binds["SUPER + TAB"]()
-assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e+1",
-  "Super+Tab on a floating workspace must use Omarchy's next-workspace action")
+assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "m+1",
+  "Super+Tab must route workspace 2 to the next existing regular workspace 3")
+active_workspace = ws3
+active_window = { workspace = ws3 }
+binds["SUPER + TAB"]()
+assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "m+1",
+  "Super+Tab must use Hyprland's same-monitor wrap from workspace 3 back to 2")
+active_workspace = ws2
+active_window = { workspace = ws2 }
 binds["SUPER + SHIFT + TAB"]()
-assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e-1",
-  "Super+Shift+Tab on a floating workspace must use Omarchy's previous-workspace action")
+assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "m-1",
+  "reverse navigation must wrap from workspace 2 back to 3 without selecting the special workspace")
+active_workspace = ws1
+active_window = w1
 
 local opened = { workspace = ws1, floating = false, pid = 1, tags = {} }
 handlers["window.open"](opened)
@@ -449,11 +482,11 @@ assert(last.kind == "fullscreen" and last.params.mode == "fullscreen" and last.p
   "tiling Super+F must preserve Omarchy's synchronized fullscreen toggle")
 local before_workspace_switch = #dispatched
 binds["SUPER + TAB"]()
-assert(#dispatched == before_workspace_switch + 1 and dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e+1",
-  "Super+Tab on a tiling workspace must keep Omarchy's next-workspace action")
+assert(#dispatched == before_workspace_switch + 1 and dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "m+1",
+  "Super+Tab on a tiling workspace must keep wrapped same-monitor workspace navigation")
 binds["SUPER + SHIFT + TAB"]()
-assert(#dispatched == before_workspace_switch + 2 and dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e-1",
-  "Super+Shift+Tab on a tiling workspace must keep Omarchy's previous-workspace action")
+assert(#dispatched == before_workspace_switch + 2 and dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "m-1",
+  "Super+Shift+Tab on a tiling workspace must keep reverse wrapped navigation")
 binds["SUPER + SHIFT + T"]()
 assert(opened.floating, "each workspace must toggle independently")
 
@@ -471,6 +504,6 @@ assert(not opened.floating, "toggle off must tile every current window")
 local state_file = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-workspaces", "r"))
 local persisted = state_file:read("*a")
 state_file:close()
-assert(persisted == "1\n", "workspace modes must be persisted independently and atomically")
+assert(persisted == "1\n3\n", "workspace modes must be persisted independently and atomically")
 
 print("LUA_TESTS_OK")
