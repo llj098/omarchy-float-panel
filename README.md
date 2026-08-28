@@ -34,6 +34,7 @@ test ! -e ~/.config/omarchy/plugins/fatlj.float-panel
 ln -s "$PWD" ~/.config/omarchy/plugins/fatlj.float-panel
 omarchy plugin validate ~/.config/omarchy/plugins/fatlj.float-panel
 omarchy-shell shell rescanPlugins
+sleep 2 # rescan is asynchronous
 omarchy plugin enable fatlj.float-panel
 omarchy bar move fatlj.float-panel --section left --after omarchy.workspaces
 ```
