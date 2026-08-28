@@ -73,6 +73,12 @@ Deleting that file resets the remembered modes at the next Hyprland config reloa
 
 In a floating workspace, `Super+Left` and `Super+Right` snap the active window to the left or right half of the current monitor. Geometry is calculated from the monitor's scale, reserved bar area, live `gaps_out`/`gaps_in`, and border size, so snapped windows retain the same outer and middle margins as tiling and work with the bar on any edge. In a tiling workspace the same keys continue to focus the neighboring window.
 
+For native edge/corner resizing without holding `Super`, enable Hyprland's supported border-resize path. The default 15-pixel extended grab area and resize cursor then apply; `Super+Right-drag` remains available.
+
+```lua
+hl.config({ general = { resize_on_border = true } })
+```
+
 ## Minimize and restore
 
 For a source workspace with internal ID `N`, `Super+M` moves the active window to:
