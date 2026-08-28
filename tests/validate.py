@@ -70,16 +70,19 @@ for required in (
     assert required in switcher, f"AppSwitcher.qml missing required contract: {required}"
 
 activation = switcher[switcher.index("  function dispatchActivation("):switcher.index("  function commit()")]
-fullscreen_guard = "if (fullscreen === 1 || fullscreen === 2)"
+live_target = "local selected = hl.get_window("
+fullscreen_guard = "selected and tonumber(selected.fullscreen) ~= 0"
 lower = 'hl.dsp.window.alter_zorder({ mode = \\"bottom\\", window = window })'
 focus = 'hl.dsp.focus({ window = '
 raise_top = 'hl.dsp.window.alter_zorder({ mode = \\"top\\", window = '
+assert live_target in activation
 assert fullscreen_guard in activation
+assert "window.workspace == workspace" in activation
 assert "window.allowed_over_fullscreen" in activation
-assert activation.index(fullscreen_guard) < activation.index(lower) < activation.index(focus) < activation.index(raise_top)
+assert activation.index(live_target) < activation.index(fullscreen_guard) < activation.index(lower) < activation.index(focus) < activation.index(raise_top)
 assert activation.count(lower) == 1, "fullscreen cleanup must remain conditional and normal activation unchanged"
-assert "var fullscreen = Number(ipc.fullscreen)" in switcher
-assert "dispatchActivation(target, workspaceName === minimizedName, destination, fullscreen, sourceName)" in switcher
+assert "Number(ipc.fullscreen)" not in switcher, "mutable fullscreen state must not come from stale lastIpcObject"
+assert "dispatchActivation(target, workspaceName === minimizedName, destination)" in switcher
 
 lua = (ROOT / "hypr" / "float-panel.lua").read_text()
 for required in (
