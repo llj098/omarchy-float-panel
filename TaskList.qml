@@ -69,7 +69,7 @@ BarWidget {
 
     function describeToplevel(toplevel) {
         var ipc = toplevel ? toplevel.lastIpcObject : null;
-        if (!ipc || ipc.mapped === false)
+        if (!ipc || ipc.mapped === false || TaskListModel.hasEmbeddedNul(ipc.class) || TaskListModel.hasEmbeddedNul(ipc.initialClass))
             return {
             "ignored": true
         };

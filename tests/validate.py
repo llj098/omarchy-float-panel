@@ -25,6 +25,7 @@ for required in (
     "hl.dsp.window.alter_zorder",
     "hl.dsp.focus",
     "TaskListModel.actionForGroup",
+    "TaskListModel.hasEmbeddedNul(ipc.class)",
     '"ignored": true',
 ):
     assert required in qml, f"TaskList.qml missing required contract: {required}"
@@ -39,6 +40,8 @@ for required in (
     "hl.get_active_monitor()",
     'config_gap("general.gaps_out")',
     "hl.dsp.window.resize",
+    'name = "float-panel-wechat-min-size"',
+    "min_size = { 1, 1 }",
     "special:omarchy-minimized-",
 ):
     assert required in lua, f"float-panel.lua missing required contract: {required}"

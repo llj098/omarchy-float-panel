@@ -5,6 +5,15 @@ local home = os.getenv("HOME") or ""
 local state_path = home .. "/.local/state/omarchy/float-panel-workspaces"
 local float_workspaces = {}
 
+-- WeChat's XWayland WM_NORMAL_HINTS block interactive shrinking on fractional-scale
+-- monitors even though the client accepts smaller configure sizes. Override only the
+-- compositor's minimum; the application remains free to lay out its own contents.
+hl.window_rule({
+  name = "float-panel-wechat-min-size",
+  match = { class = "^wechat$", xwayland = true },
+  min_size = { 1, 1 },
+})
+
 local function workspace_is_regular(workspace)
   return workspace ~= nil and workspace.special ~= true
 end

@@ -79,6 +79,8 @@ For native edge/corner resizing without holding `Super`, enable Hyprland's suppo
 hl.config({ general = { resize_on_border = true } })
 ```
 
+The Lua integration also registers a native, XWayland-only `min_size = { 1, 1 }` rule for class `wechat`. WeChat advertises a `1165×1040` X11 minimum that blocks interactive edge resizing on the fractional-scale target, while direct compositor tests show that the client accepts and correctly renders smaller configure sizes. The rule overrides only Hyprland's interactive minimum; it does not force a startup size.
+
 ## Minimize and restore
 
 For a source workspace with internal ID `N`, `Super+M` moves the active window to:
@@ -109,7 +111,7 @@ Desktop icons use an exact desktop-entry lookup, then `DesktopEntries.heuristicL
 
 When an app has multiple windows, the representative prefers an active visible window, then any visible window, then a minimized window. Clicking an active group hides only its active representative, not every window owned by the app. Clicking never cycles windows.
 
-The model admits only toplevels backed by a mapped Hyprland IPC client. Input-method candidates, tooltips, and other protocol-only transient surfaces are ignored structurally rather than through application-name blacklists.
+The model admits only toplevels backed by a mapped Hyprland IPC client and rejects malformed application identities containing embedded NUL bytes. On the target system, Fcitx's X11 combo/input surface is reported by Hyprland as `fcitx\0fcit`, so it is excluded without matching its title or executable name. Protocol-only transient surfaces remain excluded because they have no mapped IPC client.
 
 Hyprland's focus dispatcher normally warps the pointer. To keep the pointer stationary and make focus click-driven, add native overrides to the user config:
 

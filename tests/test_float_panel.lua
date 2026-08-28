@@ -3,6 +3,7 @@ local handlers = {}
 local dispatched = {}
 local commands = {}
 local unbound = {}
+local window_rules = {}
 
 local function workspace(id, name, special)
   local value = { id = id, name = name, special = special == true, windows = {} }
@@ -63,6 +64,7 @@ hl = {
   end,
   on = function(name, callback) handlers[name] = callback end,
   unbind = function(keys) table.insert(unbound, keys) end,
+  window_rule = function(rule) table.insert(window_rules, rule) end,
 }
 
 o = {
@@ -79,6 +81,9 @@ assert(type(binds["SUPER + M"]) == "function")
 assert(unbound[1] == "SUPER + LEFT" and unbound[2] == "SUPER + RIGHT")
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
+assert(#window_rules == 1, "the WeChat size override must be registered once")
+assert(window_rules[1].match.class == "^wechat$" and window_rules[1].match.xwayland == true)
+assert(window_rules[1].min_size[1] == 1 and window_rules[1].min_size[2] == 1)
 
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")

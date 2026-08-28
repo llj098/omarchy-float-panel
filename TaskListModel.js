@@ -2,6 +2,10 @@ function stringValue(value) {
   return value === undefined || value === null ? "" : String(value)
 }
 
+function hasEmbeddedNul(value) {
+  return stringValue(value).indexOf("\u0000") !== -1
+}
+
 function normalizeAppId(value) {
   var normalized = stringValue(value).trim().toLowerCase()
   if (normalized.slice(-8) === ".desktop")
@@ -17,7 +21,8 @@ function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
     if (!toplevel) return
 
     var description = describe(toplevel) || {}
-    if (description.ignored === true) return
+    if (description.ignored === true || hasEmbeddedNul(description.appId) || hasEmbeddedNul(description.key))
+      return
 
     var key = normalizeAppId(description.key || description.appId)
     if (!key)

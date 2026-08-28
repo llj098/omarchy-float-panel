@@ -79,6 +79,16 @@ function descriptor(values) {
   assert.equal(groups[0].key, "org.example.app")
 }
 
+{
+  const groups = context.groupToplevels([top("app"), top("candidate")], [], descriptor({
+    app: { appId: "wechat", name: "WeChat" },
+    candidate: { appId: "fcitx\u0000fcit", key: "fcitx\u0000fcit", name: "Input Window" }
+  }))
+
+  assert.equal(groups.length, 1, "malformed X11 combo-surface identities must be ignored")
+  assert.equal(groups[0].key, "wechat")
+}
+
 assert.equal(context.actionForGroup(null), "")
 assert.equal(context.actionForGroup({ representative: { minimized: false }, active: true }), "hide")
 assert.equal(context.actionForGroup({ representative: { minimized: false }, active: false }), "focus")
