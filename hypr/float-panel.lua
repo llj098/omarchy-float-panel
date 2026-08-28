@@ -340,7 +340,11 @@ end
 
 local function update_side_intent(window, workspace, side, geometry)
   local old = window_side_intent(window)
-  local tag = make_side_intent_tag(window, workspace, side, geometry)
+  local at, size = window and window.at or nil, window and window.size or nil
+  local observed = at and size and {
+    x = tonumber(at.x), y = tonumber(at.y), width = tonumber(size.x), height = tonumber(size.y),
+  } or geometry
+  local tag = make_side_intent_tag(window, workspace, side, observed)
   if not tag or (old and old.raw == tag) then return end
   if old then remove_window_tag(window, old.raw) end
   add_window_tag(window, tag)
@@ -466,6 +470,24 @@ apply_workspace_mode = function(workspace)
   for _, window in ipairs(workspace:get_windows()) do set_window_floating(window, enabled) end
 end
 
+local function adopt_existing_side_intent(window, workspace)
+  if not window or window_side_intent(window) or window_geometric_max_metadata(window) then return end
+  if window.mapped ~= true or window.hidden == true or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return end
+  local at, size = window.at, window.size
+  if not at or not size then return end
+  for _, side in ipairs({ "left", "right" }) do
+    local expected = side_geometry(side, window.monitor)
+    -- Some clients quantize configure sizes; only a 2px increment delta is
+    -- accepted so unrelated near-half/free windows are never adopted.
+    if expected and tonumber(at.x) == expected.x and tonumber(at.y) == expected.y and
+        math.abs((tonumber(size.x) or 0) - expected.width) <= 2 and
+        math.abs((tonumber(size.y) or 0) - expected.height) <= 2 then
+      update_side_intent(window, workspace, side, expected)
+      return
+    end
+  end
+end
+
 local function defensively_fit_float_workspace(workspace)
   if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
 
@@ -563,6 +585,7 @@ end
 for _, workspace in ipairs(hl.get_workspaces()) do
   if workspace_float_enabled(workspace) then
     apply_workspace_mode(workspace)
+    for _, window in ipairs(workspace:get_windows()) do adopt_existing_side_intent(window, workspace) end
     defensively_fit_float_workspace(workspace)
   end
 end

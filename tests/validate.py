@@ -140,6 +140,8 @@ for required in (
     'window_side_intent(window)',
     'side_geometry(side.side, window.monitor)',
     'update_side_intent(window, workspace, side, geometry)',
+    'local observed = at and size and {',
+    'adopt_existing_side_intent(window, workspace)',
     'make_geometric_max_tag(window, workspace)',
     'window_geometric_max_metadata(window)',
     'hl.dsp.window.alter_zorder({ mode = "top", window = window })',

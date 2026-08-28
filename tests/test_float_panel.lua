@@ -6,6 +6,7 @@ local unbound = {}
 local bind_options = {}
 local window_rules = {}
 local configs = {}
+local resize_adjustment = nil
 
 local function workspace(id, name, special)
   local value = { id = id, name = name, config_name = tostring(name), special = special == true, windows = {} }
@@ -73,7 +74,10 @@ hl = {
           y = window.at.y - (action.params.y - old_size.y) / 2,
         }
       end
-      window.size = { x = action.params.x, y = action.params.y }
+      window.size = {
+        x = action.params.x + (resize_adjustment and resize_adjustment.x or 0),
+        y = action.params.y + (resize_adjustment and resize_adjustment.y or 0),
+      }
     elseif action.kind == "tag" then
       local window, tag = action.params.window, action.params.tag
       if tag:sub(1, 1) == "+" then
@@ -174,6 +178,33 @@ assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")
 assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must notify its mode")
+
+local function side_tag(window)
+  for _, tag in ipairs(window.tags) do
+    if tag:match("^float%-panel%-side%-v1%-") then return tag end
+  end
+end
+
+-- Startup-only adoption covers plugin-style halves that predate side tags.
+w1.at, w1.size = { x = 32, y = 62 }, { x = 466, y = 406 }
+w2.at, w2.size, w2.monitor = { x = 512, y = 62 }, { x = 464, y = 405 }, own_monitor
+local malformed_half = {
+  workspace = ws1, floating = true, mapped = true, fullscreen = 0, monitor = own_monitor,
+  at = { x = 32, y = 62 }, size = { x = 466, y = 400 }, tags = {},
+}
+ws1.windows = { w1, w2, malformed_half }
+dofile("hypr/float-panel.lua")
+assert(side_tag(w1):match("%-l%-") and side_tag(w2):match("%-r%-"),
+  "reload must adopt exact pre-existing left/right halves, including <=2px client increments")
+assert(not side_tag(malformed_half) and malformed_half.size.y == 400,
+  "short malformed/free windows must not be adopted or enlarged")
+for _, window in ipairs({ w1, w2 }) do
+  for index = #window.tags, 1, -1 do
+    if window.tags[index]:match("^float%-panel%-side%-v1%-") then table.remove(window.tags, index) end
+  end
+end
+ws1.windows = { w1, w2 }
+
 active_workspace = ws3
 binds["SUPER + SHIFT + T"]()
 active_workspace = ws1
@@ -314,11 +345,14 @@ binds["SUPER + CTRL + SHIFT + code:21"]()
 assert(w1.at.y == 62 and w1.size.y == 406, "large vertical growth must clamp to the usable work area")
 active_monitor = own_monitor
 
-local function side_tag(window)
-  for _, tag in ipairs(window.tags) do
-    if tag:match("^float%-panel%-side%-v1%-") then return tag end
-  end
-end
+resize_adjustment = { x = -2, y = -1 }
+binds["SUPER + LEFT"]()
+assert(w1.size.x == 464 and w1.size.y == 405 and side_tag(w1):find("p464%-p405"),
+  "snap tags must record live client-adjusted geometry rather than the request")
+handlers["monitor.layout_changed"]()
+assert(side_tag(w1) and w1.size.x == 464 and w1.size.y == 405,
+  "observed increment-adjusted geometry must survive the next reflow")
+resize_adjustment = nil
 
 binds["SUPER + LEFT"]()
 assert(w1.position.x == 32 and w1.position.y == 62, "left snap must preserve tiling outer gaps and borders")
