@@ -5,6 +5,7 @@ local commands = {}
 local unbound = {}
 local bind_options = {}
 local window_rules = {}
+local configs = {}
 
 local function workspace(id, name, special)
   local value = { id = id, name = name, special = special == true, windows = {} }
@@ -31,6 +32,8 @@ hl = {
       tag = function(params) return { kind = "tag", params = params } end,
       cycle_next = function(params) return { kind = "cycle_next", params = params } end,
       bring_to_top = function() return { kind = "bring_to_top", params = {} } end,
+      fullscreen = function(params) return { kind = "fullscreen", params = params } end,
+      fullscreen_state = function(params) return { kind = "fullscreen_state", params = params } end,
     },
     focus = function(params) return { kind = "focus", params = params } end,
     global = function(name) return { kind = "global", name = name } end,
@@ -73,6 +76,7 @@ hl = {
   on = function(name, callback) handlers[name] = callback end,
   unbind = function(keys) table.insert(unbound, keys) end,
   window_rule = function(rule) table.insert(window_rules, rule) end,
+  config = function(config) table.insert(configs, config) end,
 }
 
 o = {
@@ -87,6 +91,9 @@ dofile("hypr/float-panel.lua")
 
 assert(type(binds["SUPER + LEFT"]) == "function")
 assert(type(binds["SUPER + RIGHT"]) == "function")
+assert(type(binds["SUPER + UP"]) == "function")
+assert(type(binds["SUPER + DOWN"]) == "function")
+assert(type(binds["SUPER + F"]) == "function")
 assert(type(binds["SUPER + SHIFT + T"]) == "function")
 assert(type(binds["SUPER + M"]) == "function")
 assert(type(binds["SUPER + TAB"]) == "function")
@@ -98,6 +105,9 @@ assert(bind_options["ALT + ALT_L"].release == true and bind_options["ALT + ALT_R
 assert(bind_options["ALT + ALT_L"].transparent == true and bind_options["ALT + ALT_R"].transparent == true,
   "Alt release binds must survive shadowing by the intervening Alt+Tab chord")
 assert(unbound[1] == "SUPER + LEFT" and unbound[2] == "SUPER + RIGHT")
+assert(unbound[3] == "SUPER + UP" and unbound[4] == "SUPER + DOWN" and unbound[5] == "SUPER + F")
+assert(#configs == 1 and configs[1].general.float_gaps == -1,
+  "native floating work areas must inherit the configured outer gaps")
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
 assert(#window_rules == 1, "the WeChat size override must be registered once")
@@ -116,6 +126,19 @@ assert(w1.size.width == 466 and w1.size.height == 406, "left snap must fill half
 binds["SUPER + RIGHT"]()
 assert(w1.position.x == 512 and w1.position.y == 62, "right snap must preserve the tiling inner gap")
 assert(w1.size.width == 466 and w1.size.height == 406, "right snap must fill the other gapped half")
+
+binds["SUPER + UP"]()
+local last = dispatched[#dispatched]
+assert(last.kind == "fullscreen" and last.params.mode == "maximized" and last.params.action == "set",
+  "Super+Up must set native maximization in floating mode")
+binds["SUPER + DOWN"]()
+last = dispatched[#dispatched]
+assert(last.kind == "fullscreen" and last.params.mode == "maximized" and last.params.action == "unset",
+  "Super+Down must unset native maximization in floating mode")
+binds["SUPER + F"]()
+last = dispatched[#dispatched]
+assert(last.kind == "fullscreen_state" and last.params.internal == 2 and last.params.client == 0 and last.params.action == "toggle",
+  "floating fullscreen must toggle compositor-only fullscreen")
 
 binds["SUPER + TAB"]()
 assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e+1",
@@ -139,9 +162,16 @@ active_workspace = ws2
 opened.workspace = ws2
 ws2.windows = { opened }
 local before_focus = #dispatched
-binds["SUPER + LEFT"]()
-assert(#dispatched == before_focus + 1, "tiling mode must dispatch directional focus")
-assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.direction == "l")
+for _, binding in ipairs({ { "SUPER + LEFT", "l" }, { "SUPER + RIGHT", "r" }, { "SUPER + UP", "u" }, { "SUPER + DOWN", "d" } }) do
+  binds[binding[1]]()
+  assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.direction == binding[2],
+    "tiling mode must preserve directional focus for " .. binding[1])
+end
+assert(#dispatched == before_focus + 4, "tiling directional bindings must each dispatch exactly once")
+binds["SUPER + F"]()
+last = dispatched[#dispatched]
+assert(last.kind == "fullscreen" and last.params.mode == "fullscreen" and last.params.action == nil,
+  "tiling Super+F must preserve Omarchy's synchronized fullscreen toggle")
 local before_cycle = #dispatched
 binds["SUPER + TAB"]()
 assert(#dispatched == before_cycle + 2 and dispatched[#dispatched - 1].kind == "cycle_next" and dispatched[#dispatched].kind == "bring_to_top",
@@ -154,7 +184,7 @@ assert(opened.floating, "each workspace must toggle independently")
 
 active_window = opened
 binds["SUPER + M"]()
-local last = dispatched[#dispatched]
+last = dispatched[#dispatched]
 assert(last.kind == "move")
 assert(last.params.workspace == "special:omarchy-minimized-2")
 assert(last.params.follow == false)

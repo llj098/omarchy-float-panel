@@ -5,6 +5,10 @@ local home = os.getenv("HOME") or ""
 local state_path = home .. "/.local/state/omarchy/float-panel-workspaces"
 local float_workspaces = {}
 
+-- Negative float gaps inherit general.gaps_out in Hyprland 0.56.2, keeping
+-- native floating maximization inside the same gapped workspace work area.
+hl.config({ general = { float_gaps = -1 } })
+
 -- WeChat's XWayland WM_NORMAL_HINTS block interactive shrinking on fractional-scale
 -- monitors even though the client accepts smaller configure sizes. Override only the
 -- compositor's minimum; the application remains free to lay out its own contents.
@@ -204,14 +208,35 @@ local function snap_active_window(side)
   hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
 end
 
-local function focus_or_snap(direction)
+local function mode_aware_direction(direction)
   local workspace = hl.get_active_workspace()
   if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
-    snap_active_window(direction == "l" and "left" or "right")
+    if direction == "l" or direction == "r" then
+      snap_active_window(direction == "l" and "left" or "right")
+    else
+      hl.dispatch(hl.dsp.window.fullscreen({
+        mode = "maximized",
+        action = direction == "u" and "set" or "unset",
+      }))
+    end
     return
   end
 
   hl.dispatch(hl.dsp.focus({ direction = direction }))
+end
+
+local function mode_aware_fullscreen()
+  local workspace = hl.get_active_workspace()
+  if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
+    hl.dispatch(hl.dsp.window.fullscreen_state({
+      internal = 2,
+      client = 0,
+      action = "toggle",
+    }))
+    return
+  end
+
+  hl.dispatch(hl.dsp.window.fullscreen({ mode = "fullscreen" }))
 end
 
 local function cycle_window(next_window)
@@ -257,14 +282,20 @@ end)
 
 hl.unbind("SUPER + LEFT")
 hl.unbind("SUPER + RIGHT")
+hl.unbind("SUPER + UP")
+hl.unbind("SUPER + DOWN")
+hl.unbind("SUPER + F")
 hl.unbind("SUPER + TAB")
 hl.unbind("SUPER + SHIFT + TAB")
 hl.unbind("ALT + TAB")
 hl.unbind("ALT + SHIFT + TAB")
 hl.unbind("ALT + ALT_L")
 hl.unbind("ALT + ALT_R")
-o.bind("SUPER + LEFT", "Focus left / snap left in floating mode", function() focus_or_snap("l") end)
-o.bind("SUPER + RIGHT", "Focus right / snap right in floating mode", function() focus_or_snap("r") end)
+o.bind("SUPER + LEFT", "Focus left / snap left in floating mode", function() mode_aware_direction("l") end)
+o.bind("SUPER + RIGHT", "Focus right / snap right in floating mode", function() mode_aware_direction("r") end)
+o.bind("SUPER + UP", "Focus up / maximize in floating mode", function() mode_aware_direction("u") end)
+o.bind("SUPER + DOWN", "Focus down / restore in floating mode", function() mode_aware_direction("d") end)
+o.bind("SUPER + F", "Full screen", mode_aware_fullscreen)
 o.bind("SUPER + TAB", "Next workspace in floating / next window in tiling", function() mode_aware_super_tab(true) end)
 o.bind("SUPER + SHIFT + TAB", "Previous workspace in floating / previous window in tiling", function() mode_aware_super_tab(false) end)
 o.bind("ALT + TAB", "Select next application", hl.dsp.global("fatlj.float-panel:alt-tab-next"))
