@@ -122,9 +122,19 @@ Item {
     mruAddresses = next
   }
 
+  function currentRegularWorkspace() {
+    var active = Hyprland.activeToplevel
+    var activeWorkspace = active ? active.workspace : null
+    if (activeWorkspace && String(activeWorkspace.name || "").indexOf("special:") !== 0)
+      return activeWorkspace
+
+    var focused = Hyprland.focusedWorkspace
+    return focused && String(focused.name || "").indexOf("special:") !== 0 ? focused : null
+  }
+
   function begin(direction) {
-    var workspace = Hyprland.focusedWorkspace
-    if (!workspace || String(workspace.name || "").indexOf("special:") === 0) return
+    var workspace = currentRegularWorkspace()
+    if (!workspace) return
 
     var minimizedName = "special:omarchy-minimized-" + String(workspace.id)
     var minimized = findWorkspaceByName(minimizedName)
@@ -139,7 +149,7 @@ Item {
     capturedWorkspaceName = String(workspace.name || "")
     capturedWorkspaceSelector = workspace.id > 0 ? String(workspace.id) : "name:" + capturedWorkspaceName
     minimizedWorkspaceName = minimizedName
-    targetScreen = screenForMonitor(Hyprland.focusedMonitor)
+    targetScreen = screenForMonitor(workspace.monitor || Hyprland.focusedMonitor)
 
     var activeIndex = -1
     for (var i = 0; i < groups.length; i++) {
@@ -177,10 +187,10 @@ Item {
     return JSON.stringify(String(value || ""))
   }
 
-  function dispatchActivation(target, restore) {
+  function dispatchActivation(target, restore, destination) {
     var actions = []
     if (restore)
-      actions.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(capturedWorkspaceSelector) + ", follow = false, window = " + luaString(target) + " }))")
+      actions.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = " + luaString(target) + " }))")
     actions.push("hl.dispatch(hl.dsp.focus({ window = " + luaString(target) + " }))")
     actions.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = " + luaString(target) + " }))")
     Hyprland.dispatch("(function() return function() " + actions.join("; ") + " end end)()")
@@ -210,8 +220,10 @@ Item {
     var workspaceName = current.workspace ? String(current.workspace.name || "") : ""
     if (workspaceName !== sourceName && workspaceName !== minimizedName) return "moved-window"
 
-    capturedWorkspaceSelector = destination
-    dispatchActivation(target, workspaceName === minimizedName)
+    var restore = workspaceName === minimizedName
+    // Let the overlay unmap before focusing across monitors; otherwise layer
+    // teardown can restore pointer-monitor focus after our window dispatch.
+    Qt.callLater(function() { root.dispatchActivation(target, restore, destination) })
     return "activated:" + address
   }
 
