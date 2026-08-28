@@ -118,6 +118,91 @@ function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
   return groups
 }
 
+function switcherMru(value) {
+  var rank = Number(value)
+  return isFinite(rank) && rank >= 0 ? rank : null
+}
+
+function groupSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) {
+  var groups = []
+  var byKey = {}
+
+  function add(toplevel, minimized) {
+    if (!toplevel) return
+
+    var description = describe(toplevel) || {}
+    if (description.ignored === true || hasEmbeddedNul(description.appId) || hasEmbeddedNul(description.key))
+      return
+
+    var key = normalizeAppId(description.key || description.appId)
+    if (!key)
+      key = "window:" + stringValue(description.address || description.title)
+    if (!key || key === "window:") return
+
+    var mru = switcherMru(description.mru)
+    var launchOrder = numericOrder(description.order)
+    var item = {
+      toplevel: toplevel,
+      address: stringValue(description.address),
+      title: stringValue(description.title),
+      activated: description.activated === true,
+      minimized: minimized === true,
+      mru: mru,
+      order: launchOrder
+    }
+
+    var group = byKey[key]
+    if (!group) {
+      group = {
+        key: key,
+        appId: stringValue(description.appId),
+        name: stringValue(description.name || description.appId || description.title || "Application"),
+        iconSource: stringValue(description.iconSource),
+        windows: [],
+        active: false,
+        representative: null,
+        mru: mru,
+        order: launchOrder,
+        appearanceOrder: groups.length
+      }
+      byKey[key] = group
+      groups.push(group)
+    }
+
+    group.windows.push(item)
+    group.active = group.active || item.activated
+    if (mru !== null && (group.mru === null || mru < group.mru)) group.mru = mru
+    if (launchOrder !== null && (group.order === null || launchOrder < group.order)) group.order = launchOrder
+
+    var representative = group.representative
+    var newer = !representative ||
+      (item.mru !== null && (representative.mru === null || item.mru < representative.mru)) ||
+      (item.mru === representative.mru && !item.minimized && representative.minimized)
+    if (newer) group.representative = item
+  }
+
+  var visible = visibleToplevels || []
+  var minimized = minimizedToplevels || []
+  for (var i = 0; i < visible.length; i++) add(visible[i], false)
+  for (var j = 0; j < minimized.length; j++) add(minimized[j], true)
+
+  groups.sort(function(a, b) {
+    if (a.mru !== null || b.mru !== null) {
+      if (a.mru === null) return 1
+      if (b.mru === null) return -1
+      if (a.mru !== b.mru) return a.mru - b.mru
+    }
+    if (a.order !== null || b.order !== null) {
+      if (a.order === null) return 1
+      if (b.order === null) return -1
+      if (a.order !== b.order) return a.order - b.order
+    }
+    return a.appearanceOrder - b.appearanceOrder
+  })
+
+  return groups
+}
+
 function actionForGroup(group) {
   if (!group || !group.representative) return ""
   if (group.active && !group.representative.minimized) return "hide"

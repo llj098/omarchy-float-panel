@@ -3,6 +3,7 @@ local handlers = {}
 local dispatched = {}
 local commands = {}
 local unbound = {}
+local bind_options = {}
 local window_rules = {}
 
 local function workspace(id, name, special)
@@ -28,8 +29,11 @@ hl = {
       move = function(params) return { kind = "move", params = params } end,
       resize = function(params) return { kind = "resize", params = params } end,
       tag = function(params) return { kind = "tag", params = params } end,
+      cycle_next = function(params) return { kind = "cycle_next", params = params } end,
+      bring_to_top = function() return { kind = "bring_to_top", params = {} } end,
     },
     focus = function(params) return { kind = "focus", params = params } end,
+    global = function(name) return { kind = "global", name = name } end,
   },
   dispatch = function(action)
     table.insert(dispatched, action)
@@ -72,7 +76,10 @@ hl = {
 }
 
 o = {
-  bind = function(keys, _, callback) binds[keys] = callback end,
+  bind = function(keys, _, callback, options)
+    binds[keys] = callback
+    bind_options[keys] = options
+  end,
   shell_quote = function(value) return "'" .. value:gsub("'", "'\\''") .. "'" end,
 }
 
@@ -82,6 +89,12 @@ assert(type(binds["SUPER + LEFT"]) == "function")
 assert(type(binds["SUPER + RIGHT"]) == "function")
 assert(type(binds["SUPER + SHIFT + T"]) == "function")
 assert(type(binds["SUPER + M"]) == "function")
+assert(type(binds["SUPER + TAB"]) == "function")
+assert(type(binds["SUPER + SHIFT + TAB"]) == "function")
+assert(binds["ALT + TAB"].kind == "global" and binds["ALT + TAB"].name == "fatlj.float-panel:alt-tab-next")
+assert(binds["ALT + SHIFT + TAB"].name == "fatlj.float-panel:alt-tab-previous")
+assert(binds["ALT + ALT_L"].name == "fatlj.float-panel:alt-release")
+assert(bind_options["ALT + ALT_L"].release == true and bind_options["ALT + ALT_R"].release == true)
 assert(unbound[1] == "SUPER + LEFT" and unbound[2] == "SUPER + RIGHT")
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
@@ -102,6 +115,13 @@ binds["SUPER + RIGHT"]()
 assert(w1.position.x == 512 and w1.position.y == 62, "right snap must preserve the tiling inner gap")
 assert(w1.size.width == 466 and w1.size.height == 406, "right snap must fill the other gapped half")
 
+binds["SUPER + TAB"]()
+assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e+1",
+  "Super+Tab on a floating workspace must use Omarchy's next-workspace action")
+binds["SUPER + SHIFT + TAB"]()
+assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "e-1",
+  "Super+Shift+Tab on a floating workspace must use Omarchy's previous-workspace action")
+
 local opened = { workspace = ws1, floating = false, pid = 1 }
 handlers["window.open"](opened)
 assert(opened.floating, "new windows on a floating workspace must float")
@@ -120,6 +140,13 @@ local before_focus = #dispatched
 binds["SUPER + LEFT"]()
 assert(#dispatched == before_focus + 1, "tiling mode must dispatch directional focus")
 assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.direction == "l")
+local before_cycle = #dispatched
+binds["SUPER + TAB"]()
+assert(#dispatched == before_cycle + 2 and dispatched[#dispatched - 1].kind == "cycle_next" and dispatched[#dispatched].kind == "bring_to_top",
+  "Super+Tab on a tiling workspace must cycle and raise")
+binds["SUPER + SHIFT + TAB"]()
+assert(dispatched[#dispatched - 1].kind == "cycle_next" and dispatched[#dispatched - 1].params.next == false,
+  "reverse Super+Tab on a tiling workspace must cycle backward")
 binds["SUPER + SHIFT + T"]()
 assert(opened.floating, "each workspace must toggle independently")
 

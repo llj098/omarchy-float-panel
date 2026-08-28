@@ -4,12 +4,15 @@
   "name": "Float Panel Task List",
   "version": "0.1.0",
   "author": "fatlj",
-  "description": "A per-workspace application task list with hide, restore, focus, and raise behavior for Omarchy.",
+  "description": "A per-workspace application task list and themed Alt-Tab switcher for Omarchy.",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "overlay"
   ],
+  "keepLoaded": true,
   "entryPoints": {
-    "barWidget": "TaskList.qml"
+    "barWidget": "TaskList.qml",
+    "overlay": "AppSwitcher.qml"
   },
   "barWidget": {
     "displayName": "Float Panel Task List",

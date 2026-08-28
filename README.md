@@ -14,6 +14,8 @@ An Omarchy 4 bar widget that shows one icon per application on each monitor's ac
 - `Super+M` minimizes the active window by moving it silently to a special workspace dedicated to its source workspace.
 - `Super+Shift+T` toggles the focused regular workspace between all-floating and normal tiling behavior.
 - `Super+Left/Right` keeps Omarchy's directional focus behavior in tiling mode and snaps the active window to the corresponding monitor half in floating mode.
+- `Super+Tab`/`Super+Shift+Tab` cycle and raise windows in Tiling mode; in Float mode they restore Omarchy's default next/previous-workspace behavior.
+- `Alt+Tab` opens a centered, launcher-themed MRU application list for the current workspace (including its minimized apps). Repeated Tab/Shift+Tab changes only the highlight; releasing Alt restores/focuses the selected app.
 - Floating mode is independent per workspace and persists across Hyprland config reloads and logins.
 - No daemon, polling loop, fixed workspace ID, or hyprbars plugin is used.
 

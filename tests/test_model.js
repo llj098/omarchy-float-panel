@@ -105,6 +105,31 @@ function descriptor(values) {
   assert.equal(groups[0].key, "wechat")
 }
 
+{
+  const groups = context.groupSwitcherToplevels(
+    [top("active"), top("old-visible"), top("new-visible")],
+    [top("hidden")],
+    descriptor({
+      active: { appId: "active.app", name: "Active", activated: true, mru: 0, order: 40 },
+      "old-visible": { appId: "other.app", name: "Other", mru: 5, order: 30 },
+      "new-visible": { appId: "other.app", name: "Other", mru: 2, order: 30 },
+      hidden: { appId: "hidden.app", name: "Hidden", mru: 1, order: 20 }
+    })
+  )
+
+  assert.deepEqual(Array.from(groups, group => group.key), ["active.app", "hidden.app", "other.app"])
+  assert.equal(groups[2].representative.address, "new-visible", "switcher must use the app's most recent window")
+  assert.equal(groups[1].representative.minimized, true)
+}
+
+{
+  const groups = context.groupSwitcherToplevels([top("visible")], [top("hidden")], descriptor({
+    visible: { appId: "same.app", mru: 4 },
+    hidden: { appId: "same.app", mru: 1 }
+  }))
+  assert.equal(groups[0].representative.address, "hidden", "a newer minimized window may represent its app")
+}
+
 assert.equal(context.actionForGroup(null), "")
 assert.equal(context.actionForGroup({ representative: { minimized: false }, active: true }), "hide")
 assert.equal(context.actionForGroup({ representative: { minimized: false }, active: false }), "focus")

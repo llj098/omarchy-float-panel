@@ -214,6 +214,21 @@ local function focus_or_snap(direction)
   hl.dispatch(hl.dsp.focus({ direction = direction }))
 end
 
+local function cycle_window(next_window)
+  hl.dispatch(hl.dsp.window.cycle_next({ next = next_window }))
+  hl.dispatch(hl.dsp.window.bring_to_top())
+end
+
+local function mode_aware_super_tab(next_window)
+  local workspace = hl.get_active_workspace()
+  if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
+    hl.dispatch(hl.dsp.focus({ workspace = next_window and "e+1" or "e-1" }))
+    return
+  end
+
+  cycle_window(next_window)
+end
+
 load_float_workspaces()
 
 -- Process start ticks survive focus/Z-order changes and let the shell reconstruct
@@ -242,7 +257,19 @@ end)
 
 hl.unbind("SUPER + LEFT")
 hl.unbind("SUPER + RIGHT")
+hl.unbind("SUPER + TAB")
+hl.unbind("SUPER + SHIFT + TAB")
+hl.unbind("ALT + TAB")
+hl.unbind("ALT + SHIFT + TAB")
+hl.unbind("ALT + ALT_L")
+hl.unbind("ALT + ALT_R")
 o.bind("SUPER + LEFT", "Focus left / snap left in floating mode", function() focus_or_snap("l") end)
 o.bind("SUPER + RIGHT", "Focus right / snap right in floating mode", function() focus_or_snap("r") end)
+o.bind("SUPER + TAB", "Next workspace in floating / next window in tiling", function() mode_aware_super_tab(true) end)
+o.bind("SUPER + SHIFT + TAB", "Previous workspace in floating / previous window in tiling", function() mode_aware_super_tab(false) end)
+o.bind("ALT + TAB", "Select next application", hl.dsp.global("fatlj.float-panel:alt-tab-next"))
+o.bind("ALT + SHIFT + TAB", "Select previous application", hl.dsp.global("fatlj.float-panel:alt-tab-previous"))
+o.bind("ALT + ALT_L", "Activate selected application", hl.dsp.global("fatlj.float-panel:alt-release"), { release = true })
+o.bind("ALT + ALT_R", "Activate selected application", hl.dsp.global("fatlj.float-panel:alt-release"), { release = true })
 o.bind("SUPER + SHIFT + T", "Toggle workspace floating mode", toggle_active_workspace_mode)
 o.bind("SUPER + M", "Minimize window", minimize_active_window)
