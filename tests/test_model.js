@@ -134,10 +134,58 @@ function descriptor(values) {
     "visible and minimized windows from one app must both remain selectable")
 }
 
-assert.equal(context.actionForGroup(null), "")
-assert.equal(context.actionForGroup({ representative: { minimized: false }, active: true }), "hide")
-assert.equal(context.actionForGroup({ representative: { minimized: false }, active: false }), "focus")
-assert.equal(context.actionForGroup({ representative: { minimized: true }, active: false }), "restore")
+{
+  const group = context.groupToplevels([top("b"), top("a")], [], descriptor({
+    a: { appId: "same.app", order: 10, activated: true },
+    b: { appId: "same.app", order: 20 }
+  }))[0]
+  const decision = context.actionForGroup(group)
+  assert.equal(decision.action, "focus")
+  assert.equal(decision.target.address, "b", "A must cycle directly to B")
+}
+
+{
+  const group = context.groupToplevels([top("a"), top("b")], [], descriptor({
+    a: { appId: "same.app", order: 10 },
+    b: { appId: "same.app", order: 20, activated: true }
+  }))[0]
+  const decision = context.actionForGroup(group)
+  assert.equal(decision.action, "hide-all", "the final window must advance to NONE")
+  assert.deepEqual(Array.from(decision.targets, item => item.address), ["a", "b"])
+}
+
+{
+  const group = context.groupToplevels([], [top("b"), top("a")], descriptor({
+    a: { appId: "same.app", order: 10 },
+    b: { appId: "same.app", order: 20 }
+  }))[0]
+  const decision = context.actionForGroup(group)
+  assert.equal(decision.action, "restore")
+  assert.equal(decision.target.address, "a", "NONE must restart the stable ring at A")
+}
+
+{
+  const group = context.groupToplevels([top("b"), top("a")], [], descriptor({
+    a: { appId: "same.app", order: 10 },
+    b: { appId: "same.app", order: 20 }
+  }))[0]
+  const decision = context.actionForGroup(group)
+  assert.equal(decision.action, "focus")
+  assert.equal(decision.target.address, "a", "focus outside the group must enter the ring at A")
+}
+
+{
+  const active = context.groupToplevels([top("only")], [], descriptor({
+    only: { appId: "single.app", activated: true }
+  }))[0]
+  const hidden = context.groupToplevels([], [top("only")], descriptor({
+    only: { appId: "single.app" }
+  }))[0]
+  assert.equal(context.actionForGroup(active).action, "hide-all")
+  assert.equal(context.actionForGroup(hidden).action, "restore")
+}
+
+assert.equal(context.actionForGroup(null), null)
 assert.equal(context.normalizeAppId(" Org.Example.App.desktop "), "org.example.app")
 assert.equal(context.launchOrderFromTags(["default-opacity*", "float-panel-order-42"]), 42)
 assert.equal(context.launchOrderFromTags(["float-panel-order-invalid"]), null)

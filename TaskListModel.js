@@ -75,7 +75,8 @@ function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
       address: stringValue(description.address),
       title: stringValue(description.title),
       activated: description.activated === true,
-      minimized: minimized === true
+      minimized: minimized === true,
+      order: numericOrder(description.order)
     }
 
     group.windows.push(item)
@@ -111,6 +112,13 @@ function groupToplevels(visibleToplevels, minimizedToplevels, describe) {
 
   for (var k = 0; k < groups.length; k++) {
     var current = groups[k]
+    current.windows.sort(function(a, b) {
+      if (a.order === null && b.order === null) return a.address < b.address ? -1 : (a.address > b.address ? 1 : 0)
+      if (a.order === null) return 1
+      if (b.order === null) return -1
+      if (a.order !== b.order) return a.order - b.order
+      return a.address < b.address ? -1 : (a.address > b.address ? 1 : 0)
+    })
     current.allMinimized = current.visibleWindows.length === 0
     current.count = current.windows.length
   }
@@ -185,7 +193,32 @@ function listSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) {
 }
 
 function actionForGroup(group) {
-  if (!group || !group.representative) return ""
-  if (group.active && !group.representative.minimized) return "hide"
-  return group.representative.minimized ? "restore" : "focus"
+  if (!group || !group.windows || group.windows.length === 0) return null
+
+  var windows = group.windows
+  if (group.allMinimized)
+    return { action: "restore", target: windows[0] }
+
+  var activeIndex = -1
+  for (var i = 0; i < windows.length; i++) {
+    if (windows[i].activated && !windows[i].minimized) {
+      activeIndex = i
+      break
+    }
+  }
+
+  if (activeIndex >= 0) {
+    if (activeIndex === windows.length - 1)
+      return { action: "hide-all", targets: windows.slice() }
+
+    var next = windows[activeIndex + 1]
+    return { action: next.minimized ? "restore" : "focus", target: next }
+  }
+
+  for (var j = 0; j < windows.length; j++) {
+    if (!windows[j].minimized)
+      return { action: "focus", target: windows[j] }
+  }
+
+  return { action: "restore", target: windows[0] }
 }

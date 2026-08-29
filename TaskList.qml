@@ -132,36 +132,54 @@ BarWidget {
     }
 
     function activateGroup(group) {
-        if (!workspace || !group || !group.representative)
+        if (!workspace || !group)
             return ;
 
-        var item = group.representative;
-        var target = windowSelector(item.address);
-        var action = TaskListModel.actionForGroup(group);
-        if (!target || !action)
+        var decision = TaskListModel.actionForGroup(group);
+        if (!decision || !decision.action)
             return ;
 
-        var statements = [
-            "local selected = hl.get_window(" + luaString(target) + ")",
-            "if not selected then return end"
-        ];
-        if (action === "hide") {
-            statements.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(minimizedWorkspaceName) + ", follow = false, window = selected }))");
-        } else {
-            if (action === "restore") {
-                var destination = workspaceSelector(workspace);
-                if (!destination)
-                    return ;
+        var sourceName = String(workspace.name || "");
+        var destination = workspaceSelector(workspace);
+        if (!sourceName || !destination)
+            return ;
 
-                statements.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = selected }))");
+        var statements = [];
+        var addresses = [];
+        if (decision.action === "hide-all") {
+            var targets = decision.targets || [];
+            for (var i = 0; i < targets.length; i++) {
+                var hideTarget = windowSelector(targets[i].address);
+                if (!hideTarget)
+                    continue;
+
+                addresses.push(targets[i].address);
+                var variable = "selected_" + i;
+                statements.push("local " + variable + " = hl.get_window(" + luaString(hideTarget) + ")");
+                statements.push("if " + variable + " and " + variable + ".workspace and " + variable + ".workspace.name == " + luaString(sourceName) + " then hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(minimizedWorkspaceName) + ", follow = false, window = " + variable + " })) end");
             }
+        } else {
+            var item = decision.target;
+            var target = item ? windowSelector(item.address) : "";
+            if (!target)
+                return ;
+
+            addresses.push(item.address);
+            statements.push("local selected = hl.get_window(" + luaString(target) + ")");
+            statements.push("if not selected or not selected.workspace then return end");
+            statements.push("local selected_workspace = selected.workspace.name");
+            statements.push("if selected_workspace ~= " + luaString(sourceName) + " and selected_workspace ~= " + luaString(minimizedWorkspaceName) + " then return end");
+            statements.push("if selected_workspace == " + luaString(minimizedWorkspaceName) + " then hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = selected })) end");
             statements.push("hl.dispatch(hl.dsp.focus({ window = selected }))");
             statements.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = selected }))");
         }
+        if (statements.length === 0)
+            return ;
+
         debugLog("tasklist.activate", {
-            "action": action,
-            "address": item.address,
-            "workspace": String(workspace.name || "")
+            "action": decision.action,
+            "addresses": addresses.join(","),
+            "workspace": sourceName
         });
         Hyprland.dispatch("(function() return function() " + statements.join("; ") + " end end)()");
     }
