@@ -123,9 +123,8 @@ function switcherMru(value) {
   return isFinite(rank) && rank >= 0 ? rank : null
 }
 
-function groupSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) {
-  var groups = []
-  var byKey = {}
+function listSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) {
+  var items = []
 
   function add(toplevel, minimized) {
     if (!toplevel) return
@@ -134,51 +133,33 @@ function groupSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) 
     if (description.ignored === true || hasEmbeddedNul(description.appId) || hasEmbeddedNul(description.key))
       return
 
-    var key = normalizeAppId(description.key || description.appId)
-    if (!key)
-      key = "window:" + stringValue(description.address || description.title)
-    if (!key || key === "window:") return
+    var address = stringValue(description.address)
+    if (!address) return
 
     var mru = switcherMru(description.mru)
     var launchOrder = numericOrder(description.order)
-    var item = {
+    var window = {
       toplevel: toplevel,
-      address: stringValue(description.address),
+      address: address,
       title: stringValue(description.title),
       activated: description.activated === true,
       minimized: minimized === true,
       mru: mru,
       order: launchOrder
     }
-
-    var group = byKey[key]
-    if (!group) {
-      group = {
-        key: key,
-        appId: stringValue(description.appId),
-        name: stringValue(description.name || description.appId || description.title || "Application"),
-        iconSource: stringValue(description.iconSource),
-        windows: [],
-        active: false,
-        representative: null,
-        mru: mru,
-        order: launchOrder,
-        appearanceOrder: groups.length
-      }
-      byKey[key] = group
-      groups.push(group)
-    }
-
-    group.windows.push(item)
-    group.active = group.active || item.activated
-    if (mru !== null && (group.mru === null || mru < group.mru)) group.mru = mru
-    if (launchOrder !== null && (group.order === null || launchOrder < group.order)) group.order = launchOrder
-
-    var representative = group.representative
-    var newer = !representative ||
-      (item.mru !== null && (representative.mru === null || item.mru < representative.mru)) ||
-      (item.mru === representative.mru && !item.minimized && representative.minimized)
-    if (newer) group.representative = item
+    items.push({
+      key: "window:" + address,
+      appId: stringValue(description.appId),
+      name: stringValue(description.name || description.appId || description.title || "Application"),
+      title: window.title,
+      iconSource: stringValue(description.iconSource),
+      windows: [window],
+      active: window.activated,
+      representative: window,
+      mru: mru,
+      order: launchOrder,
+      appearanceOrder: items.length
+    })
   }
 
   var visible = visibleToplevels || []
@@ -186,7 +167,7 @@ function groupSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) 
   for (var i = 0; i < visible.length; i++) add(visible[i], false)
   for (var j = 0; j < minimized.length; j++) add(minimized[j], true)
 
-  groups.sort(function(a, b) {
+  items.sort(function(a, b) {
     if (a.mru !== null || b.mru !== null) {
       if (a.mru === null) return 1
       if (b.mru === null) return -1
@@ -200,7 +181,7 @@ function groupSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) 
     return a.appearanceOrder - b.appearanceOrder
   })
 
-  return groups
+  return items
 }
 
 function actionForGroup(group) {

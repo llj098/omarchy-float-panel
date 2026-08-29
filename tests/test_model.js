@@ -106,28 +106,32 @@ function descriptor(values) {
 }
 
 {
-  const groups = context.groupSwitcherToplevels(
+  const items = context.listSwitcherToplevels(
     [top("active"), top("old-visible"), top("new-visible")],
     [top("hidden")],
     descriptor({
-      active: { appId: "active.app", name: "Active", activated: true, mru: 0, order: 40 },
-      "old-visible": { appId: "other.app", name: "Other", mru: 5, order: 30 },
-      "new-visible": { appId: "other.app", name: "Other", mru: 2, order: 30 },
-      hidden: { appId: "hidden.app", name: "Hidden", mru: 1, order: 20 }
+      active: { appId: "active.app", name: "Active", title: "Active window", activated: true, mru: 0, order: 40 },
+      "old-visible": { appId: "other.app", name: "Other", title: "Older window", mru: 5, order: 30 },
+      "new-visible": { appId: "other.app", name: "Other", title: "Newer window", mru: 2, order: 30 },
+      hidden: { appId: "hidden.app", name: "Hidden", title: "Minimized window", mru: 1, order: 20 }
     })
   )
 
-  assert.deepEqual(Array.from(groups, group => group.key), ["active.app", "hidden.app", "other.app"])
-  assert.equal(groups[2].representative.address, "new-visible", "switcher must use the app's most recent window")
-  assert.equal(groups[1].representative.minimized, true)
+  assert.deepEqual(Array.from(items, item => item.representative.address), ["active", "hidden", "new-visible", "old-visible"])
+  assert.equal(items.length, 4, "every window must remain a separate Alt-Tab item")
+  assert.equal(items[2].appId, items[3].appId, "same-app windows must keep their common application identity")
+  assert.notEqual(items[2].key, items[3].key, "same-app windows must have distinct list identities")
+  assert.equal(items[1].representative.minimized, true)
+  assert.equal(items[2].title, "Newer window")
 }
 
 {
-  const groups = context.groupSwitcherToplevels([top("visible")], [top("hidden")], descriptor({
+  const items = context.listSwitcherToplevels([top("visible")], [top("hidden")], descriptor({
     visible: { appId: "same.app", mru: 4 },
     hidden: { appId: "same.app", mru: 1 }
   }))
-  assert.equal(groups[0].representative.address, "hidden", "a newer minimized window may represent its app")
+  assert.deepEqual(Array.from(items, item => item.representative.address), ["hidden", "visible"],
+    "visible and minimized windows from one app must both remain selectable")
 }
 
 assert.equal(context.actionForGroup(null), "")

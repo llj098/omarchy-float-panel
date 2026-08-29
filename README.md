@@ -18,7 +18,7 @@ An Omarchy 4 bar widget that shows one icon per application on each monitor's ac
 - Omarchy's `Super` +/- resize family (base 100, `Alt` 25, `Ctrl` 300; add `Shift` for vertical) keeps its original relative tiling actions; in Float mode it resizes around the window center and stops at that window's monitor work-area boundary.
 - `Super+F` keeps Omarchy's true synchronized fullscreen in Tiling mode; in Float mode it toggles compositor-only fullscreen, hiding the bar and margins without telling the client to hide browser tabs or other chrome.
 - `Super+Tab`/`Super+Shift+Tab` keep Omarchy's next/previous-workspace behavior in both modes. App switching remains exclusively on `Alt+Tab`.
-- `Alt+Tab` opens a centered, launcher-themed MRU application list for the current workspace (including its minimized apps). Repeated Tab/Shift+Tab changes only the highlight; releasing Alt restores/focuses the selected app.
+- `Alt+Tab` opens a centered, launcher-themed MRU window list on every regular workspace, in both Tiling and Float modes. Every window is a separate item even when several belong to the same application; minimized windows are included. Repeated Tab/Shift+Tab changes only the highlight; releasing Alt restores/focuses the selected window.
 - Floating mode is independent per workspace and persists across Hyprland config reloads and logins.
 - No daemon, polling loop, fixed workspace ID, or hyprbars plugin is used.
 
@@ -117,7 +117,7 @@ The widget reads Quickshell's reactive `HyprlandWorkspace.toplevels` models. App
 
 Desktop icons use an exact desktop-entry lookup, then `DesktopEntries.heuristicLookup()`, then the generic executable icon. Heuristic desktop-entry matching can be imperfect for unusual XWayland, Electron, PWA, and terminal-hosted applications.
 
-When an app has multiple windows, the representative prefers an active visible window, then any visible window, then a minimized window. Clicking an active group hides only its active representative, not every window owned by the app. Clicking never cycles windows.
+When an app has multiple windows, the TaskList representative prefers an active visible window, then any visible window, then a minimized window. Clicking an active group hides only its active representative, not every window owned by the app. Clicking never cycles windows. Alt-Tab is deliberately different: it does not group by application, and labels each independently selectable window with its application name and window title.
 
 The Lua integration tags each managed window with its process start ticks from `/proc/PID/stat`. Task groups sort by the earliest such value among their windows, while untagged windows remain in first-observed order at the end. The tags remain attached when Hyprland changes workspace or Z-order and are reconstructed on config reload, so the TaskList does not need a separate ordering database.
 

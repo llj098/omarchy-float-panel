@@ -144,28 +144,28 @@ Item {
 
     var minimizedName = "special:omarchy-minimized-" + String(workspace.id)
     var minimized = findWorkspaceByName(minimizedName)
-    var groups = TaskListModel.groupSwitcherToplevels(
+    var items = TaskListModel.listSwitcherToplevels(
       workspace.toplevels.values,
       minimized ? minimized.toplevels.values : [],
       function(toplevel) { return root.describeToplevel(toplevel) }
     )
-    if (groups.length < 2) return
+    if (items.length < 2) return
 
-    snapshot = groups
+    snapshot = items
     capturedWorkspaceName = String(workspace.name || "")
     capturedWorkspaceSelector = workspace.id > 0 ? String(workspace.id) : "name:" + capturedWorkspaceName
     minimizedWorkspaceName = minimizedName
     targetScreen = screenForMonitor(workspace.monitor || Hyprland.focusedMonitor)
 
     var activeIndex = -1
-    for (var i = 0; i < groups.length; i++) {
-      if (groups[i].active) { activeIndex = i; break }
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].active) { activeIndex = i; break }
     }
     selectedIndex = activeIndex >= 0
-      ? (activeIndex + direction + groups.length) % groups.length
-      : (direction > 0 ? 0 : groups.length - 1)
+      ? (activeIndex + direction + items.length) % items.length
+      : (direction > 0 ? 0 : items.length - 1)
     opened = true
-    debugLog("switcher.begin", { workspace: capturedWorkspaceName, candidates: groups.length, selected: selectedIndex })
+    debugLog("switcher.begin", { workspace: capturedWorkspaceName, candidates: items.length, selected: selectedIndex })
     Qt.callLater(function() { list.positionViewAtIndex(root.selectedIndex, ListView.Contain) })
   }
 
@@ -350,7 +350,9 @@ Item {
             Text {
               anchors.verticalCenter: parent.verticalCenter
               width: parent.width - Style.spacing.rowPaddingX * 2 - Style.space(32) - parent.spacing
-              text: row.modelData.name
+              text: row.modelData.title && row.modelData.title !== row.modelData.name
+                ? row.modelData.name + " — " + row.modelData.title
+                : row.modelData.name
               color: row.selected ? root.selectedText : root.foreground
               font.family: Style.font.menuFamily
               font.pixelSize: Style.font.body

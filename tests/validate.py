@@ -56,7 +56,7 @@ for required in (
     'name: "alt-tab-previous"',
     'name: "alt-release"',
     "onReleased: root.commit()",
-    "TaskListModel.groupSwitcherToplevels",
+    "TaskListModel.listSwitcherToplevels",
     "Hyprland.activeToplevel",
     "active.workspace",
     "Hyprland.focusedWorkspace",
@@ -91,6 +91,9 @@ assert activation.index(live_target) < activation.index(fullscreen_guard) < acti
 assert activation.count(lower) == 1, "fullscreen cleanup must remain conditional and normal activation unchanged"
 assert "Number(ipc.fullscreen)" not in switcher, "mutable fullscreen state must not come from stale lastIpcObject"
 assert "dispatchActivation(target, workspaceName === minimizedName, destination)" in switcher
+assert "groupSwitcherToplevels" not in switcher
+assert "floatWorkspaceNames" not in switcher and "workspaceFloatEnabled" not in switcher, \
+    "Alt-Tab must remain available on regular Tiling workspaces"
 
 lua = (ROOT / "hypr" / "float-panel.lua").read_text()
 for required in (
