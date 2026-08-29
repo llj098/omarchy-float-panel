@@ -397,6 +397,22 @@ assert(#dispatched == before_window_route + 1 and dispatched[#dispatched].kind =
 assert(route_window.at.x == 4000 and route_window.size.x == 2000,
   "window.move_to_workspace fires before monitor reassignment and must not route migration geometry")
 
+local minimized3 = workspace(-103, "special:omarchy-minimized-3", true)
+local minimized_during_unplug = {
+  workspace = minimized3, floating = true, mapped = true, hidden = true, fullscreen = 0, monitor = edp_monitor,
+  at = { x = 12, y = -276 }, size = { x = 1005, y = 1102 },
+  tags = { "float-panel-side-v1-r-n1017-p12-p1005-p1102-n2048-p0-p3-33" },
+}
+local original_get_windows = hl.get_windows
+hl.get_windows = function() return { minimized_during_unplug } end
+handlers["workspace.move_to_monitor"](ws3, edp_monitor)
+hl.get_windows = original_get_windows
+assert(minimized_during_unplug.at.x == 775 and minimized_during_unplug.at.y == 12 and
+  minimized_during_unplug.size.x == 749 and minimized_during_unplug.size.y == 814,
+  "display migration must recompute a source workspace's minimized side windows")
+assert(side_tag(minimized_during_unplug):find("%-r%-p775%-p12%-p749%-p814%-p0%-p0%-p3%-33$"),
+  "minimized reflow must replace stale external-monitor side metadata")
+
 ws1.windows = { w1, w2 }
 w1.monitor = own_monitor
 w2.monitor = own_monitor

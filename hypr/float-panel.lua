@@ -405,8 +405,8 @@ local function window_side_intent(window)
   return nil
 end
 
-local function make_side_intent_tag(window, workspace, side, geometry)
-  local monitor = window and window.monitor or nil
+local function make_side_intent_tag(window, workspace, side, geometry, target_monitor)
+  local monitor = target_monitor or (window and window.monitor or nil)
   if not monitor or not geometry then return nil end
   return side_intent_tag_prefix .. table.concat({
     side == "left" and "l" or "r",
@@ -420,13 +420,13 @@ local function clear_side_intent(window)
   if metadata then remove_window_tag(window, metadata.raw) end
 end
 
-local function update_side_intent(window, workspace, side, geometry)
+local function update_side_intent(window, workspace, side, geometry, target_monitor)
   local old = window_side_intent(window)
   local at, size = window and window.at or nil, window and window.size or nil
   local observed = at and size and {
     x = tonumber(at.x), y = tonumber(at.y), width = tonumber(size.x), height = tonumber(size.y),
   } or geometry
-  local tag = make_side_intent_tag(window, workspace, side, observed)
+  local tag = make_side_intent_tag(window, workspace, side, observed, target_monitor)
   if not tag or (old and old.raw == tag) then return end
   if old then remove_window_tag(window, old.raw) end
   add_window_tag(window, tag)
@@ -455,11 +455,13 @@ local function side_intent_still_managed(window, side)
     ((current_x == side.x and current_y == side.y) or (current_x == translated_x and current_y == translated_y))
 end
 
-local function fit_window_to_floating_bounds(window)
-  if not window or window.mapped ~= true or window.hidden == true or window.floating ~= true then return end
+local function fit_window_to_floating_bounds(window, target_monitor, source_workspace, include_hidden, trust_intent)
+  if not window or window.mapped ~= true or (window.hidden == true and not include_hidden) or window.floating ~= true then return end
   if (tonumber(window.fullscreen) or 0) ~= 0 then return end
 
-  local bounds = floating_window_bounds(window.monitor)
+  target_monitor = target_monitor or window.monitor
+  source_workspace = source_workspace or window.workspace
+  local bounds = floating_window_bounds(target_monitor)
   local at = window.at
   local size = window.size
   if not bounds or not at or not size then return end
@@ -478,10 +480,10 @@ local function fit_window_to_floating_bounds(window)
 
   local side = window_side_intent(window)
   if side then
-    if not side_intent_still_managed(window, side) then
+    if not trust_intent and not side_intent_still_managed(window, side) then
       remove_window_tag(window, side.raw)
     else
-      local geometry = side_geometry(side.side, window.monitor)
+      local geometry = side_geometry(side.side, target_monitor)
       if not geometry then return end
       if tonumber(size.x) ~= geometry.width or tonumber(size.y) ~= geometry.height then
         hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
@@ -490,7 +492,7 @@ local function fit_window_to_floating_bounds(window)
       if tonumber(current_at.x) ~= geometry.x or tonumber(current_at.y) ~= geometry.y then
         hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
       end
-      update_side_intent(window, window.workspace, side.side, geometry)
+      update_side_intent(window, source_workspace, side.side, geometry, target_monitor)
       return
     end
   end
@@ -581,6 +583,16 @@ local function defensively_fit_float_workspace(workspace)
   -- Pinning changes workspace visibility, not the monitor work-area limits.
   for _, window in ipairs(workspace:get_windows()) do
     fit_window_to_floating_bounds(window)
+  end
+
+  -- Minimized windows belong to a special workspace and are absent from
+  -- workspace:get_windows(). Reflow them against their source workspace now,
+  -- while its post-migration monitor is authoritative.
+  local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
+  for _, window in ipairs(hl.get_windows()) do
+    if window.workspace and window.workspace.special == true and window.workspace.name == minimized_name then
+      fit_window_to_floating_bounds(window, workspace.monitor, workspace, true, true)
+    end
   end
 end
 
@@ -1077,8 +1089,12 @@ hl.on("window.move_to_workspace", function(window, workspace)
   for _, placement in ipairs(placements) do
     if placement then
       local expected_special = "special:omarchy-minimized-" .. tostring(placement.workspace_id)
+      local minimizing_to_source = workspace and workspace.special == true and workspace.name == expected_special
       local returning_to_source = workspace_is_regular(workspace) and workspace_selector(workspace) == placement.source and workspace_float_enabled(workspace)
-      if not (workspace and workspace.special == true and workspace.name == expected_special) and not returning_to_source then
+      if minimizing_to_source and placement == side and not metadata and not side_intent_still_managed(window, side) then
+        remove_window_tag(window, placement.raw)
+        side = nil
+      elseif not minimizing_to_source and not returning_to_source then
         remove_window_tag(window, placement.raw)
         if placement == metadata then metadata = nil else side = nil end
       end
