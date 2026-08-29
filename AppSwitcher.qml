@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Hyprland
+import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
@@ -19,6 +20,7 @@ Item {
   property string minimizedWorkspaceName: ""
   property var targetScreen: null
   property var mruAddresses: []
+  property bool debugEnabled: false
 
   readonly property color background: Color.menu.background
   readonly property color foreground: Color.menu.text
@@ -30,6 +32,10 @@ Item {
   readonly property var borderSpec: Border.surfaceSpec("menu", "border", border, Math.max(1, Style.space(2)))
   readonly property var selectedBorderSpec: Border.surfaceSpec("menu", "selected-border", selectedBorder, 0)
   readonly property int rowHeight: Math.max(Style.space(50), Style.font.body + Style.spacing.rowPaddingX * 2)
+
+  function debugLog(event, fields) {
+    if (debugEnabled) console.info("[fatlj.float-panel] " + event + " " + JSON.stringify(fields || {}))
+  }
 
   function findWorkspaceByName(name) {
     var values = Hyprland.workspaces.values
@@ -159,7 +165,7 @@ Item {
       ? (activeIndex + direction + groups.length) % groups.length
       : (direction > 0 ? 0 : groups.length - 1)
     opened = true
-    Qt.callLater(function() { list.positionViewAtIndex(root.selectedIndex, ListView.Contain) })
+    debugLog("switcher.begin", { workspace: capturedWorkspaceName, candidates: groups.length, selected: selectedIndex })
   }
 
   function step(direction) {
@@ -169,6 +175,7 @@ Item {
     }
     if (snapshot.length === 0) return
     selectedIndex = (selectedIndex + direction + snapshot.length) % snapshot.length
+    debugLog("switcher.step", { direction: direction, selected: selectedIndex })
     list.positionViewAtIndex(selectedIndex, ListView.Contain)
   }
 
@@ -194,6 +201,7 @@ Item {
     actions.push("local selected = hl.get_window(" + luaString(target) + "); if selected and tonumber(selected.fullscreen) ~= 0 then local workspace = selected.workspace; local windows = hl.get_windows(); for i = #windows, 1, -1 do local window = windows[i]; if window.workspace == workspace and window.floating and not window.pinned and tonumber(window.fullscreen) == 0 and window.allowed_over_fullscreen then hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"bottom\", window = window })) end end end")
     actions.push("hl.dispatch(hl.dsp.focus({ window = " + luaString(target) + " }))")
     actions.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = " + luaString(target) + " }))")
+    debugLog("switcher.activate", { target: target, restore: restore, destination: destination })
     Hyprland.dispatch("(function() return function() " + actions.join("; ") + " end end)()")
   }
 
@@ -227,6 +235,15 @@ Item {
 
   Component.onCompleted: seedMru()
 
+  FileView {
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/float-panel-debug"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.debugEnabled = true
+    onLoadFailed: root.debugEnabled = false
+    onFileChanged: reload()
+  }
+
   Connections {
     target: Hyprland
     function onActiveToplevelChanged() { root.touchActive() }
@@ -256,6 +273,10 @@ Item {
   PanelWindow {
     id: panel
     visible: root.opened
+    onVisibleChanged: {
+      if (visible && root.selectedIndex >= 0)
+        list.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+    }
     screen: root.targetScreen
     anchors { top: true; right: true; bottom: true; left: true }
     color: "transparent"

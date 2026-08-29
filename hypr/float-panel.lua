@@ -3,7 +3,45 @@
 
 local home = os.getenv("HOME") or ""
 local state_path = home .. "/.local/state/omarchy/float-panel-workspaces"
+local debug_flag_path = home .. "/.local/state/omarchy/float-panel-debug"
+local debug_log_path = "/tmp/float-panel-debug.log"
+local debug_log_limit = 5 * 1024 * 1024
 local float_workspaces = {}
+
+local function debug_flag_enabled()
+  local file = io.open(debug_flag_path, "r")
+  if not file then return false end
+  file:close()
+  return true
+end
+
+local debug_enabled = debug_flag_enabled()
+
+local function debug_log(event, fields)
+  if not debug_enabled then return end
+
+  local current = io.open(debug_log_path, "r")
+  local size = current and current:seek("end") or 0
+  if current then current:close() end
+  if size >= debug_log_limit then
+    os.remove(debug_log_path .. ".1")
+    os.rename(debug_log_path, debug_log_path .. ".1")
+  end
+
+  local parts = { os.date("!%Y-%m-%dT%H:%M:%SZ"), tostring(event) }
+  local keys = {}
+  for key in pairs(fields or {}) do table.insert(keys, key) end
+  table.sort(keys)
+  for _, key in ipairs(keys) do
+    local value = tostring(fields[key]):gsub("[%s\r\n]+", "_")
+    table.insert(parts, tostring(key) .. "=" .. value)
+  end
+
+  local file = io.open(debug_log_path, "a")
+  if not file then return end
+  file:write(table.concat(parts, " "), "\n")
+  file:close()
+end
 
 -- Negative float gaps inherit general.gaps_out in Hyprland 0.56.2, keeping
 -- native floating maximization inside the same gapped workspace work area.
@@ -106,12 +144,44 @@ end
 
 local apply_workspace_mode
 
-local function toggle_active_workspace_mode()
+local function active_window_context()
+  local window = hl.get_active_window()
+  if window then return window, window.workspace, window.monitor end
+
   local workspace = hl.get_active_workspace()
+  return nil, workspace, workspace and workspace.monitor or hl.get_active_monitor()
+end
+
+local function select_monitor(monitor)
+  local focused_monitor = hl.get_active_monitor()
+  if monitor and monitor ~= focused_monitor then
+    hl.dispatch(hl.dsp.focus({ monitor = monitor }))
+  end
+end
+
+local function debug_window_action(event, window, workspace, fields)
+  if not debug_enabled then return end
+  local focused_workspace = hl.get_active_workspace()
+  local focused_monitor = hl.get_active_monitor()
+  fields = fields or {}
+  fields.window = window and window.address or "nil"
+  fields.window_workspace = workspace and workspace.name or "nil"
+  fields.window_monitor = window and window.monitor and window.monitor.name or "nil"
+  fields.focused_workspace = focused_workspace and focused_workspace.name or "nil"
+  fields.focused_monitor = focused_monitor and focused_monitor.name or "nil"
+  debug_log(event, fields)
+end
+
+local function toggle_active_workspace_mode()
+  local _, workspace = active_window_context()
+  if not workspace_is_regular(workspace) then
+    workspace = hl.get_active_workspace()
+  end
   if not workspace_is_regular(workspace) then return end
 
   local key = workspace_key(workspace)
   local enabled = not workspace_float_enabled(workspace)
+  debug_window_action("bind.toggle_mode", hl.get_active_window(), workspace, { enabled = enabled })
   float_workspaces[key] = enabled or nil
   save_float_workspaces()
   apply_workspace_mode(workspace)
@@ -151,8 +221,12 @@ local function monitor_work_area(monitor)
   local right = tonumber(reserved.right) or 0
   local top = tonumber(reserved.top) or 0
   local bottom = tonumber(reserved.bottom) or 0
-  local width = math.max(1, math.floor(pixel_width / scale - left - right))
-  local height = math.max(1, math.floor(pixel_height / scale - top - bottom))
+  -- Match Hyprland's CMonitor::m_size calculation: transform, divide by
+  -- scale, then round to the nearest logical pixel before reservations.
+  local logical_width = math.floor(pixel_width / scale + 0.5)
+  local logical_height = math.floor(pixel_height / scale + 0.5)
+  local width = math.max(1, logical_width - left - right)
+  local height = math.max(1, logical_height - top - bottom)
 
   return {
     x = math.floor((tonumber(monitor.x) or 0) + left),
@@ -491,19 +565,23 @@ end
 local function defensively_fit_float_workspace(workspace)
   if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
 
+  -- Pinned windows intentionally use the same monitor-bound fitting path.
+  -- Pinning changes workspace visibility, not the monitor work-area limits.
   for _, window in ipairs(workspace:get_windows()) do
     fit_window_to_floating_bounds(window)
   end
 end
 
 local function mode_aware_resize(dx, dy)
-  local workspace = hl.get_active_workspace()
-  if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then
-    hl.dispatch(hl.dsp.window.resize({ x = dx, y = dy, relative = true }))
+  local window, workspace = active_window_context()
+  if not window then return end
+  local float_mode = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
+  debug_window_action("bind.resize", window, workspace, { dx = dx, dy = dy, float = float_mode })
+  if not float_mode then
+    hl.dispatch(hl.dsp.window.resize({ x = dx, y = dy, relative = true, window = window }))
     return
   end
 
-  local window = hl.get_active_window()
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   clear_side_intent(window)
   local bounds = window and floating_window_bounds(window.monitor) or nil
@@ -522,12 +600,11 @@ local function mode_aware_resize(dx, dy)
   hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
 end
 
-local function snap_active_window(side)
-  local window = hl.get_active_window()
+local function snap_active_window(window, workspace, side)
+  if not window then return end
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
-  local workspace = hl.get_active_workspace()
-  local geometry = window and side_geometry(side, window.monitor or hl.get_active_monitor()) or nil
-  if not window or not geometry then return end
+  local geometry = side_geometry(side, window.monitor)
+  if not geometry then return end
 
   set_window_floating(window, true)
   -- Resize first so Hyprland does not clamp the old, wider window before placing it.
@@ -537,38 +614,53 @@ local function snap_active_window(side)
 end
 
 local function mode_aware_direction(direction)
-  local workspace = hl.get_active_workspace()
-  if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
+  local window, workspace = active_window_context()
+  local float_mode = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
+  debug_window_action("bind.direction", window, workspace, { direction = direction, float = float_mode })
+  if float_mode then
     if direction == "l" or direction == "r" then
-      snap_active_window(direction == "l" and "left" or "right")
+      snap_active_window(window, workspace, direction == "l" and "left" or "right")
     elseif direction == "u" then
-      maximize_geometric_window(hl.get_active_window(), workspace)
+      maximize_geometric_window(window, workspace)
     else
-      restore_geometric_max(hl.get_active_window())
+      restore_geometric_max(window)
     end
     return
   end
 
+  select_monitor(window and window.monitor or nil)
   hl.dispatch(hl.dsp.focus({ direction = direction }))
 end
 
 local function mode_aware_fullscreen()
-  local workspace = hl.get_active_workspace()
-  if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
+  local window, workspace = active_window_context()
+  if not window then return end
+  local float_mode = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
+  debug_window_action("bind.fullscreen", window, workspace, { float = float_mode })
+  if float_mode then
     hl.dispatch(hl.dsp.window.fullscreen_state({
       internal = 2,
       client = 0,
       action = "toggle",
+      window = window,
     }))
     return
   end
 
-  hl.dispatch(hl.dsp.window.fullscreen({ mode = "fullscreen" }))
+  hl.dispatch(hl.dsp.window.fullscreen({ mode = "fullscreen", window = window }))
 end
 
 local function workspace_super_tab(next_workspace)
-  -- m±1 wraps the existing regular workspaces on the compositor's focused
-  -- monitor, excluding special workspaces without creating missing IDs.
+  local window = hl.get_active_window()
+  local target_monitor = window and window.monitor or hl.get_active_monitor()
+  debug_window_action("bind.workspace_cycle", window, window and window.workspace or hl.get_active_workspace(), {
+    direction = next_workspace and "next" or "previous",
+    target_monitor = target_monitor and target_monitor.name or "nil",
+  })
+  select_monitor(target_monitor)
+
+  -- m±1 wraps existing regular workspaces on the selected monitor, excludes
+  -- special workspaces, and does not create missing workspace IDs.
   hl.dispatch(hl.dsp.focus({ workspace = next_workspace and "m+1" or "m-1" }))
 end
 
@@ -623,13 +715,18 @@ end)
 
 -- Hyprland emits this only after the workspace monitor, every member window's
 -- monitor, floating position translation, and native fullscreen reflow finish.
-hl.on("workspace.move_to_monitor", function(workspace, _monitor)
+hl.on("workspace.move_to_monitor", function(workspace, monitor)
+  debug_log("event.workspace_move_to_monitor", {
+    workspace = workspace and workspace.name or "nil",
+    monitor = monitor and monitor.name or "nil",
+  })
   defensively_fit_float_workspace(workspace)
 end)
 
 -- Hyprland emits this after monitor layout changes. It carries no monitor, so
 -- inspect every plugin-enabled regular Float workspace defensively.
 hl.on("monitor.layout_changed", function()
+  debug_log("event.monitor_layout_changed")
   for _, workspace in ipairs(hl.get_workspaces()) do
     defensively_fit_float_workspace(workspace)
   end
@@ -639,6 +736,14 @@ end)
 hl.on("layer.opened", function(layer)
   local monitor = layer and layer.monitor or nil
   if not monitor then return end
+  local reserved = monitor.reserved or {}
+  debug_log("event.layer_opened", {
+    monitor = monitor.name or "nil",
+    reserved_bottom = tonumber(reserved.bottom) or 0,
+    reserved_left = tonumber(reserved.left) or 0,
+    reserved_right = tonumber(reserved.right) or 0,
+    reserved_top = tonumber(reserved.top) or 0,
+  })
   for _, workspace in ipairs(hl.get_workspaces()) do
     if workspace_is_regular(workspace) and workspace_float_enabled(workspace) and workspace.monitor == monitor then
       defensively_fit_float_workspace(workspace)
@@ -673,6 +778,7 @@ hl.unbind("SUPER + DOWN")
 hl.unbind("SUPER + F")
 hl.unbind("SUPER + TAB")
 hl.unbind("SUPER + SHIFT + TAB")
+hl.unbind("SUPER + CTRL + TAB")
 hl.unbind("ALT + TAB")
 hl.unbind("ALT + SHIFT + TAB")
 hl.unbind("ALT + ALT_L")

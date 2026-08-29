@@ -154,7 +154,7 @@ assert(bind_options["ALT + ALT_L"].transparent == true and bind_options["ALT + A
 local unbound_set = {}
 for _, keys in ipairs(unbound) do unbound_set[keys] = true end
 for _, route in ipairs(resize_routes) do assert(unbound_set[route[1]], route[1] .. " stock binding must be unbound") end
-for _, keys in ipairs({ "SUPER + LEFT", "SUPER + RIGHT", "SUPER + UP", "SUPER + DOWN", "SUPER + F" }) do
+for _, keys in ipairs({ "SUPER + LEFT", "SUPER + RIGHT", "SUPER + UP", "SUPER + DOWN", "SUPER + F", "SUPER + CTRL + TAB" }) do
   assert(unbound_set[keys], keys .. " stock binding must be unbound")
 end
 for _, keys in ipairs({ "SUPER + ALT + TAB", "ALT + 1", "ALT + 2", "ALT + 3", "ALT + 4", "ALT + 5", "ALT + 6", "ALT + 7", "ALT + 8", "ALT + 9" }) do
@@ -207,8 +207,46 @@ end
 ws1.windows = { w1, w2 }
 
 active_workspace = ws3
+active_window = nil
 binds["SUPER + SHIFT + T"]()
 active_workspace = ws1
+active_window = w1
+
+-- Window operations must derive mode and geometry from the active window,
+-- even when pointer-driven monitor focus names a different workspace.
+local context_monitor = {
+  x = 5000, y = 0, width = 1000, height = 700, scale = 1.5, transform = 0,
+  reserved = { left = 0, right = 0, top = 0, bottom = 0 },
+}
+local context_window = {
+  workspace = ws3, floating = true, mapped = true, fullscreen = 0, monitor = context_monitor,
+  at = { x = 5100, y = 100 }, size = { x = 300, y = 200 }, tags = {},
+}
+active_workspace = ws2
+active_monitor = own_monitor
+active_window = context_window
+local before_context_snap = #dispatched
+binds["SUPER + RIGHT"]()
+assert(dispatched[before_context_snap + 1].kind == "float" and dispatched[before_context_snap + 2].kind == "resize" and
+  dispatched[before_context_snap + 2].params.window == context_window,
+  "Float routing must follow the active window workspace, not the focused monitor workspace")
+assert(context_window.at.x == 5340 and context_window.at.y == 12 and context_window.size.x == 315 and context_window.size.y == 443,
+  "fractional monitor geometry must use Hyprland's nearest-logical-pixel rounding")
+assert(side_tag(context_window):match("%-p3%-33$"), "side intent must record the active window's real workspace")
+
+local tiled_context = {
+  workspace = ws2, floating = false, mapped = true, fullscreen = 0, monitor = own_monitor,
+  at = { x = 100, y = 100 }, size = { x = 300, y = 200 }, tags = {},
+}
+active_workspace = ws1
+active_window = tiled_context
+local before_context_tiling = #dispatched
+binds["SUPER + LEFT"]()
+assert(#dispatched == before_context_tiling + 1 and dispatched[#dispatched].kind == "focus",
+  "Tiling routing must follow the active window workspace even when the focused monitor workspace is Float")
+active_workspace = ws1
+active_monitor = own_monitor
+active_window = w1
 
 local migrated_monitor = {
   x = -1600,
@@ -297,6 +335,16 @@ handlers["monitor.layout_changed"]()
 handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
 assert(#dispatched == before_idempotent_fit,
   "repeated layout and migration routes must be geometrically idempotent through their common fitter")
+
+local pinned = {
+  workspace = ws1, floating = true, pinned = true, mapped = true, fullscreen = 0, monitor = migrated_monitor,
+  at = { x = 4000, y = 300 }, size = { x = 100, y = 100 }, tags = {},
+}
+local previous_ws1_windows = ws1.windows
+ws1.windows = { pinned }
+handlers["monitor.layout_changed"]()
+assert(pinned.at.x == -532, "pinned windows must retain the existing monitor-bound fitting behavior")
+ws1.windows = previous_ws1_windows
 
 local edp_monitor = {
   x = 0, y = 0, width = 1920, height = 1080, scale = 1.25, transform = 0,
@@ -539,10 +587,15 @@ assert(last.kind == "fullscreen_state" and last.params.internal == 2 and last.pa
   "floating fullscreen must toggle compositor-only fullscreen")
 
 active_workspace = ws2
-active_window = { workspace = ws2 }
+active_window = { workspace = ws2, monitor = own_monitor }
+active_monitor = migrated_monitor
+local before_monitor_aligned_tab = #dispatched
 binds["SUPER + TAB"]()
+assert(#dispatched == before_monitor_aligned_tab + 2 and dispatched[before_monitor_aligned_tab + 1].params.monitor == own_monitor,
+  "Super+Tab must first select the active window's monitor when compositor monitor focus differs")
 assert(dispatched[#dispatched].kind == "focus" and dispatched[#dispatched].params.workspace == "m+1",
   "Super+Tab must route workspace 2 to the next existing regular workspace 3")
+active_monitor = own_monitor
 active_workspace = ws3
 active_window = { workspace = ws3 }
 binds["SUPER + TAB"]()
@@ -569,6 +622,7 @@ assert(not opened.floating, "special workspaces must not change floating state")
 
 active_workspace = ws2
 opened.workspace = ws2
+active_window = opened
 ws2.windows = { opened }
 local before_focus = #dispatched
 for _, binding in ipairs({ { "SUPER + LEFT", "l" }, { "SUPER + RIGHT", "r" }, { "SUPER + UP", "u" }, { "SUPER + DOWN", "d" } }) do

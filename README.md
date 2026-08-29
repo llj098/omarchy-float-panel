@@ -130,12 +130,22 @@ hl.config({ input = { follow_mouse = 0 } })
 hl.config({ cursor = { no_warps = true } })
 ```
 
+## Debug logging
+
+Create the marker below and reload Hyprland plus Omarchy Shell to enable explicit plugin traces:
+
+```bash
+touch ~/.local/state/omarchy/float-panel-debug
+```
+
+Lua bind/context and monitor-reflow records are written to `/tmp/float-panel-debug.log`, rotated at 5 MiB to one `.1` file. TaskList and AppSwitcher records use the `fatlj.float-panel` prefix in the Omarchy Shell log. Records contain addresses and workspace/monitor identifiers, not window titles or typed text. Remove the marker and reload both components to disable logging.
+
 ## Validation
 
 ```bash
 ./scripts/validate.sh
 ```
 
-The validation suite checks the manifest, QML/JavaScript/Lua syntax, grouping behavior, workspace-mode events, minimize routing, and the absence of fixed workspace/hyprbars dependencies.
+The validation suite checks the manifest, QML/JavaScript/Lua syntax, grouping behavior, active-window workspace routing, fractional-scale geometry, pinned-window fitting, workspace-mode events, minimize routing, and the absence of fixed workspace/hyprbars dependencies.
 
 A real Omarchy/Hyprland session is still required for final visual and interaction testing.

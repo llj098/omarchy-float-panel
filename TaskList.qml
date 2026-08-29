@@ -16,10 +16,18 @@ BarWidget {
     readonly property string minimizedWorkspaceName: workspace ? "special:omarchy-minimized-" + workspace.id : ""
     readonly property var minimizedWorkspace: findWorkspaceByName(minimizedWorkspaceName)
     property var floatWorkspaceNames: ({})
+    property bool debugEnabled: false
     readonly property bool workspaceFloatEnabled: workspace && workspace.id > 0 && floatWorkspaceNames[String(workspace.name || "")] === true
     readonly property var taskGroups: TaskListModel.groupToplevels(workspace ? workspace.toplevels.values : [], minimizedWorkspace ? minimizedWorkspace.toplevels.values : [], function(toplevel) {
         return root.describeToplevel(toplevel);
     })
+
+    function debugLog(event, fields) {
+        if (!debugEnabled)
+            return ;
+
+        console.info("[fatlj.float-panel] " + event + " " + JSON.stringify(fields || {}));
+    }
 
     function setFloatWorkspaceState(contents) {
         var names = {};
@@ -123,15 +131,8 @@ BarWidget {
         return JSON.stringify(String(value || ""));
     }
 
-    function dispatchExpression(expression) {
-        if (!bar || !expression)
-            return "";
-
-        return "hyprctl dispatch " + Util.shellQuote(expression);
-    }
-
     function activateGroup(group) {
-        if (!bar || !workspace || !group || !group.representative)
+        if (!workspace || !group || !group.representative)
             return ;
 
         var item = group.representative;
@@ -140,24 +141,29 @@ BarWidget {
         if (!target || !action)
             return ;
 
-        var move;
+        var statements = [
+            "local selected = hl.get_window(" + luaString(target) + ")",
+            "if not selected then return end"
+        ];
         if (action === "hide") {
-            move = "hl.dsp.window.move({ workspace = " + luaString(minimizedWorkspaceName) + ", follow = false, window = " + luaString(target) + " })";
-            bar.run(dispatchExpression(move));
-            return ;
-        }
-        var focus = "hl.dsp.focus({ window = " + luaString(target) + " })";
-        var raise = "hl.dsp.window.alter_zorder({ mode = \"top\", window = " + luaString(target) + " })";
-        if (action === "focus") {
-            bar.run(dispatchExpression(focus) + " && " + dispatchExpression(raise));
-            return ;
-        }
-        var destination = workspaceSelector(workspace);
-        if (!destination)
-            return ;
+            statements.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(minimizedWorkspaceName) + ", follow = false, window = selected }))");
+        } else {
+            if (action === "restore") {
+                var destination = workspaceSelector(workspace);
+                if (!destination)
+                    return ;
 
-        move = "hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = " + luaString(target) + " })";
-        bar.run(dispatchExpression(move) + " && " + dispatchExpression(focus) + " && " + dispatchExpression(raise));
+                statements.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = selected }))");
+            }
+            statements.push("hl.dispatch(hl.dsp.focus({ window = selected }))");
+            statements.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = selected }))");
+        }
+        debugLog("tasklist.activate", {
+            "action": action,
+            "address": item.address,
+            "workspace": String(workspace.name || "")
+        });
+        Hyprland.dispatch("(function() return function() " + statements.join("; ") + " end end)()");
     }
 
     FileView {
@@ -169,19 +175,33 @@ BarWidget {
         onFileChanged: reload()
     }
 
-    Timer {
-        id: ipcRefreshTimer
-
-        interval: 75
-        repeat: false
-        onTriggered: Hyprland.refreshToplevels()
+    FileView {
+        path: Quickshell.env("HOME") + "/.local/state/omarchy/float-panel-debug"
+        watchChanges: true
+        printErrors: false
+        onLoaded: root.debugEnabled = true
+        onLoadFailed: root.debugEnabled = false
+        onFileChanged: reload()
     }
+
+    Component.onCompleted: Hyprland.refreshToplevels()
 
     Connections {
         target: Hyprland.toplevels
 
         function onValuesChanged() {
-            ipcRefreshTimer.restart();
+            Hyprland.refreshToplevels();
+        }
+    }
+
+    Connections {
+        target: Hyprland
+
+        function onRawEvent(event) {
+            if (event.name === "openwindow" || event.name === "closewindow" ||
+                    event.name === "movewindow" || event.name === "movewindowv2")
+                Hyprland.refreshToplevels();
+
         }
     }
 
