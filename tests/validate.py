@@ -12,7 +12,11 @@ assert manifest["kinds"] == ["bar-widget", "overlay"]
 assert manifest["keepLoaded"] is True
 assert manifest["entryPoints"]["barWidget"] == "TaskList.qml"
 assert manifest["entryPoints"]["overlay"] == "AppSwitcher.qml"
-assert manifest["barWidget"]["allowMultiple"] is False
+assert manifest["barWidget"]["allowMultiple"] is True
+assert manifest["barWidget"]["defaults"]["mode"] == "Task List"
+mode_schema = next(item for item in manifest["barWidget"]["schema"] if item["key"] == "mode")
+assert mode_schema["type"] == "enum"
+assert mode_schema["options"] == ["Task List", "Float Toggle"]
 assert (ROOT / manifest["entryPoints"]["barWidget"]).is_file()
 assert (ROOT / manifest["entryPoints"]["overlay"]).is_file()
 
@@ -25,7 +29,14 @@ for required in (
     "watchChanges: true",
     "onFileChanged: reload()",
     "workspace.id > 0",
-    "workspaceFloatEnabled && taskGroups.length > 0",
+    'widgetMode === "Float Toggle"',
+    "toggleWidget || (workspaceFloatEnabled && taskGroups.length > 0)",
+    "BarIconButton",
+    'text: "󰖲"',
+    "dimmed: !active",
+    'button === Qt.LeftButton',
+    "root.toggleWorkspaceMode()",
+    "fatlj_float_panel.toggle_workspace_mode(",
     "workspace.toplevels.values",
     "minimizedWorkspace.toplevels.values",
     "Hyprland.toplevels",
@@ -121,6 +132,9 @@ for required in (
     "hl.dsp.window.tag",
     'order_tag_prefix = "float-panel-order-"',
     'o.bind("SUPER + SHIFT + T"',
+    "local function toggle_workspace_mode(workspace, event)",
+    "fatlj_float_panel.toggle_workspace_mode = function(workspace_selector)",
+    'toggle_workspace_mode(hl.get_workspace(workspace_selector), "ui.toggle_mode")',
     'o.bind("SUPER + M"',
     'o.bind("SUPER + UP"',
     'o.bind("SUPER + DOWN"',

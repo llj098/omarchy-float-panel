@@ -17,7 +17,10 @@ BarWidget {
     readonly property var minimizedWorkspace: findWorkspaceByName(minimizedWorkspaceName)
     property var floatWorkspaceNames: ({})
     property bool debugEnabled: false
-    readonly property bool workspaceFloatEnabled: workspace && workspace.id > 0 && floatWorkspaceNames[String(workspace.name || "")] === true
+    readonly property string widgetMode: settings && settings.mode ? String(settings.mode) : "Task List"
+    readonly property bool toggleWidget: widgetMode === "Float Toggle"
+    readonly property bool regularWorkspace: workspace && workspace.id > 0
+    readonly property bool workspaceFloatEnabled: regularWorkspace && floatWorkspaceNames[String(workspace.name || "")] === true
     readonly property var taskGroups: TaskListModel.groupToplevels(workspace ? workspace.toplevels.values : [], minimizedWorkspace ? minimizedWorkspace.toplevels.values : [], function(toplevel) {
         return root.describeToplevel(toplevel);
     })
@@ -131,6 +134,18 @@ BarWidget {
         return JSON.stringify(String(value || ""));
     }
 
+    function toggleWorkspaceMode() {
+        var workspaceId = workspace ? Number(workspace.id) : 0;
+        if (workspaceId <= 0)
+            return ;
+
+        debugLog("toggle.click", {
+            "workspace": String(workspace.name || workspaceId),
+            "enabled": !workspaceFloatEnabled
+        });
+        Hyprland.dispatch("(function() return function() if fatlj_float_panel and type(fatlj_float_panel.toggle_workspace_mode) == \"function\" then fatlj_float_panel.toggle_workspace_mode(" + workspaceId + ") end end end)()");
+    }
+
     function activateGroup(group) {
         if (!workspace || !group)
             return ;
@@ -224,14 +239,33 @@ BarWidget {
     }
 
     moduleName: "fatlj.float-panel"
-    visible: workspaceFloatEnabled && taskGroups.length > 0
-    implicitWidth: visible ? taskGrid.implicitWidth : 0
-    implicitHeight: visible ? taskGrid.implicitHeight : 0
+    visible: regularWorkspace && (toggleWidget || (workspaceFloatEnabled && taskGroups.length > 0))
+    implicitWidth: visible ? (toggleWidget ? floatToggleButton.implicitWidth : taskGrid.implicitWidth) : 0
+    implicitHeight: visible ? (toggleWidget ? floatToggleButton.implicitHeight : taskGrid.implicitHeight) : 0
+
+    BarIconButton {
+        id: floatToggleButton
+
+        anchors.fill: parent
+        visible: root.toggleWidget
+        bar: root.bar
+        text: "󰖲"
+        active: root.workspaceFloatEnabled
+        dimmed: !active
+        useActiveColor: false
+        tooltipText: active ? "Switch this workspace to Tiling" : "Switch this workspace to Float"
+        onPressed: function(button) {
+            if (button === Qt.LeftButton)
+                root.toggleWorkspaceMode();
+
+        }
+    }
 
     GridLayout {
         id: taskGrid
 
         anchors.fill: parent
+        visible: !root.toggleWidget
         columns: root.vertical ? 1 : Math.max(1, root.taskGroups.length)
         rows: root.vertical ? Math.max(1, root.taskGroups.length) : 1
         columnSpacing: 0

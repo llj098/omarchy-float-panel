@@ -179,16 +179,12 @@ local function debug_window_action(event, window, workspace, fields)
   debug_log(event, fields)
 end
 
-local function toggle_active_workspace_mode()
-  local _, workspace = active_window_context()
-  if not workspace_is_regular(workspace) then
-    workspace = hl.get_active_workspace()
-  end
+local function toggle_workspace_mode(workspace, event)
   if not workspace_is_regular(workspace) then return end
 
   local key = workspace_key(workspace)
   local enabled = not workspace_float_enabled(workspace)
-  debug_window_action("bind.toggle_mode", hl.get_active_window(), workspace, { enabled = enabled })
+  debug_window_action(event or "ui.toggle_mode", hl.get_active_window(), workspace, { enabled = enabled })
   if not enabled and persist_workspace_placements then persist_workspace_placements(workspace) end
   float_workspaces[key] = enabled or nil
   save_float_workspaces()
@@ -196,6 +192,19 @@ local function toggle_active_workspace_mode()
 
   local mode = enabled and "floating" or "tiling"
   hl.exec_cmd("omarchy-notification-send " .. o.shell_quote("Workspace " .. key .. " set to " .. mode))
+end
+
+local function toggle_active_workspace_mode()
+  local _, workspace = active_window_context()
+  if not workspace_is_regular(workspace) then
+    workspace = hl.get_active_workspace()
+  end
+  toggle_workspace_mode(workspace, "bind.toggle_mode")
+end
+
+fatlj_float_panel = fatlj_float_panel or {}
+fatlj_float_panel.toggle_workspace_mode = function(workspace_selector)
+  toggle_workspace_mode(hl.get_workspace(workspace_selector), "ui.toggle_mode")
 end
 
 local function minimize_active_window()

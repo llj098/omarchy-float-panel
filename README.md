@@ -5,6 +5,7 @@ An Omarchy 4 bar widget that shows one icon per application on each monitor's ac
 ## Behavior
 
 - The TaskList is shown only when the active normal workspace is in Float mode and has visible or minimized applications.
+- A second `Float Toggle` widget instance can stay beside Omarchy Indicators; left click switches that bar's current regular workspace between Float and Tiling, with a bright/dim state icon.
 - Each application is represented by one icon, even when it owns multiple windows.
 - Icons stay sorted by application process launch time; focus, raise, minimize, restore, and Shell restarts do not reorder them.
 - Left click behaves like a taskbar toggle for the representative window.
@@ -65,12 +66,14 @@ omarchy-restart-shell
 
 ## Workspace mode
 
-Press `Super+Shift+T` on any regular workspace:
+Press `Super+Shift+T` on any regular workspace, or left-click a `Float Toggle` bar-widget instance on that monitor:
 
 - Tiling → floating: all current windows float; windows opened or moved there also float.
 - Floating → tiling: all current windows tile; windows subsequently moved there tile. Newly opened windows again follow normal Hyprland application rules.
 
 In every mode, `Super+Tab` and `Super+Shift+Tab` cycle the existing regular workspaces on the focused window's monitor with boundary wrap; special workspaces are excluded and missing workspace IDs are not created.
+
+The plugin supports multiple bar-widget instances. Existing/default instances use `Task List`; configure an additional instance as `Float Toggle` and place it beside `omarchy.indicators`. It remains visible and clickable in both modes and calls the same in-process Lua mode function as the keyboard binding. Omarchy's first-party Indicators loader has no third-party indicator registration point, so no system plugin files are modified.
 
 The set of floating workspace names is stored at:
 

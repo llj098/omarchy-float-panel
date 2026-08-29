@@ -98,6 +98,13 @@ hl = {
   get_windows = function() return { w1, w2 } end,
   get_active_monitor = function() return active_monitor end,
   get_workspaces = function() return { ws1, ws2, ws3, special } end,
+  get_workspace = function(selector)
+    local id = tonumber(selector)
+    for _, candidate in ipairs({ ws1, ws2, ws3, special }) do
+      if candidate.id == id then return candidate end
+    end
+    return nil
+  end,
   get_config = function(name)
     if name == "general.gaps_out" then return { top = 10, right = 10, bottom = 10, left = 10 } end
     if name == "general.float_gaps" then return -1 end
@@ -181,6 +188,18 @@ assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")
 assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must notify its mode")
+
+local ui_window = { workspace = ws2, floating = false, mapped = true, fullscreen = 0, pid = 1, tags = {} }
+ws2.windows = { ui_window }
+assert(type(fatlj_float_panel) == "table" and type(fatlj_float_panel.toggle_workspace_mode) == "function",
+  "the bar widget must have a narrow Lua toggle bridge")
+fatlj_float_panel.toggle_workspace_mode(2)
+assert(ui_window.floating, "UI toggle must float the selected monitor workspace")
+fatlj_float_panel.toggle_workspace_mode(2)
+assert(not ui_window.floating, "second UI toggle must restore tiling")
+assert(#commands == 3 and commands[2]:find("floating", 1, true) and commands[3]:find("tiling", 1, true),
+  "UI toggle must issue the same mode notifications as the keyboard binding")
+ws2.windows = {}
 
 local function side_tag(window)
   for _, tag in ipairs(window.tags) do
