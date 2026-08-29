@@ -90,6 +90,8 @@ for required in (
     'hl.on("window.move_to_workspace"',
     'hl.on("workspace.move_to_monitor"',
     'hl.on("monitor.layout_changed"',
+    'hl.on("layer.opened"',
+    "workspace.monitor == monitor",
     "for _, workspace in ipairs(hl.get_workspaces()) do",
     "defensively_fit_float_workspace(workspace)",
     "floating_window_bounds(window.monitor)",
@@ -168,9 +170,10 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
 assert "Qt.callLater(function() { root.dispatchActivation" not in switcher
 assert lua.count('hl.on("workspace.move_to_monitor"') == 1
 assert lua.count('hl.on("monitor.layout_changed"') == 1
+assert lua.count('hl.on("layer.opened"') == 1
 assert 'hl.on("workspace.work_area_changed"' not in lua
 assert 'hl.on("monitor.removed"' not in lua
-for forbidden_event in ('layer.opened', 'layer.closed', 'config.props_refreshed'):
+for forbidden_event in ('layer.closed', 'config.props_refreshed'):
     assert f'hl.on("{forbidden_event}"' not in lua, "layout repair must not stitch unrelated events"
 assert not (ROOT / "patches" / "hyprland-0.56.2-work-area-event.patch").exists(), \
     "the plugin must not require a custom Hyprland build"

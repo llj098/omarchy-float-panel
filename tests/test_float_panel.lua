@@ -166,6 +166,7 @@ assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
 assert(type(handlers["workspace.move_to_monitor"]) == "function")
 assert(type(handlers["monitor.layout_changed"]) == "function")
+assert(type(handlers["layer.opened"]) == "function")
 assert(handlers["workspace.work_area_changed"] == nil)
 assert(handlers["monitor.removed"] == nil,
   "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
@@ -296,6 +297,41 @@ handlers["monitor.layout_changed"]()
 handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
 assert(#dispatched == before_idempotent_fit,
   "repeated layout and migration routes must be geometrically idempotent through their common fitter")
+
+local edp_monitor = {
+  x = 0, y = 0, width = 1920, height = 1080, scale = 1.25, transform = 0,
+  reserved = { left = 0, right = 0, top = 0, bottom = 0 },
+}
+local layer_max = {
+  workspace = ws3, floating = true, mapped = true, fullscreen = 0, monitor = edp_monitor,
+  at = { x = 12, y = 12 }, size = { x = 1512, y = 840 },
+  tags = { "float-panel-geometric-max-v1-p100-p100-p500-p400-p3-33" },
+}
+local layer_side = {
+  workspace = ws3, floating = true, mapped = true, fullscreen = 0, monitor = edp_monitor,
+  at = { x = 12, y = 12 }, size = { x = 749, y = 840 },
+  tags = { "float-panel-side-v1-l-p12-p12-p749-p840-p0-p0-p3-33" },
+}
+local layer_free = {
+  workspace = ws3, floating = true, mapped = true, fullscreen = 0, monitor = edp_monitor,
+  at = { x = 800, y = 12 }, size = { x = 200, y = 840 }, tags = {},
+}
+ws1.monitor, ws2.monitor, ws3.monitor, special.monitor = migrated_monitor, edp_monitor, edp_monitor, edp_monitor
+ws3.windows = { layer_max, layer_side, layer_free }
+local untouched_tiling_x, untouched_special_x, untouched_other_x = tiling_candidate.at.x, special_candidate.at.x, w1.at.x
+edp_monitor.reserved.bottom = 26
+local before_layer_opened = #dispatched
+handlers["layer.opened"]({ monitor = edp_monitor })
+assert(layer_max.size.y == 814 and layer_side.size.y == 814 and layer_free.size.y == 814,
+  "post-arrange layer.opened must refit every Float window from stale 840px to final 814px height")
+assert(side_tag(layer_side):find("p749%-p814"), "layer reflow must update side intent with observed final geometry")
+assert(tiling_candidate.at.x == untouched_tiling_x and special_candidate.at.x == untouched_special_x and w1.at.x == untouched_other_x,
+  "layer.opened must leave Tiling, special, and other-monitor workspaces untouched")
+local after_layer_opened = #dispatched
+handlers["layer.opened"]({ monitor = edp_monitor })
+assert(#dispatched == after_layer_opened and after_layer_opened > before_layer_opened,
+  "repeated layer.opened fitting must be idempotent")
+
 local before_wrong_routes = #dispatched
 handlers["workspace.move_to_monitor"](ws2, migrated_monitor)
 handlers["workspace.move_to_monitor"](special, migrated_monitor)

@@ -635,6 +635,17 @@ hl.on("monitor.layout_changed", function()
   end
 end)
 
+-- LayerSurface::onMap arranges exclusive reservations before this event.
+hl.on("layer.opened", function(layer)
+  local monitor = layer and layer.monitor or nil
+  if not monitor then return end
+  for _, workspace in ipairs(hl.get_workspaces()) do
+    if workspace_is_regular(workspace) and workspace_float_enabled(workspace) and workspace.monitor == monitor then
+      defensively_fit_float_workspace(workspace)
+    end
+  end
+end)
+
 local resize_bindings = {
   { "SUPER + code:20", "Expand window left", -100, 0 },
   { "SUPER + code:21", "Shrink window left", 100, 0 },
