@@ -154,10 +154,10 @@ assert(bind_options["ALT + ALT_L"].transparent == true and bind_options["ALT + A
 local unbound_set = {}
 for _, keys in ipairs(unbound) do unbound_set[keys] = true end
 for _, route in ipairs(resize_routes) do assert(unbound_set[route[1]], route[1] .. " stock binding must be unbound") end
-for _, keys in ipairs({ "SUPER + LEFT", "SUPER + RIGHT", "SUPER + UP", "SUPER + DOWN", "SUPER + F", "SUPER + CTRL + TAB" }) do
+for _, keys in ipairs({ "SUPER + LEFT", "SUPER + RIGHT", "SUPER + UP", "SUPER + DOWN", "SUPER + F" }) do
   assert(unbound_set[keys], keys .. " stock binding must be unbound")
 end
-for _, keys in ipairs({ "SUPER + ALT + TAB", "ALT + 1", "ALT + 2", "ALT + 3", "ALT + 4", "ALT + 5", "ALT + 6", "ALT + 7", "ALT + 8", "ALT + 9" }) do
+for _, keys in ipairs({ "SUPER + CTRL + TAB", "SUPER + ALT + TAB", "ALT + 1", "ALT + 2", "ALT + 3", "ALT + 4", "ALT + 5", "ALT + 6", "ALT + 7", "ALT + 8", "ALT + 9" }) do
   assert(not unbound_set[keys] and binds[keys] == nil, keys .. " must remain owned by Omarchy")
 end
 assert(#configs == 1 and configs[1].general.float_gaps == -1,

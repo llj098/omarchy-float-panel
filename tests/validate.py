@@ -127,7 +127,6 @@ for required in (
     'hl.dsp.global("fatlj.float-panel:alt-tab-next")',
     '{ release = true, transparent = true }',
     'hl.unbind("SUPER + LEFT")',
-    'hl.unbind("SUPER + CTRL + TAB")',
     '{ "SUPER + code:20", "Expand window left", -100, 0 }',
     '{ "SUPER + code:21", "Shrink window left", 100, 0 }',
     '{ "SUPER + SHIFT + code:20", "Shrink window up", 0, -100 }',
@@ -184,7 +183,10 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
 assert "bar.run" not in qml and "hyprctl dispatch" not in qml, \
     "TaskList actions must use one in-process Hyprland request"
 assert "Timer {" not in qml, "TaskList IPC refresh must be event-driven"
-assert "Qt.callLater" not in switcher, "AppSwitcher positioning must follow QML visibility state"
+assert "Qt.callLater(function() { list.positionViewAtIndex" in switcher, \
+    "AppSwitcher must position its list after QML has applied the snapshot"
+assert 'hl.unbind("SUPER + CTRL + TAB")' not in lua, \
+    "Omarchy's former-workspace binding must remain enabled"
 assert lua.count('hl.on("workspace.move_to_monitor"') == 1
 assert lua.count('hl.on("monitor.layout_changed"') == 1
 assert lua.count('hl.on("layer.opened"') == 1

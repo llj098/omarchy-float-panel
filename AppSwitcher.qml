@@ -166,6 +166,7 @@ Item {
       : (direction > 0 ? 0 : groups.length - 1)
     opened = true
     debugLog("switcher.begin", { workspace: capturedWorkspaceName, candidates: groups.length, selected: selectedIndex })
+    Qt.callLater(function() { list.positionViewAtIndex(root.selectedIndex, ListView.Contain) })
   }
 
   function step(direction) {
@@ -273,10 +274,6 @@ Item {
   PanelWindow {
     id: panel
     visible: root.opened
-    onVisibleChanged: {
-      if (visible && root.selectedIndex >= 0)
-        list.positionViewAtIndex(root.selectedIndex, ListView.Contain)
-    }
     screen: root.targetScreen
     anchors { top: true; right: true; bottom: true; left: true }
     color: "transparent"
