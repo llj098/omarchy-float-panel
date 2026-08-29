@@ -163,6 +163,8 @@ end
 assert(#configs == 1 and configs[1].general.float_gaps == -1,
   "native floating work areas must inherit the configured outer gaps")
 assert(type(handlers["window.open"]) == "function")
+assert(type(handlers["window.close"]) == "function")
+assert(type(handlers["hyprland.shutdown"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
 assert(type(handlers["workspace.move_to_monitor"]) == "function")
 assert(type(handlers["monitor.layout_changed"]) == "function")
@@ -668,5 +670,101 @@ local state_file = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/om
 local persisted = state_file:read("*a")
 state_file:close()
 assert(persisted == "1\n3\n", "workspace modes must be persisted independently and atomically")
+
+local function persisted_window(address, class, x, y, width, height)
+  return {
+    address = address, initial_class = class, class = class, xdg_tag = nil,
+    workspace = ws1, monitor = own_monitor, floating = false, mapped = true, hidden = false,
+    fullscreen = 0, pid = 1, tags = {}, at = { x = x, y = y }, size = { x = width, y = height },
+  }
+end
+
+-- A free Float window must reopen at its last closed geometry.
+local saved = persisted_window("0x1001", "PersistApp", 200, 100, 400, 200)
+handlers["window.open"](saved)
+saved.at, saved.size = { x = 260, y = 140 }, { x = 430, y = 230 }
+handlers["window.close"](saved)
+-- Reload the Lua module so restoration is proven from disk, not its old in-memory table.
+dofile("hypr/float-panel.lua")
+local reopened = persisted_window("0x1002", "PersistApp", 50, 70, 180, 120)
+handlers["window.open"](reopened)
+assert(reopened.at.x == 260 and reopened.at.y == 140 and reopened.size.x == 430 and reopened.size.y == 230,
+  "window.close/open must restore the final free geometry")
+
+local edge_saved = persisted_window("0x1101", "EdgeApp", 548, 238, 430, 230)
+handlers["window.open"](edge_saved)
+handlers["window.close"](edge_saved)
+local compact_monitor = {
+  x = 2000, y = 100, width = 700, height = 500, scale = 1, transform = 0,
+  reserved = { left = 0, right = 0, top = 0, bottom = 0 },
+}
+local edge_reopened = persisted_window("0x1102", "EdgeApp", 30, 40, 100, 80)
+edge_reopened.monitor = compact_monitor
+handlers["window.open"](edge_reopened)
+assert(edge_reopened.at.x == 2258 and edge_reopened.at.y == 358 and
+  edge_reopened.size.x == 430 and edge_reopened.size.y == 230,
+  "free geometry must retain right/bottom relative placement without growing on a different work area")
+
+-- Identical windows claim separate slots; reopening B while A is live must restore B.
+local multi_a = persisted_window("0x2001", "MultiApp", 120, 90, 300, 180)
+local multi_b = persisted_window("0x2002", "MultiApp", 500, 210, 360, 240)
+handlers["window.open"](multi_a)
+handlers["window.open"](multi_b)
+multi_a.at, multi_a.size = { x = 140, y = 110 }, { x = 320, y = 190 }
+multi_b.at, multi_b.size = { x = 520, y = 190 }, { x = 370, y = 250 }
+handlers["window.close"](multi_b)
+local multi_b_reopened = persisted_window("0x2003", "MultiApp", 40, 70, 160, 100)
+handlers["window.open"](multi_b_reopened)
+assert(multi_b_reopened.at.x == 520 and multi_b_reopened.at.y == 190 and
+  multi_b_reopened.size.x == 370 and multi_b_reopened.size.y == 250,
+  "an identical app window must reclaim the unoccupied geometry slot")
+
+local role_main = persisted_window("0x2101", "RoleApp", 130, 100, 300, 180)
+local role_tool = persisted_window("0x2102", "RoleApp", 480, 200, 360, 240)
+role_main.xdg_tag, role_tool.xdg_tag = "main", "tool"
+handlers["window.open"](role_main)
+handlers["window.open"](role_tool)
+handlers["window.close"](role_main)
+handlers["window.close"](role_tool)
+local role_tool_reopened = persisted_window("0x2103", "RoleApp", 40, 70, 160, 100)
+role_tool_reopened.xdg_tag = "tool"
+handlers["window.open"](role_tool_reopened)
+assert(role_tool_reopened.at.x == 480 and role_tool_reopened.at.y == 200 and
+  role_tool_reopened.size.x == 360 and role_tool_reopened.size.y == 240,
+  "xdg_tag must separate stable roles within one application class")
+
+-- Semantic side/max placement must be recomputed and max-down must retain its free restore box.
+local side_saved = persisted_window("0x3001", "SideApp", 180, 100, 340, 220)
+handlers["window.open"](side_saved)
+active_workspace, active_window = ws1, side_saved
+binds["SUPER + LEFT"]()
+handlers["window.close"](side_saved)
+local side_reopened = persisted_window("0x3002", "SideApp", 80, 80, 200, 120)
+handlers["window.open"](side_reopened)
+assert(side_reopened.at.x == 32 and side_reopened.at.y == 62 and
+  side_reopened.size.x == 466 and side_reopened.size.y == 406 and side_tag(side_reopened),
+  "managed halves must reopen from semantic side intent")
+
+local max_saved = persisted_window("0x4001", "MaxApp", 180, 120, 350, 220)
+handlers["window.open"](max_saved)
+active_window = max_saved
+binds["SUPER + UP"]()
+handlers["window.close"](max_saved)
+local max_reopened = persisted_window("0x4002", "MaxApp", 70, 80, 190, 130)
+handlers["window.open"](max_reopened)
+assert(max_reopened.at.x == 32 and max_reopened.at.y == 62 and
+  max_reopened.size.x == 946 and max_reopened.size.y == 406 and geometric_tag(max_reopened),
+  "geometric max intent must survive close/reopen")
+active_window = max_reopened
+binds["SUPER + DOWN"]()
+assert(max_reopened.at.x == 180 and max_reopened.at.y == 120 and
+  max_reopened.size.x == 350 and max_reopened.size.y == 220,
+  "restoring a reopened max window must recover its saved free geometry")
+
+local geometry_file = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-geometries", "r"))
+local geometry_state = geometry_file:read("*a")
+geometry_file:close()
+assert(geometry_state:find("\tv1\t", 1, true) == nil and geometry_state:find("v1\t", 1, true) == 1,
+  "geometry state must use the versioned flat format")
 
 print("LUA_TESTS_OK")

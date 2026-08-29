@@ -101,6 +101,8 @@ assert "floatWorkspaceNames" not in switcher and "workspaceFloatEnabled" not in 
 lua = (ROOT / "hypr" / "float-panel.lua").read_text()
 for required in (
     'hl.on("window.open"',
+    'hl.on("window.close"',
+    'hl.on("hyprland.shutdown"',
     'hl.on("window.move_to_workspace"',
     'hl.on("workspace.move_to_monitor"',
     'hl.on("monitor.layout_changed"',
@@ -153,6 +155,13 @@ for required in (
     'hl.dsp.window.fullscreen_state({',
     'geometric_max_tag_prefix = "float-panel-geometric-max-v1-"',
     'side_intent_tag_prefix = "float-panel-side-v1-"',
+    'geometry_slot_tag_prefix = "float-panel-geometry-slot-v1-"',
+    'float-panel-geometries',
+    'window.initial_class',
+    'window.xdg_tag',
+    'load_geometry_records()',
+    'save_geometry_records()',
+    'claim_geometry_slot(window, workspace)',
     'debug_log_limit = 5 * 1024 * 1024',
     'debug_window_action("bind.direction"',
     'debug_log("event.layer_opened"',

@@ -3,6 +3,7 @@
 
 local home = os.getenv("HOME") or ""
 local state_path = home .. "/.local/state/omarchy/float-panel-workspaces"
+local geometry_state_path = home .. "/.local/state/omarchy/float-panel-geometries"
 local debug_flag_path = home .. "/.local/state/omarchy/float-panel-debug"
 local debug_log_path = "/tmp/float-panel-debug.log"
 local debug_log_limit = 5 * 1024 * 1024
@@ -59,6 +60,10 @@ hl.window_rule({
 local order_tag_prefix = "float-panel-order-"
 local geometric_max_tag_prefix = "float-panel-geometric-max-v1-"
 local side_intent_tag_prefix = "float-panel-side-v1-"
+local geometry_slot_tag_prefix = "float-panel-geometry-slot-v1-"
+local geometry_records = {}
+local geometry_claims = {}
+local geometry_window_claims = {}
 
 local function process_start_ticks(pid)
   pid = tonumber(pid)
@@ -143,6 +148,8 @@ local function set_window_floating(window, enabled)
 end
 
 local apply_workspace_mode
+local persist_window_placement
+local persist_workspace_placements
 
 local function active_window_context()
   local window = hl.get_active_window()
@@ -182,6 +189,7 @@ local function toggle_active_workspace_mode()
   local key = workspace_key(workspace)
   local enabled = not workspace_float_enabled(workspace)
   debug_window_action("bind.toggle_mode", hl.get_active_window(), workspace, { enabled = enabled })
+  if not enabled and persist_workspace_placements then persist_workspace_placements(workspace) end
   float_workspaces[key] = enabled or nil
   save_float_workspaces()
   apply_workspace_mode(workspace)
@@ -435,6 +443,18 @@ local function geometry_clamped_to_bounds(metadata, bounds)
   }
 end
 
+local function side_intent_still_managed(window, side)
+  local at, size, monitor = window and window.at or nil, window and window.size or nil, window and window.monitor or nil
+  if not side or not at or not size or not monitor then return false end
+  local monitor_x = math.floor(tonumber(monitor.x) or 0)
+  local monitor_y = math.floor(tonumber(monitor.y) or 0)
+  local translated_x = side.x + monitor_x - side.monitor_x
+  local translated_y = side.y + monitor_y - side.monitor_y
+  local current_x, current_y = tonumber(at.x), tonumber(at.y)
+  return tonumber(size.x) == side.width and tonumber(size.y) == side.height and
+    ((current_x == side.x and current_y == side.y) or (current_x == translated_x and current_y == translated_y))
+end
+
 local function fit_window_to_floating_bounds(window)
   if not window or window.mapped ~= true or window.hidden == true or window.floating ~= true then return end
   if (tonumber(window.fullscreen) or 0) ~= 0 then return end
@@ -458,15 +478,7 @@ local function fit_window_to_floating_bounds(window)
 
   local side = window_side_intent(window)
   if side then
-    local monitor_x = math.floor(tonumber(window.monitor and window.monitor.x) or 0)
-    local monitor_y = math.floor(tonumber(window.monitor and window.monitor.y) or 0)
-    local translated_x = side.x + monitor_x - side.monitor_x
-    local translated_y = side.y + monitor_y - side.monitor_y
-    local current_x, current_y = tonumber(at.x), tonumber(at.y)
-    local same_size = tonumber(size.x) == side.width and tonumber(size.y) == side.height
-    local still_managed = same_size and ((current_x == side.x and current_y == side.y) or
-      (current_x == translated_x and current_y == translated_y))
-    if not still_managed then
+    if not side_intent_still_managed(window, side) then
       remove_window_tag(window, side.raw)
     else
       local geometry = side_geometry(side.side, window.monitor)
@@ -638,6 +650,7 @@ local function mode_aware_fullscreen()
   local float_mode = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
   debug_window_action("bind.fullscreen", window, workspace, { float = float_mode })
   if float_mode then
+    if persist_window_placement then persist_window_placement(window, workspace) end
     hl.dispatch(hl.dsp.window.fullscreen_state({
       internal = 2,
       client = 0,
@@ -664,12 +677,355 @@ local function workspace_super_tab(next_workspace)
   hl.dispatch(hl.dsp.focus({ workspace = next_workspace and "m+1" or "m-1" }))
 end
 
+local valid_geometry_intents = {
+  free = true, left = true, right = true,
+  ["max-free"] = true, ["max-left"] = true, ["max-right"] = true,
+}
+
+local function nearest_integer(value)
+  value = tonumber(value) or 0
+  return value >= 0 and math.floor(value + 0.5) or math.ceil(value - 0.5)
+end
+
+local function decode_optional_hex(value)
+  if value == "" then return "" end
+  return decode_hex(value)
+end
+
+local function placement_record_key(workspace_name, class, role)
+  return workspace_name .. "\0" .. class .. "\0" .. role
+end
+
+local function placement_identity(window, workspace)
+  if not window or not workspace_is_regular(workspace) then return nil end
+  local class = tostring(window.initial_class or "")
+  if class == "" then class = tostring(window.class or "") end
+  if class == "" then return nil end
+  local role = type(window.xdg_tag) == "string" and window.xdg_tag or ""
+  local workspace_name = workspace_selector(workspace)
+  if workspace_name == "" then return nil end
+  return {
+    workspace = workspace_name,
+    class = class,
+    role = role,
+    key = placement_record_key(workspace_name, class, role),
+  }
+end
+
+local function make_geometry_slot_tag(identity, slot)
+  return geometry_slot_tag_prefix .. table.concat({
+    encode_hex(identity.workspace), encode_hex(identity.class), encode_hex(identity.role), tostring(slot),
+  }, "-")
+end
+
+local function parse_geometry_slot_tag(tag)
+  if type(tag) ~= "string" or tag:sub(1, #geometry_slot_tag_prefix) ~= geometry_slot_tag_prefix then return nil end
+  local workspace_hex, class_hex, role_hex, slot_text = tag:sub(#geometry_slot_tag_prefix + 1):match(
+    "^([0-9a-f]+)%-([0-9a-f]+)%-([0-9a-f]*)%-(%d+)$")
+  if not workspace_hex then return nil end
+  local workspace_name = decode_hex(workspace_hex)
+  local class = decode_hex(class_hex)
+  local role = decode_optional_hex(role_hex)
+  local slot = tonumber(slot_text)
+  if not workspace_name or not class or class == "" or role == nil or not slot or slot < 1 then return nil end
+  return {
+    raw = tag,
+    workspace = workspace_name,
+    class = class,
+    role = role,
+    slot = math.floor(slot),
+    key = placement_record_key(workspace_name, class, role),
+  }
+end
+
+local function geometry_window_token(window)
+  if not window then return nil end
+  local address = tostring(window.address or "")
+  if address ~= "" then return address end
+  if window.stable_id ~= nil then return "stable:" .. tostring(window.stable_id) end
+  return tostring(window)
+end
+
+local function release_geometry_slot(window, remove_tag)
+  local token = geometry_window_token(window)
+  local claim = token and geometry_window_claims[token] or nil
+  if claim then
+    local bucket = geometry_claims[claim.key]
+    if bucket and bucket[claim.slot] == token then bucket[claim.slot] = nil end
+    geometry_window_claims[token] = nil
+  end
+  if remove_tag then
+    local tags = {}
+    for _, tag in ipairs(window and window.tags or {}) do
+      if parse_geometry_slot_tag(tag) then table.insert(tags, tag) end
+    end
+    for _, tag in ipairs(tags) do remove_window_tag(window, tag) end
+  end
+end
+
+local function claim_geometry_slot(window, workspace)
+  local identity = placement_identity(window, workspace)
+  local token = geometry_window_token(window)
+  if not identity or not token then return nil, nil end
+
+  local existing = geometry_window_claims[token]
+  if existing and existing.key == identity.key then
+    local records = geometry_records[identity.key] or {}
+    return identity, existing.slot, records[existing.slot]
+  elseif existing then
+    release_geometry_slot(window, true)
+  end
+
+  local claims = geometry_claims[identity.key]
+  if not claims then
+    claims = {}
+    geometry_claims[identity.key] = claims
+  end
+  local records = geometry_records[identity.key] or {}
+
+  for _, tag in ipairs(window.tags or {}) do
+    local metadata = parse_geometry_slot_tag(tag)
+    if metadata and metadata.key == identity.key and (not claims[metadata.slot] or claims[metadata.slot] == token) then
+      claims[metadata.slot] = token
+      geometry_window_claims[token] = { key = identity.key, slot = metadata.slot }
+      return identity, metadata.slot, records[metadata.slot]
+    end
+  end
+
+  release_geometry_slot(window, true)
+  claims = geometry_claims[identity.key] or {}
+  geometry_claims[identity.key] = claims
+
+  local slots = {}
+  for slot in pairs(records) do table.insert(slots, slot) end
+  table.sort(slots)
+  local slot
+  for _, candidate in ipairs(slots) do
+    if not claims[candidate] then
+      slot = candidate
+      break
+    end
+  end
+  if not slot then
+    slot = 1
+    while claims[slot] or records[slot] do slot = slot + 1 end
+  end
+
+  claims[slot] = token
+  geometry_window_claims[token] = { key = identity.key, slot = slot }
+  add_window_tag(window, make_geometry_slot_tag(identity, slot))
+  return identity, slot, records[slot]
+end
+
+local function split_tabs(line)
+  local fields = {}
+  for field in (line .. "\t"):gmatch("(.-)\t") do table.insert(fields, field) end
+  return fields
+end
+
+local function parse_state_integer(value)
+  if type(value) ~= "string" or not value:match("^-?%d+$") then return nil end
+  return tonumber(value)
+end
+
+local function load_geometry_records()
+  local file = io.open(geometry_state_path, "r")
+  if not file then return end
+  for line in file:lines() do
+    local fields = split_tabs(line)
+    if #fields == 14 and fields[1] == "v1" then
+      local workspace_name = decode_hex(fields[2])
+      local class = decode_hex(fields[3])
+      local role = decode_optional_hex(fields[4])
+      local slot = parse_state_integer(fields[5])
+      local intent = fields[6]
+      local x, y = parse_state_integer(fields[7]), parse_state_integer(fields[8])
+      local width, height = parse_state_integer(fields[9]), parse_state_integer(fields[10])
+      local bounds_left, bounds_top = parse_state_integer(fields[11]), parse_state_integer(fields[12])
+      local bounds_width, bounds_height = parse_state_integer(fields[13]), parse_state_integer(fields[14])
+      if workspace_name and workspace_name ~= "" and class and class ~= "" and role ~= nil and slot and slot >= 1 and
+          valid_geometry_intents[intent] and x and y and width and width >= 1 and height and height >= 1 and
+          bounds_left and bounds_top and bounds_width and bounds_width >= 1 and bounds_height and bounds_height >= 1 then
+        local key = placement_record_key(workspace_name, class, role)
+        geometry_records[key] = geometry_records[key] or {}
+        geometry_records[key][slot] = {
+          workspace = workspace_name, class = class, role = role, slot = slot, intent = intent,
+          x = x, y = y, width = width, height = height,
+          bounds_left = bounds_left, bounds_top = bounds_top,
+          bounds_width = bounds_width, bounds_height = bounds_height,
+        }
+      end
+    end
+  end
+  file:close()
+end
+
+local function save_geometry_records()
+  local records = {}
+  for _, bucket in pairs(geometry_records) do
+    for _, record in pairs(bucket) do table.insert(records, record) end
+  end
+  table.sort(records, function(a, b)
+    if a.workspace ~= b.workspace then return a.workspace < b.workspace end
+    if a.class ~= b.class then return a.class < b.class end
+    if a.role ~= b.role then return a.role < b.role end
+    return a.slot < b.slot
+  end)
+
+  local temporary_path = geometry_state_path .. ".tmp"
+  local file = io.open(temporary_path, "w")
+  if not file then return false end
+  for _, record in ipairs(records) do
+    file:write(table.concat({
+      "v1", encode_hex(record.workspace), encode_hex(record.class), encode_hex(record.role),
+      tostring(record.slot), record.intent,
+      tostring(record.x), tostring(record.y), tostring(record.width), tostring(record.height),
+      tostring(record.bounds_left), tostring(record.bounds_top),
+      tostring(record.bounds_width), tostring(record.bounds_height),
+    }, "\t"), "\n")
+  end
+  file:flush()
+  file:close()
+  if not os.rename(temporary_path, geometry_state_path) then
+    os.remove(temporary_path)
+    return false
+  end
+  return true
+end
+
+local function source_float_workspace(window)
+  local workspace = window and window.workspace or nil
+  if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then return workspace end
+  local minimized_id = workspace and workspace.special == true and
+    tostring(workspace.name or ""):match("^special:omarchy%-minimized%-(%-?%d+)$") or nil
+  if not minimized_id then return nil end
+  minimized_id = tonumber(minimized_id)
+  for _, candidate in ipairs(hl.get_workspaces()) do
+    if workspace_is_regular(candidate) and tonumber(candidate.id) == minimized_id and workspace_float_enabled(candidate) then
+      return candidate
+    end
+  end
+  return nil
+end
+
+local function geometry_record_from_window(window)
+  if not window or window.mapped ~= true or window.floating ~= true then return nil end
+  local at, size = window.at, window.size
+  local bounds = floating_window_bounds(window.monitor)
+  if not at or not size or not bounds then return nil end
+
+  local maximum = window_geometric_max_metadata(window)
+  local side = window_side_intent(window)
+  local fullscreen = (tonumber(window.fullscreen) or 0) ~= 0
+  local intent, geometry
+  if maximum then
+    intent = side and ("max-" .. side.side) or "max-free"
+    geometry = maximum
+  elseif side then
+    if not fullscreen and not side_intent_still_managed(window, side) then
+      remove_window_tag(window, side.raw)
+      side = nil
+    end
+    if side then
+      intent = side.side
+      geometry = side
+    end
+  end
+  if not intent then
+    if fullscreen then return nil end
+    intent = "free"
+    geometry = { x = at.x, y = at.y, width = size.x, height = size.y }
+  end
+
+  local width, height = nearest_integer(geometry.width), nearest_integer(geometry.height)
+  if width < 1 or height < 1 then return nil end
+  return {
+    intent = intent,
+    x = nearest_integer(geometry.x), y = nearest_integer(geometry.y),
+    width = width, height = height,
+    bounds_left = nearest_integer(bounds.left), bounds_top = nearest_integer(bounds.top),
+    bounds_width = nearest_integer(bounds.width), bounds_height = nearest_integer(bounds.height),
+  }
+end
+
+local function capture_window_placement(window, workspace)
+  local identity, slot = claim_geometry_slot(window, workspace)
+  local record = geometry_record_from_window(window)
+  if not identity or not slot or not record then return false end
+  record.workspace, record.class, record.role, record.slot = identity.workspace, identity.class, identity.role, slot
+  geometry_records[identity.key] = geometry_records[identity.key] or {}
+  geometry_records[identity.key][slot] = record
+  return true
+end
+
+persist_window_placement = function(window, workspace)
+  if capture_window_placement(window, workspace or source_float_workspace(window)) then
+    return save_geometry_records()
+  end
+  return false
+end
+
+persist_workspace_placements = function(workspace)
+  local changed = false
+  if workspace_is_regular(workspace) then
+    for _, window in ipairs(workspace:get_windows()) do
+      if capture_window_placement(window, workspace) then changed = true end
+    end
+  end
+  if changed then save_geometry_records() end
+end
+
+local function scaled_placement_offset(offset, old_travel, new_travel)
+  if new_travel <= 0 then return 0 end
+  if old_travel <= 0 then return math.max(0, math.min(new_travel, nearest_integer(offset))) end
+  return math.max(0, math.min(new_travel, nearest_integer(offset * new_travel / old_travel)))
+end
+
+local function restore_free_record(window, record)
+  local bounds = floating_window_bounds(window and window.monitor or nil)
+  if not bounds then return false end
+  local width = math.max(1, math.min(record.width, bounds.width))
+  local height = math.max(1, math.min(record.height, bounds.height))
+  hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
+
+  local actual = window.size or {}
+  width = math.max(1, math.min(tonumber(actual.x) or width, bounds.width))
+  height = math.max(1, math.min(tonumber(actual.y) or height, bounds.height))
+  local old_travel_x = math.max(0, record.bounds_width - record.width)
+  local old_travel_y = math.max(0, record.bounds_height - record.height)
+  local new_travel_x = math.max(0, bounds.width - width)
+  local new_travel_y = math.max(0, bounds.height - height)
+  local x = bounds.left + scaled_placement_offset(record.x - record.bounds_left, old_travel_x, new_travel_x)
+  local y = bounds.top + scaled_placement_offset(record.y - record.bounds_top, old_travel_y, new_travel_y)
+  hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
+  return true
+end
+
+local function restore_window_placement(window, workspace, record)
+  if not record or (tonumber(window and window.fullscreen) or 0) ~= 0 then return false end
+  if record.intent == "free" then
+    return restore_free_record(window, record)
+  elseif record.intent == "left" or record.intent == "right" then
+    snap_active_window(window, workspace, record.intent)
+    return true
+  elseif record.intent == "max-left" or record.intent == "max-right" then
+    snap_active_window(window, workspace, record.intent == "max-left" and "left" or "right")
+    return maximize_geometric_window(window, workspace)
+  elseif record.intent == "max-free" and restore_free_record(window, record) then
+    return maximize_geometric_window(window, workspace)
+  end
+  return false
+end
+
 load_float_workspaces()
+load_geometry_records()
 
 -- Process start ticks survive focus/Z-order changes and let the shell reconstruct
 -- launch order after its own restart without a separate ordering database.
 for _, window in ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
+  local workspace = source_float_workspace(window)
+  if workspace then claim_geometry_slot(window, workspace) end
 end
 
 -- Re-apply persisted floating modes and repair geometry if this module loads
@@ -687,7 +1043,29 @@ hl.on("window.open", function(window)
   local workspace = window and window.workspace or nil
   if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
     set_window_floating(window, true)
+    local _, _, record = claim_geometry_slot(window, workspace)
+    if record then
+      restore_window_placement(window, workspace, record)
+    else
+      persist_window_placement(window, workspace)
+    end
+    fit_window_to_floating_bounds(window)
   end
+end)
+
+hl.on("window.close", function(window)
+  local workspace = source_float_workspace(window)
+  if workspace then persist_window_placement(window, workspace) end
+  release_geometry_slot(window, false)
+end)
+
+hl.on("hyprland.shutdown", function()
+  local changed = false
+  for _, window in ipairs(hl.get_windows()) do
+    local workspace = source_float_workspace(window)
+    if workspace and capture_window_placement(window, workspace) then changed = true end
+  end
+  if changed then save_geometry_records() end
 end)
 
 hl.on("window.move_to_workspace", function(window, workspace)
@@ -707,7 +1085,10 @@ hl.on("window.move_to_workspace", function(window, workspace)
     end
   end
   if workspace_is_regular(workspace) then
-    set_window_floating(window, workspace_float_enabled(workspace))
+    local float_enabled = workspace_float_enabled(workspace)
+    set_window_floating(window, float_enabled)
+    release_geometry_slot(window, true)
+    if float_enabled then claim_geometry_slot(window, workspace) end
   elseif metadata or side then
     set_window_floating(window, true)
   end
