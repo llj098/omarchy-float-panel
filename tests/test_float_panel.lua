@@ -399,12 +399,21 @@ assert(route_window.at.x == 4000 and route_window.size.x == 2000,
 
 local minimized3 = workspace(-103, "special:omarchy-minimized-3", true)
 local minimized_during_unplug = {
-  workspace = minimized3, floating = true, mapped = true, hidden = true, fullscreen = 0, monitor = edp_monitor,
+  workspace = minimized3, floating = true, mapped = true, hidden = false, fullscreen = 0, monitor = edp_monitor,
   at = { x = 12, y = -276 }, size = { x = 1005, y = 1102 },
   tags = { "float-panel-side-v1-r-n1017-p12-p1005-p1102-n2048-p0-p3-33" },
 }
+local minimized_free = {
+  workspace = minimized3, floating = true, mapped = true, hidden = false, fullscreen = 0, monitor = edp_monitor,
+  at = { x = -500, y = -400 }, size = { x = 2000, y = 1200 }, tags = {},
+}
+local minimized2 = workspace(-102, "special:omarchy-minimized-2", true)
+local unrelated_minimized = {
+  workspace = minimized2, floating = true, mapped = true, hidden = false, fullscreen = 0, monitor = edp_monitor,
+  at = { x = -600, y = -500 }, size = { x = 1900, y = 1300 }, tags = {},
+}
 local original_get_windows = hl.get_windows
-hl.get_windows = function() return { minimized_during_unplug } end
+hl.get_windows = function() return { minimized_during_unplug, minimized_free, unrelated_minimized } end
 handlers["workspace.move_to_monitor"](ws3, edp_monitor)
 hl.get_windows = original_get_windows
 assert(minimized_during_unplug.at.x == 775 and minimized_during_unplug.at.y == 12 and
@@ -412,6 +421,12 @@ assert(minimized_during_unplug.at.x == 775 and minimized_during_unplug.at.y == 1
   "display migration must recompute a source workspace's minimized side windows")
 assert(side_tag(minimized_during_unplug):find("%-r%-p775%-p12%-p749%-p814%-p0%-p0%-p3%-33$"),
   "minimized reflow must replace stale external-monitor side metadata")
+assert(minimized_free.at.x == 12 and minimized_free.at.y == 12 and
+  minimized_free.size.x == 1512 and minimized_free.size.y == 814,
+  "display migration must shrink and clamp oversized minimized free windows")
+assert(unrelated_minimized.at.x == -600 and unrelated_minimized.at.y == -500 and
+  unrelated_minimized.size.x == 1900 and unrelated_minimized.size.y == 1300,
+  "a source workspace reflow must not alter another workspace's minimized windows")
 
 ws1.windows = { w1, w2 }
 w1.monitor = own_monitor

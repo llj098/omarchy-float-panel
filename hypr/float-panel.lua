@@ -455,8 +455,8 @@ local function side_intent_still_managed(window, side)
     ((current_x == side.x and current_y == side.y) or (current_x == translated_x and current_y == translated_y))
 end
 
-local function fit_window_to_floating_bounds(window, target_monitor, source_workspace, include_hidden, trust_intent)
-  if not window or window.mapped ~= true or (window.hidden == true and not include_hidden) or window.floating ~= true then return end
+local function fit_window_to_floating_bounds(window, target_monitor, source_workspace, trust_intent)
+  if not window or window.mapped ~= true or window.hidden == true or window.floating ~= true then return end
   if (tonumber(window.fullscreen) or 0) ~= 0 then return end
 
   target_monitor = target_monitor or window.monitor
@@ -591,7 +591,7 @@ local function defensively_fit_float_workspace(workspace)
   local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
   for _, window in ipairs(hl.get_windows()) do
     if window.workspace and window.workspace.special == true and window.workspace.name == minimized_name then
-      fit_window_to_floating_bounds(window, workspace.monitor, workspace, true, true)
+      fit_window_to_floating_bounds(window, workspace.monitor, workspace, true)
     end
   end
 end
