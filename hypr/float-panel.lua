@@ -104,6 +104,18 @@ local function workspace_key(workspace)
   return workspace and tostring(workspace.name or "") or ""
 end
 
+local function safe_ipairs(values)
+  if type(values) ~= "table" then values = {} end
+
+  local index = 0
+  return function()
+    index = index + 1
+    local value = rawget(values, index)
+    if value == nil then return nil end
+    return index, value
+  end
+end
+
 local function load_float_workspaces()
   local file = io.open(state_path, "r")
   if not file then return end
@@ -552,7 +564,7 @@ end
 
 local function clear_geometric_max_metadata_for_workspace(workspace)
   local selector = workspace_selector(workspace)
-  for _, window in ipairs(hl.get_windows()) do
+  for _, window in safe_ipairs(hl.get_windows()) do
     local metadata = window_geometric_max_metadata(window)
     if metadata and metadata.source == selector then remove_window_tag(window, metadata.raw) end
     local side = window_side_intent(window)
@@ -564,7 +576,7 @@ apply_workspace_mode = function(workspace)
   if not workspace_is_regular(workspace) then return end
   local enabled = workspace_float_enabled(workspace)
   if not enabled then clear_geometric_max_metadata_for_workspace(workspace) end
-  for _, window in ipairs(workspace:get_windows()) do set_window_floating(window, enabled) end
+  for _, window in safe_ipairs(workspace:get_windows()) do set_window_floating(window, enabled) end
 end
 
 local function adopt_existing_side_intent(window, workspace)
@@ -590,7 +602,7 @@ local function defensively_fit_float_workspace(workspace)
 
   -- Pinned windows intentionally use the same monitor-bound fitting path.
   -- Pinning changes workspace visibility, not the monitor work-area limits.
-  for _, window in ipairs(workspace:get_windows()) do
+  for _, window in safe_ipairs(workspace:get_windows()) do
     fit_window_to_floating_bounds(window)
   end
 
@@ -598,7 +610,7 @@ local function defensively_fit_float_workspace(workspace)
   -- workspace:get_windows(). Reflow them against their source workspace now,
   -- while its post-migration monitor is authoritative.
   local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
-  for _, window in ipairs(hl.get_windows()) do
+  for _, window in safe_ipairs(hl.get_windows()) do
     if window.workspace and window.workspace.special == true and window.workspace.name == minimized_name then
       fit_window_to_floating_bounds(window, workspace.monitor, workspace, true)
     end
@@ -921,7 +933,7 @@ local function source_float_workspace(window)
     tostring(workspace.name or ""):match("^special:omarchy%-minimized%-(%-?%d+)$") or nil
   if not minimized_id then return nil end
   minimized_id = tonumber(minimized_id)
-  for _, candidate in ipairs(hl.get_workspaces()) do
+  for _, candidate in safe_ipairs(hl.get_workspaces()) do
     if workspace_is_regular(candidate) and tonumber(candidate.id) == minimized_id and workspace_float_enabled(candidate) then
       return candidate
     end
@@ -989,7 +1001,7 @@ end
 persist_workspace_placements = function(workspace)
   local changed = false
   if workspace_is_regular(workspace) then
-    for _, window in ipairs(workspace:get_windows()) do
+    for _, window in safe_ipairs(workspace:get_windows()) do
       if capture_window_placement(window, workspace) then changed = true end
     end
   end
@@ -1043,7 +1055,7 @@ load_geometry_records()
 
 -- Process start ticks survive focus/Z-order changes and let the shell reconstruct
 -- launch order after its own restart without a separate ordering database.
-for _, window in ipairs(hl.get_windows()) do
+for _, window in safe_ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
   local workspace = source_float_workspace(window)
   if workspace then claim_geometry_slot(window, workspace) end
@@ -1051,10 +1063,10 @@ end
 
 -- Re-apply persisted floating modes and repair geometry if this module loads
 -- after a monitor migration already happened.
-for _, workspace in ipairs(hl.get_workspaces()) do
+for _, workspace in safe_ipairs(hl.get_workspaces()) do
   if workspace_float_enabled(workspace) then
     apply_workspace_mode(workspace)
-    for _, window in ipairs(workspace:get_windows()) do adopt_existing_side_intent(window, workspace) end
+    for _, window in safe_ipairs(workspace:get_windows()) do adopt_existing_side_intent(window, workspace) end
     defensively_fit_float_workspace(workspace)
   end
 end
@@ -1082,7 +1094,7 @@ end)
 
 hl.on("hyprland.shutdown", function()
   local changed = false
-  for _, window in ipairs(hl.get_windows()) do
+  for _, window in safe_ipairs(hl.get_windows()) do
     local workspace = source_float_workspace(window)
     if workspace and capture_window_placement(window, workspace) then changed = true end
   end
@@ -1133,7 +1145,7 @@ end)
 -- inspect every plugin-enabled regular Float workspace defensively.
 hl.on("monitor.layout_changed", function()
   debug_log("event.monitor_layout_changed")
-  for _, workspace in ipairs(hl.get_workspaces()) do
+  for _, workspace in safe_ipairs(hl.get_workspaces()) do
     defensively_fit_float_workspace(workspace)
   end
 end)
@@ -1150,7 +1162,7 @@ hl.on("layer.opened", function(layer)
     reserved_right = tonumber(reserved.right) or 0,
     reserved_top = tonumber(reserved.top) or 0,
   })
-  for _, workspace in ipairs(hl.get_workspaces()) do
+  for _, workspace in safe_ipairs(hl.get_workspaces()) do
     if workspace_is_regular(workspace) and workspace_float_enabled(workspace) and workspace.monitor == monitor then
       defensively_fit_float_workspace(workspace)
     end

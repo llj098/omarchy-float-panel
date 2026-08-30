@@ -119,7 +119,11 @@ for required in (
     'hl.on("monitor.layout_changed"',
     'hl.on("layer.opened"',
     "workspace.monitor == monitor",
-    "for _, workspace in ipairs(hl.get_workspaces()) do",
+    "local function safe_ipairs(values)",
+    "local value = rawget(values, index)",
+    "for _, workspace in safe_ipairs(hl.get_workspaces()) do",
+    "for _, window in safe_ipairs(hl.get_windows()) do",
+    "for _, window in safe_ipairs(workspace:get_windows()) do",
     "defensively_fit_float_workspace(workspace)",
     "floating_window_bounds(window.monitor)",
     "window.mapped ~= true",
@@ -203,6 +207,13 @@ for required in (
     "special:omarchy-minimized-",
 ):
     assert required in lua, f"float-panel.lua missing required contract: {required}"
+
+for unsafe_iteration in (
+    " in ipairs(hl.get_windows())",
+    " in ipairs(hl.get_workspaces())",
+    " in ipairs(workspace:get_windows())",
+):
+    assert unsafe_iteration not in lua, f"Hyprland proxy lists must use safe iteration: {unsafe_iteration}"
 
 for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9\""):
     assert forbidden not in qml
