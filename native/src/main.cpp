@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <format>
@@ -194,51 +193,6 @@ int luaWindowSemantics(lua_State* state) {
     return 1;
 }
 
-int luaApplyXWaylandSizeHints(lua_State* state) {
-    const std::string_view address = luaL_checkstring(state, 1);
-    const auto             window  = windowFromAddress(address);
-
-    lua_newtable(state);
-    setBoolean(state, "found", static_cast<bool>(window));
-    setBoolean(state, "xwayland", window && window->m_isX11);
-    setBoolean(state, "applied", false);
-
-    if (!window) {
-        setString(state, "reason", "window-not-found");
-        return 1;
-    }
-    if (!window->m_isX11 || !window->m_xwaylandSurface) {
-        setString(state, "reason", "not-xwayland");
-        return 1;
-    }
-
-    const auto facts = xwaylandSizeHintFacts(window);
-    if (!facts) {
-        setString(state, "reason", "no-size-hints");
-        return 1;
-    }
-
-    setSizeHintFacts(state, *facts);
-    if (!facts->valid) {
-        setString(state, "reason", "invalid-size-hints");
-        return 1;
-    }
-
-    window->m_ruleApplicator->minSizeOverride(
-        Desktop::Types::COverridableVar(facts->logicalMinimum, Desktop::Types::PRIORITY_SET_PROP));
-    if (facts->maximumXFinite || facts->maximumYFinite) {
-        window->m_ruleApplicator->maxSizeOverride(
-            Desktop::Types::COverridableVar(facts->logicalMaximum, Desktop::Types::PRIORITY_SET_PROP));
-        setString(state, "reason", "applied-min-max");
-    } else {
-        window->m_ruleApplicator->maxSize().unset(Desktop::Types::PRIORITY_SET_PROP);
-        setString(state, "reason", "applied-min-only");
-    }
-
-    setBoolean(state, "applied", true);
-    return 1;
-}
-
 } // namespace
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -253,24 +207,17 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "window_semantics", luaWindowSemantics))
         throw std::runtime_error("failed to register hl.plugin.float_panel.window_semantics");
 
-    if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "apply_xwayland_size_hints", luaApplyXWaylandSizeHints)) {
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
-        throw std::runtime_error("failed to register hl.plugin.float_panel.apply_xwayland_size_hints");
-    }
-
     pluginHandle = handle;
     return {
         "float-panel-native",
-        "Window semantics and XWayland size-hint bridge for fatlj.float-panel",
+        "Read-only window semantics and XWayland size-hint bridge for fatlj.float-panel",
         "fatlj",
-        "0.2.0",
+        "0.3.0",
     };
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    if (pluginHandle) {
-        HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "apply_xwayland_size_hints");
+    if (pluginHandle)
         HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "window_semantics");
-    }
     pluginHandle = nullptr;
 }

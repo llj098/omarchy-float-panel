@@ -10,10 +10,11 @@ local debug_log_limit = 5 * 1024 * 1024
 local native_bridge_path = home .. "/.config/omarchy/plugins/fatlj.float-panel/native/build/float-panel-native.so"
 local float_workspaces = {}
 
--- The native bridge exposes compositor-owned parent/transient/type metadata
--- without patching Hyprland or launching an external process. On the first
--- load Hyprland loads the .so after evaluating the config, then reloads the
--- Lua config with the registered callback available.
+-- The read-only native bridge exposes compositor-owned relationships, window
+-- types, placement flags, and scale-corrected size-hint facts without patching
+-- Hyprland or launching an external process. On the first load Hyprland loads
+-- the .so after evaluating the config, then reloads the Lua config with the
+-- registered callback available.
 do
   local bridge = io.open(native_bridge_path, "r")
   if bridge then
@@ -28,15 +29,40 @@ local native_float_panel = type(hl.plugin) == "table" and type(hl.plugin.float_p
   hl.plugin.float_panel or nil
 local native_window_semantics = native_float_panel and type(native_float_panel.window_semantics) == "function" and
   native_float_panel.window_semantics or nil
-local native_apply_xwayland_size_hints = native_float_panel and
-  type(native_float_panel.apply_xwayland_size_hints) == "function" and
-  native_float_panel.apply_xwayland_size_hints or nil
 
-local function safely_apply_xwayland_size_hints(window)
+local function read_native_window_semantics(window)
   local address = tostring(window and window.address or "")
-  if not native_apply_xwayland_size_hints or address == "" then return false end
-  local ok, result = pcall(native_apply_xwayland_size_hints, address)
-  return ok and type(result) == "table" and result.applied == true
+  if not native_window_semantics or address == "" then return nil, "unavailable" end
+  local ok, result = pcall(native_window_semantics, address)
+  if not ok then return nil, "error" end
+  if type(result) ~= "table" or result.found ~= true then return nil, "not-found" end
+  return result, "found"
+end
+
+local function size_hint_prop_value(size)
+  local x = tonumber(size and size.x)
+  local y = tonumber(size and size.y)
+  if not x or not y or x <= 0 or y <= 0 or x ~= x or y ~= y or x == math.huge or y == math.huge then return nil end
+  return string.format("%.17g %.17g", x, y)
+end
+
+local function safely_install_xwayland_size_constraints(window)
+  local semantics = read_native_window_semantics(window)
+  if not semantics or semantics.xwayland ~= true or semantics.has_xwayland_size_hints ~= true or
+      semantics.size_hints_valid ~= true then return false end
+
+  local minimum = size_hint_prop_value(semantics.xwayland_min_size_logical)
+  if not minimum then return false end
+
+  local ok = pcall(function()
+    hl.dispatch(hl.dsp.window.set_prop({ prop = "min_size", value = minimum, window = window }))
+    if semantics.xwayland_max_width_finite == true or semantics.xwayland_max_height_finite == true then
+      local maximum = size_hint_prop_value(semantics.xwayland_max_size_logical)
+      if not maximum then error("invalid corrected XWayland maximum") end
+      hl.dispatch(hl.dsp.window.set_prop({ prop = "max_size", value = maximum, window = window }))
+    end
+  end)
+  return ok
 end
 
 local function debug_flag_enabled()
@@ -829,13 +855,13 @@ end
 
 local function refresh_workspace_xwayland_size_hints(workspace)
   if not workspace then return end
-  for _, window in safe_ipairs(workspace:get_windows()) do safely_apply_xwayland_size_hints(window) end
+  for _, window in safe_ipairs(workspace:get_windows()) do safely_install_xwayland_size_constraints(window) end
   if not workspace_is_regular(workspace) then return end
 
   local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
   for _, window in safe_ipairs(hl.get_windows()) do
     if window.workspace and window.workspace.special == true and window.workspace.name == minimized_name then
-      safely_apply_xwayland_size_hints(window)
+      safely_install_xwayland_size_constraints(window)
     end
   end
 end
@@ -1047,16 +1073,14 @@ local function window_persistence_semantics(window)
   if cached then return cached.eligible, cached.reason, cached.semantics end
 
   local eligible, reason, semantics = false, "native-bridge-unavailable", nil
-  if native_window_semantics then
-    local ok, result = pcall(native_window_semantics, tostring(window.address or ""))
-    if not ok then
-      reason = "native-bridge-error"
-    elseif type(result) ~= "table" or result.found ~= true then
-      reason = "native-window-not-found"
-    else
-      semantics = result
-      eligible, reason = window_persistence_policy(semantics)
-    end
+  local result, status = read_native_window_semantics(window)
+  if status == "error" then
+    reason = "native-bridge-error"
+  elseif status == "not-found" then
+    reason = "native-window-not-found"
+  elseif result then
+    semantics = result
+    eligible, reason = window_persistence_policy(semantics)
   end
 
   geometry_window_semantics[token] = { eligible = eligible, reason = reason, semantics = semantics }
@@ -1383,7 +1407,7 @@ load_geometry_records()
 -- launch order after its own restart without a separate ordering database.
 for _, window in safe_ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
-  safely_apply_xwayland_size_hints(window)
+  safely_install_xwayland_size_constraints(window)
   local workspace = source_float_workspace(window)
   if workspace then claim_geometry_slot(window, workspace) end
 end
@@ -1401,7 +1425,7 @@ end
 
 hl.on("window.open", function(window)
   tag_window_launch_order(window)
-  safely_apply_xwayland_size_hints(window)
+  safely_install_xwayland_size_constraints(window)
   local workspace = window and window.workspace or nil
   local float_enabled = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
   local persistence_eligible, persistence_reason, semantics = window_persistence_semantics(window)
@@ -1482,7 +1506,7 @@ hl.on("window.move_to_workspace", function(window, workspace)
     release_geometry_slot(window, true)
     if float_enabled then claim_geometry_slot(window, workspace) end
     if not returning_to_source then clear_reflow_anchor(window) end
-    safely_apply_xwayland_size_hints(window)
+    safely_install_xwayland_size_constraints(window)
   elseif metadata or side then
     set_window_floating(window, true)
   end
@@ -1503,7 +1527,7 @@ end)
 -- refresh constraints globally and inspect every plugin-enabled Float workspace.
 hl.on("monitor.layout_changed", function()
   debug_log("event.monitor_layout_changed")
-  for _, window in safe_ipairs(hl.get_windows()) do safely_apply_xwayland_size_hints(window) end
+  for _, window in safe_ipairs(hl.get_windows()) do safely_install_xwayland_size_constraints(window) end
   for _, workspace in safe_ipairs(hl.get_workspaces()) do
     defensively_fit_float_workspace(workspace, "monitor.layout_changed")
   end

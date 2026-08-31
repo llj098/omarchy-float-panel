@@ -8,8 +8,7 @@ local window_rules = {}
 local configs = {}
 local resize_adjustment = nil
 local native_semantics_by_address = {}
-local size_hint_calls = {}
-local size_hint_errors = {}
+local semantics_calls = {}
 local operation_log = {}
 local windows_by_address = {}
 local debug_log_path = (os.getenv("HOME") or "") .. "/float-panel-debug-test.log"
@@ -19,15 +18,20 @@ os.remove(debug_log_path .. ".1")
 local debug_marker = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-debug", "w"))
 debug_marker:close()
 
-local function apply_size_hints_bridge(address)
-  table.insert(size_hint_calls, address)
-  table.insert(operation_log, { kind = "apply_size_hints", address = address })
-  if size_hint_errors[address] then error("synthetic size-hint bridge failure") end
-  return {
+local function window_semantics_bridge(address)
+  table.insert(semantics_calls, address)
+  local semantics = native_semantics_by_address[address]
+  if semantics == "error" then error("synthetic native bridge failure") end
+  return semantics or {
     found = true,
     xwayland = true,
-    applied = true,
-    reason = "applied",
+    has_parent = false,
+    transient = false,
+    override_redirect = false,
+    window_type = "normal",
+    program_position = false,
+    user_position = false,
+    position_specified = false,
   }
 end
 
@@ -74,13 +78,19 @@ hl = {
       fullscreen = function(params) return { kind = "fullscreen", params = params } end,
       fullscreen_state = function(params) return { kind = "fullscreen_state", params = params } end,
       alter_zorder = function(params) return { kind = "alter_zorder", params = params } end,
+      set_prop = function(params) return { kind = "set_prop", params = params } end,
     },
     focus = function(params) return { kind = "focus", params = params } end,
     global = function(name) return { kind = "global", name = name } end,
   },
   dispatch = function(action)
     table.insert(dispatched, action)
-    table.insert(operation_log, { kind = action.kind, window = action.params and action.params.window or nil })
+    table.insert(operation_log, {
+      kind = action.kind,
+      window = action.params and action.params.window or nil,
+      prop = action.params and action.params.prop or nil,
+      value = action.params and action.params.value or nil,
+    })
     if action.kind == "float" then
       action.params.window.floating = action.params.action == "on"
     elseif action.kind == "move" then
@@ -102,6 +112,10 @@ hl = {
         x = action.params.x + (resize_adjustment and resize_adjustment.x or 0),
         y = action.params.y + (resize_adjustment and resize_adjustment.y or 0),
       }
+    elseif action.kind == "set_prop" then
+      local window = action.params.window
+      window.applied_props = window.applied_props or {}
+      window.applied_props[action.params.prop] = action.params.value
     elseif action.kind == "tag" then
       local window, tag = action.params.window, action.params.tag
       if tag:sub(1, 1) == "+" then
@@ -147,22 +161,7 @@ hl = {
   plugin = {
     load = function() end,
     float_panel = {
-      window_semantics = function(address)
-        local semantics = native_semantics_by_address[address]
-        if semantics == "error" then error("synthetic native bridge failure") end
-        return semantics or {
-          found = true,
-          xwayland = true,
-          has_parent = false,
-          transient = false,
-          override_redirect = false,
-          window_type = "normal",
-          program_position = false,
-          user_position = false,
-          position_specified = false,
-        }
-      end,
-      apply_xwayland_size_hints = apply_size_hints_bridge,
+      window_semantics = window_semantics_bridge,
     },
   },
 }
@@ -457,9 +456,13 @@ local route_window = {
   at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
 }
 local before_window_route = #dispatched
-local before_window_route_hints = #size_hint_calls
+local before_window_route_hints = #semantics_calls
 handlers["window.move_to_workspace"](route_window, ws1)
-assert(#size_hint_calls == before_window_route_hints + 1 and size_hint_calls[#size_hint_calls] == route_window.address,
+local route_hint_reads = 0
+for index = before_window_route_hints + 1, #semantics_calls do
+  if semantics_calls[index] == route_window.address then route_hint_reads = route_hint_reads + 1 end
+end
+assert(route_hint_reads >= 1,
   "moving a window to a regular workspace must refresh scale-corrected size hints")
 assert(#dispatched == before_window_route + 1 and dispatched[#dispatched].kind == "float",
   "window.move_to_workspace must keep only its workspace-mode routing")
@@ -797,17 +800,33 @@ local function parent_semantics(parent_address, position_specified)
   }
 end
 
--- Corrected XWayland constraints must be applied before Float placement.
+local function size_hint_semantics(minimum, maximum)
+  local semantics = parent_semantics(nil, false)
+  semantics.has_xwayland_size_hints = true
+  semantics.size_hints_valid = true
+  semantics.xwayland_min_size_logical = minimum
+  semantics.xwayland_max_width_finite = maximum ~= nil
+  semantics.xwayland_max_height_finite = maximum ~= nil
+  semantics.xwayland_max_size_logical = maximum
+  return semantics
+end
+
+-- Lua must install corrected native facts through Hyprland's standard
+-- set_prop dispatcher before Float placement.
 local hinted = persisted_window("0x5001", "HintedApp", 100, 90, 240, 160)
+native_semantics_by_address[hinted.address] = size_hint_semantics({ x = 120, y = 90 }, { x = 800, y = 600 })
 operation_log = {}
 handlers["window.open"](hinted)
-local apply_index, float_index
+local min_index, max_index, float_index
 for index, operation in ipairs(operation_log) do
-  if operation.kind == "apply_size_hints" and operation.address == hinted.address then apply_index = index end
+  if operation.kind == "set_prop" and operation.window == hinted and operation.prop == "min_size" then min_index = index end
+  if operation.kind == "set_prop" and operation.window == hinted and operation.prop == "max_size" then max_index = index end
   if operation.kind == "float" and operation.window == hinted then float_index = index end
 end
-assert(apply_index and float_index and apply_index < float_index,
-  "corrected XWayland hints must be applied before floating and placement")
+assert(min_index and max_index and float_index and min_index < max_index and max_index < float_index,
+  "corrected XWayland hints must be installed by Lua before floating and placement")
+assert(hinted.applied_props.min_size == "120 90" and hinted.applied_props.max_size == "800 600",
+  "Lua must preserve the bridge's corrected logical size constraints")
 
 -- A parented window without PPosition/USPosition is centered after its desired size is known.
 local centered = persisted_window("0x5002", "ChildApp", 80, 70, 200, 100)
@@ -838,18 +857,18 @@ assert(wechat_image.at.x == 470 and wechat_image.at.y == 230 and
   "a no-parent explicitly positioned image window must remain unchanged without a class hack")
 
 local bridge_failure = persisted_window("0x5006", "BridgeFailure", 480, 240, 180, 120)
-size_hint_errors[bridge_failure.address] = true
+native_semantics_by_address[bridge_failure.address] = "error"
 local bridge_ok = pcall(handlers["window.open"], bridge_failure)
-size_hint_errors[bridge_failure.address] = nil
+native_semantics_by_address[bridge_failure.address] = nil
 assert(bridge_ok and bridge_failure.floating and bridge_failure.at.x == 480 and bridge_failure.at.y == 240,
   "a size-hint bridge error must fail safely without blocking normal Float placement")
 
-hl.plugin.float_panel.apply_xwayland_size_hints = nil
+hl.plugin.float_panel.window_semantics = nil
 dofile("hypr/float-panel.lua")
 local bridge_absent = persisted_window("0x5009", "BridgeAbsent", 490, 250, 170, 110)
 assert(pcall(handlers["window.open"], bridge_absent) and bridge_absent.floating,
   "an absent size-hint bridge must fail safely")
-hl.plugin.float_panel.apply_xwayland_size_hints = apply_size_hints_bridge
+hl.plugin.float_panel.window_semantics = window_semantics_bridge
 dofile("hypr/float-panel.lua")
 
 -- Scale-changing monitor routes must refresh corrected constraints before fitting.
@@ -858,13 +877,16 @@ local previous_reflow_windows = ws1.windows
 local previous_reflow_get_windows = hl.get_windows
 ws1.windows = { reflow_hinted }
 hl.get_windows = function() return { reflow_hinted } end
-size_hint_calls = {}
+native_semantics_by_address[reflow_hinted.address] = size_hint_semantics({ x = 100, y = 80 })
+operation_log = {}
 handlers["workspace.move_to_monitor"](ws1, own_monitor)
 handlers["monitor.layout_changed"]()
 hl.get_windows = previous_reflow_get_windows
 local reflow_calls = 0
-for _, address in ipairs(size_hint_calls) do
-  if address == reflow_hinted.address then reflow_calls = reflow_calls + 1 end
+for _, operation in ipairs(operation_log) do
+  if operation.kind == "set_prop" and operation.window == reflow_hinted and operation.prop == "min_size" then
+    reflow_calls = reflow_calls + 1
+  end
 end
 assert(reflow_calls == 2,
   "workspace-monitor and monitor-layout reflow must each refresh corrected XWayland constraints")

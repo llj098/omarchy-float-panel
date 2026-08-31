@@ -183,8 +183,10 @@ for required in (
     'native/build/float-panel-native.so',
     'hl.plugin.load(native_bridge_path)',
     'native_float_panel.window_semantics',
-    'native_float_panel.apply_xwayland_size_hints',
-    'safely_apply_xwayland_size_hints(window)',
+    'read_native_window_semantics(window)',
+    'safely_install_xwayland_size_constraints(window)',
+    'hl.dsp.window.set_prop({ prop = "min_size"',
+    'hl.dsp.window.set_prop({ prop = "max_size"',
     'window_persistence_semantics(window)',
     'local function window_persistence_policy(semantics)',
     'semantics.xwayland == false',
@@ -207,7 +209,7 @@ for required in (
     "restored_intent = record and record.intent or \"none\"",
     'debug_log("event.layer_opened"',
     'refresh_workspace_xwayland_size_hints(workspace)',
-    'for _, window in safe_ipairs(hl.get_windows()) do safely_apply_xwayland_size_hints(window) end',
+    'for _, window in safe_ipairs(hl.get_windows()) do safely_install_xwayland_size_constraints(window) end',
     'window_side_intent(window)',
     'side_geometry(side.side, window.monitor)',
     'update_side_intent(window, workspace, side, geometry)',
@@ -249,6 +251,9 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
     assert forbidden not in switcher
     assert forbidden not in lua
 
+assert "native_float_panel.apply_xwayland_size_hints" not in lua, \
+    "Lua must consume read-only native facts and apply constraints through the standard dispatcher"
+
 assert "bar.run" not in qml and "hyprctl dispatch" not in qml, \
     "TaskList actions must use one in-process Hyprland request"
 assert "wechat" not in lua.lower() and "min_size = { 1, 1 }" not in lua, \
@@ -271,7 +276,6 @@ native_main = (ROOT / "native" / "src" / "main.cpp").read_text()
 for required in (
     "HyprlandAPI::addLuaFunction",
     '"float_panel", "window_semantics"',
-    '"float_panel", "apply_xwayland_size_hints"',
     "window->parent()",
     "m_transient",
     "m_atoms",
@@ -279,9 +283,6 @@ for required in (
     "XCB_ICCCM_SIZE_HINT_P_POSITION",
     "XCB_ICCCM_SIZE_HINT_US_POSITION",
     "xwaylandSizeToReal",
-    "minSizeOverride",
-    "maxSizeOverride",
-    "PRIORITY_SET_PROP",
     "GIT_COMMIT_HASH",
 ):
     assert required in native_main, f"native bridge missing required contract: {required}"
@@ -292,10 +293,13 @@ for raw_field in (
     '"xwayland_min_size_logical"', '"xwayland_max_size_raw"', '"xwayland_max_size_logical"',
 ):
     assert raw_field in native_main, f"native metadata bridge missing raw fact: {raw_field}"
-for result_field in ('"applied"', '"reason"', '"window-not-found"', '"not-xwayland"', '"no-size-hints"', '"invalid-size-hints"'):
-    assert result_field in native_main, f"XWayland hint applicator missing result contract: {result_field}"
-assert native_main.count('removeLuaFunction(pluginHandle, "float_panel"') == 2, \
-    "both native Lua bindings must be removed on plugin exit"
+assert native_main.count('removeLuaFunction(pluginHandle, "float_panel"') == 1, \
+    "the single read-only native binding must be removed on plugin exit"
+for forbidden_native_effect in (
+    "apply_xwayland_size_hints", "minSizeOverride", "maxSizeOverride", "PRIORITY_SET_PROP",
+):
+    assert forbidden_native_effect not in native_main, \
+        f"native bridge must remain read-only: {forbidden_native_effect}"
 assert "persistent_candidate" not in native_main and "persistentCandidate" not in native_main, \
     "native metadata bridge must not own persistence policy"
 assert not (ROOT / "native" / "src" / "window_policy.hpp").exists()
