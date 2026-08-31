@@ -5,7 +5,7 @@ local home = os.getenv("HOME") or ""
 local state_path = home .. "/.local/state/omarchy/float-panel-workspaces"
 local geometry_state_path = home .. "/.local/state/omarchy/float-panel-geometries"
 local debug_flag_path = home .. "/.local/state/omarchy/float-panel-debug"
-local debug_log_path = "/tmp/float-panel-debug.log"
+local debug_log_path = rawget(_G, "FLOAT_PANEL_DEBUG_LOG_PATH") or "/tmp/float-panel-debug.log"
 local debug_log_limit = 5 * 1024 * 1024
 local native_bridge_path = home .. "/.config/omarchy/plugins/fatlj.float-panel/native/build/float-panel-native.so"
 local float_workspaces = {}
@@ -85,6 +85,7 @@ local geometry_slot_tag_prefix = "float-panel-geometry-slot-v1-"
 local geometry_records = {}
 local geometry_claims = {}
 local geometry_window_claims = {}
+local reflow_anchors = {}
 
 local function process_start_ticks(pid)
   pid = tonumber(pid)
@@ -501,6 +502,124 @@ local function geometry_clamped_to_bounds(metadata, bounds)
   }
 end
 
+local function nearest_integer(value)
+  value = tonumber(value) or 0
+  return value >= 0 and math.floor(value + 0.5) or math.ceil(value - 0.5)
+end
+
+local function geometry_window_token(window)
+  if not window then return nil end
+  local address = tostring(window.address or "")
+  if address ~= "" then return address end
+  if window.stable_id ~= nil then return "stable:" .. tostring(window.stable_id) end
+  return tostring(window)
+end
+
+local function copy_bounds(bounds)
+  return bounds and {
+    left = bounds.left, top = bounds.top, right = bounds.right, bottom = bounds.bottom,
+    width = bounds.width, height = bounds.height,
+  } or nil
+end
+
+local function window_box(window)
+  local at, size = window and window.at or nil, window and window.size or nil
+  if not at or not size then return nil end
+  return {
+    x = tonumber(at.x), y = tonumber(at.y),
+    width = tonumber(size.x), height = tonumber(size.y),
+  }
+end
+
+local function boxes_equal(a, b)
+  return a and b and a.x == b.x and a.y == b.y and a.width == b.width and a.height == b.height
+end
+
+local function bounds_equal(a, b)
+  return a and b and a.left == b.left and a.top == b.top and a.width == b.width and a.height == b.height
+end
+
+local function monitor_snapshot(monitor)
+  return monitor and {
+    name = tostring(monitor.name or ""),
+    x = tonumber(monitor.x) or 0,
+    y = tonumber(monitor.y) or 0,
+  } or nil
+end
+
+-- Original/source/placement fields stay immutable between explicit rebases;
+-- topology reflow updates only the observed last-applied state.
+local function rebase_reflow_anchor(window, monitor, bounds, source_workspace)
+  local token = geometry_window_token(window)
+  local box = window_box(window)
+  bounds = bounds or floating_window_bounds(monitor or (window and window.monitor or nil))
+  monitor = monitor or (window and window.monitor or nil)
+  source_workspace = source_workspace or (window and window.workspace or nil)
+  if not token or not box or not bounds or box.width < 1 or box.height < 1 then return nil end
+
+  local travel_x = math.max(0, bounds.width - box.width)
+  local travel_y = math.max(0, bounds.height - box.height)
+  local function ratio(offset, travel)
+    if travel <= 0 then return 0 end
+    return math.max(0, math.min(1, offset / travel))
+  end
+  local anchor = {
+    original_box = { x = box.x, y = box.y, width = box.width, height = box.height },
+    source_bounds = copy_bounds(bounds),
+    source_monitor = monitor_snapshot(monitor),
+    source_workspace = workspace_is_regular(source_workspace) and workspace_selector(source_workspace) or nil,
+    placement = {
+      x = ratio(box.x - bounds.left, travel_x),
+      y = ratio(box.y - bounds.top, travel_y),
+      width = box.width / bounds.width,
+      height = box.height / bounds.height,
+    },
+    last_applied = window_box(window) or { x = box.x, y = box.y, width = box.width, height = box.height },
+    last_bounds = copy_bounds(bounds),
+    last_monitor = monitor_snapshot(monitor),
+  }
+  reflow_anchors[token] = anchor
+  return anchor
+end
+
+local function clear_reflow_anchor(window)
+  local token = geometry_window_token(window)
+  if token then reflow_anchors[token] = nil end
+end
+
+local function reflow_anchor(window)
+  local token = geometry_window_token(window)
+  return token and reflow_anchors[token] or nil
+end
+
+local function format_bounds(bounds)
+  if not bounds then return "nil" end
+  return table.concat({ bounds.left, bounds.top, bounds.width, bounds.height }, ",")
+end
+
+local function format_box(box)
+  if not box then return "nil" end
+  return table.concat({ box.x, box.y, box.width, box.height }, ",")
+end
+
+local function debug_reflow(stage, trigger, window, workspace, bounds, anchor, fields)
+  if not debug_enabled or not trigger then return end
+  fields = fields or {}
+  fields.trigger = trigger
+  fields.source_bounds = format_bounds(anchor and anchor.source_bounds or bounds)
+  fields.target_bounds = format_bounds(bounds)
+  fields.anchor = format_box(anchor and anchor.original_box or nil)
+  fields.anchor_monitor = anchor and anchor.source_monitor and
+    table.concat({ anchor.source_monitor.name, anchor.source_monitor.x, anchor.source_monitor.y }, ",") or "nil"
+  fields.placement_ratios = anchor and table.concat({
+    string.format("%.6f", anchor.placement.x), string.format("%.6f", anchor.placement.y),
+    string.format("%.6f", anchor.placement.width), string.format("%.6f", anchor.placement.height),
+  }, ",") or "nil"
+  fields.last_applied = format_box(anchor and anchor.last_applied or nil)
+  fields.actual_geometry = format_box(window_box(window))
+  debug_window_action("reflow.window_" .. stage, window, workspace, fields)
+end
+
 local function side_intent_still_managed(window, side)
   local at, size, monitor = window and window.at or nil, window and window.size or nil, window and window.monitor or nil
   if not side or not at or not size or not monitor then return false end
@@ -513,7 +632,7 @@ local function side_intent_still_managed(window, side)
     ((current_x == side.x and current_y == side.y) or (current_x == translated_x and current_y == translated_y))
 end
 
-local function fit_window_to_floating_bounds(window, target_monitor, source_workspace, trust_intent)
+local function fit_window_to_floating_bounds(window, target_monitor, source_workspace, trust_intent, trigger, preserve_anchor)
   if not window or window.mapped ~= true or window.hidden == true or window.floating ~= true then return end
   if (tonumber(window.fullscreen) or 0) ~= 0 then return end
 
@@ -524,15 +643,43 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
   local size = window.size
   if not bounds or not at or not size then return end
 
+  local anchor = reflow_anchor(window)
+  debug_reflow("before", trigger, window, source_workspace, bounds, anchor, {
+    decision = "pending", requested_resize = "none", requested_move = "none",
+  })
+
+  local function finish(decision, requested_resize, requested_move)
+    anchor = reflow_anchor(window)
+    debug_reflow("decision", trigger, window, source_workspace, bounds, anchor, {
+      decision = decision,
+      requested_resize = requested_resize or "none",
+      requested_move = requested_move or "none",
+    })
+    if anchor then
+      anchor.last_applied = window_box(window)
+      anchor.last_bounds = copy_bounds(bounds)
+      anchor.last_monitor = monitor_snapshot(target_monitor)
+    end
+    debug_reflow("after", trigger, window, source_workspace, bounds, anchor, {
+      decision = decision,
+      requested_resize = requested_resize or "none",
+      requested_move = requested_move or "none",
+    })
+  end
+
   local metadata = window_geometric_max_metadata(window)
   if metadata then
+    local resize_request, move_request
     if tonumber(size.x) ~= bounds.width or tonumber(size.y) ~= bounds.height then
+      resize_request = tostring(bounds.width) .. "," .. tostring(bounds.height)
       hl.dispatch(hl.dsp.window.resize({ x = bounds.width, y = bounds.height, window = window }))
     end
     local current_at = window.at or at
     if tonumber(current_at.x) ~= bounds.left or tonumber(current_at.y) ~= bounds.top then
+      move_request = tostring(bounds.left) .. "," .. tostring(bounds.top)
       hl.dispatch(hl.dsp.window.move({ x = bounds.left, y = bounds.top, window = window }))
     end
+    finish("managed-max", resize_request, move_request)
     return
   end
 
@@ -540,37 +687,72 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
   if side then
     if not trust_intent and not side_intent_still_managed(window, side) then
       remove_window_tag(window, side.raw)
+      anchor = rebase_reflow_anchor(window, target_monitor, bounds, source_workspace)
     else
       local geometry = side_geometry(side.side, target_monitor)
       if not geometry then return end
+      local resize_request, move_request
       if tonumber(size.x) ~= geometry.width or tonumber(size.y) ~= geometry.height then
+        resize_request = tostring(geometry.width) .. "," .. tostring(geometry.height)
         hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
       end
       local current_at = window.at or at
       if tonumber(current_at.x) ~= geometry.x or tonumber(current_at.y) ~= geometry.y then
+        move_request = tostring(geometry.x) .. "," .. tostring(geometry.y)
         hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
       end
       update_side_intent(window, source_workspace, side.side, geometry, target_monitor)
+      finish("managed-" .. side.side, resize_request, move_request)
       return
     end
   end
 
-  local old_width = math.max(1, tonumber(size.x) or 1)
-  local old_height = math.max(1, tonumber(size.y) or 1)
-  local width = math.min(old_width, bounds.width)
-  local height = math.min(old_height, bounds.height)
-  if width ~= old_width or height ~= old_height then
+  local before = window_box(window)
+  anchor = anchor or rebase_reflow_anchor(window, target_monitor, bounds, source_workspace)
+  if trigger and anchor and not preserve_anchor and not boxes_equal(before, anchor.last_applied) and
+      (bounds_equal(bounds, anchor.last_bounds) or before.width ~= anchor.last_applied.width or before.height ~= anchor.last_applied.height) then
+    anchor = rebase_reflow_anchor(window, target_monitor, bounds, source_workspace)
+  end
+  if not anchor then return end
+
+  local width, height, x, y
+  if bounds_equal(bounds, anchor.source_bounds) then
+    width, height = anchor.original_box.width, anchor.original_box.height
+    x, y = anchor.original_box.x, anchor.original_box.y
+  elseif trigger then
+    width = nearest_integer(anchor.placement.width * bounds.width)
+    height = nearest_integer(anchor.placement.height * bounds.height)
+    local travel_x = math.max(0, bounds.width - width)
+    local travel_y = math.max(0, bounds.height - height)
+    x = bounds.left + nearest_integer(anchor.placement.x * travel_x)
+    y = bounds.top + nearest_integer(anchor.placement.y * travel_y)
+  else
+    width, height = before.width, before.height
+    x, y = before.x, before.y
+  end
+
+  width = math.max(1, math.min(width, bounds.width))
+  height = math.max(1, math.min(height, bounds.height))
+  local resize_request, move_request
+  if width ~= before.width or height ~= before.height then
+    resize_request = tostring(width) .. "," .. tostring(height)
     hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
     local resized = window.size or {}
-    width = math.max(1, tonumber(resized.x) or width)
-    height = math.max(1, tonumber(resized.y) or height)
+    width = math.max(1, math.min(tonumber(resized.x) or width, bounds.width))
+    height = math.max(1, math.min(tonumber(resized.y) or height, bounds.height))
+    if trigger and not bounds_equal(bounds, anchor.source_bounds) then
+      x = bounds.left + nearest_integer(anchor.placement.x * math.max(0, bounds.width - width))
+      y = bounds.top + nearest_integer(anchor.placement.y * math.max(0, bounds.height - height))
+    end
   end
-  local x = math.max(bounds.left, math.min(bounds.right - width, tonumber(at.x) or bounds.left))
-  local y = math.max(bounds.top, math.min(bounds.bottom - height, tonumber(at.y) or bounds.top))
+  x = math.max(bounds.left, math.min(bounds.right - width, x))
+  y = math.max(bounds.top, math.min(bounds.bottom - height, y))
   local current_at = window.at or at
   if x ~= tonumber(current_at.x) or y ~= tonumber(current_at.y) then
+    move_request = tostring(x) .. "," .. tostring(y)
     hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
   end
+  finish(trigger and "free-anchor" or "free-fit", resize_request, move_request)
 end
 
 local function restore_geometric_max(window)
@@ -584,6 +766,7 @@ local function restore_geometric_max(window)
   hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
   remove_window_tag(window, metadata.raw)
   if side then update_side_intent(window, window.workspace, side.side, geometry) end
+  rebase_reflow_anchor(window)
   return true
 end
 
@@ -596,6 +779,7 @@ local function maximize_geometric_window(window, workspace)
   hl.dispatch(hl.dsp.window.resize({ x = bounds.width, y = bounds.height, window = window }))
   hl.dispatch(hl.dsp.window.move({ x = bounds.left, y = bounds.top, window = window }))
   hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
+  rebase_reflow_anchor(window)
   return true
 end
 
@@ -613,7 +797,16 @@ apply_workspace_mode = function(workspace)
   if not workspace_is_regular(workspace) then return end
   local enabled = workspace_float_enabled(workspace)
   if not enabled then clear_geometric_max_metadata_for_workspace(workspace) end
-  for _, window in safe_ipairs(workspace:get_windows()) do set_window_floating(window, enabled) end
+  for _, window in safe_ipairs(workspace:get_windows()) do
+    set_window_floating(window, enabled)
+    if enabled then rebase_reflow_anchor(window) else clear_reflow_anchor(window) end
+  end
+  if not enabled then
+    local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
+    for _, window in safe_ipairs(hl.get_windows()) do
+      if window.workspace and window.workspace.name == minimized_name then clear_reflow_anchor(window) end
+    end
+  end
 end
 
 local function adopt_existing_side_intent(window, workspace)
@@ -647,20 +840,34 @@ local function refresh_workspace_xwayland_size_hints(workspace)
   end
 end
 
-local function defensively_fit_float_workspace(workspace)
+local function defensively_fit_float_workspace(workspace, trigger)
   if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
 
   -- Pinned windows intentionally use the same monitor-bound fitting path.
   -- Pinning changes workspace visibility, not the monitor work-area limits.
-  for _, window in safe_ipairs(workspace:get_windows()) do fit_window_to_floating_bounds(window) end
+  for _, window in safe_ipairs(workspace:get_windows()) do
+    fit_window_to_floating_bounds(window, nil, workspace, false, trigger, false)
+  end
 
   -- Minimized windows belong to a special workspace and are absent from
   -- workspace:get_windows(). Reflow them against their source workspace now,
-  -- while its post-migration monitor is authoritative.
+  -- while its post-migration monitor is authoritative. Their source anchor is
+  -- never rebased from special-workspace translation or shutdown geometry.
   local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
   for _, window in safe_ipairs(hl.get_windows()) do
     if window.workspace and window.workspace.special == true and window.workspace.name == minimized_name then
-      fit_window_to_floating_bounds(window, workspace.monitor, workspace, true)
+      fit_window_to_floating_bounds(window, workspace.monitor, workspace, true, trigger, true)
+    end
+  end
+end
+
+local function rebase_workspace_reflow_anchors(workspace)
+  if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
+  for _, window in safe_ipairs(workspace:get_windows()) do rebase_reflow_anchor(window) end
+  local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
+  for _, window in safe_ipairs(hl.get_windows()) do
+    if window.workspace and window.workspace.special == true and window.workspace.name == minimized_name then
+      rebase_reflow_anchor(window, workspace.monitor, nil, workspace)
     end
   end
 end
@@ -691,6 +898,7 @@ local function mode_aware_resize(dx, dy)
 
   hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
   hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
+  rebase_reflow_anchor(window)
 end
 
 local function snap_active_window(window, workspace, side)
@@ -704,6 +912,7 @@ local function snap_active_window(window, workspace, side)
   hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
   hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
   update_side_intent(window, workspace, side, geometry)
+  rebase_reflow_anchor(window)
 end
 
 local function mode_aware_direction(direction)
@@ -763,11 +972,6 @@ local valid_geometry_intents = {
   ["max-free"] = true, ["max-left"] = true, ["max-right"] = true,
 }
 
-local function nearest_integer(value)
-  value = tonumber(value) or 0
-  return value >= 0 and math.floor(value + 0.5) or math.ceil(value - 0.5)
-end
-
 local function decode_optional_hex(value)
   if value == "" then return "" end
   return decode_hex(value)
@@ -817,14 +1021,6 @@ local function parse_geometry_slot_tag(tag)
     slot = math.floor(slot),
     key = placement_record_key(workspace_name, class, role),
   }
-end
-
-local function geometry_window_token(window)
-  if not window then return nil end
-  local address = tostring(window.address or "")
-  if address ~= "" then return address end
-  if window.stable_id ~= nil then return "stable:" .. tostring(window.stable_id) end
-  return tostring(window)
 end
 
 local geometry_window_semantics = {}
@@ -1050,6 +1246,7 @@ local function geometry_record_from_window(window)
 
   local maximum = window_geometric_max_metadata(window)
   local side = window_side_intent(window)
+  local anchor = reflow_anchor(window)
   local fullscreen = (tonumber(window.fullscreen) or 0) ~= 0
   local intent, geometry
   if maximum then
@@ -1068,7 +1265,15 @@ local function geometry_record_from_window(window)
   if not intent then
     if fullscreen then return nil end
     intent = "free"
-    geometry = { x = at.x, y = at.y, width = size.x, height = size.y }
+    -- A plugin reflow must not replace the durable placement with its fitted
+    -- small-screen result. Native/user edits still win when actual geometry no
+    -- longer matches the last box applied by this module.
+    if anchor and boxes_equal(window_box(window), anchor.last_applied) then
+      geometry = anchor.original_box
+      bounds = anchor.source_bounds
+    else
+      geometry = { x = at.x, y = at.y, width = size.x, height = size.y }
+    end
   end
 
   local width, height = nearest_integer(geometry.width), nearest_integer(geometry.height)
@@ -1190,6 +1395,7 @@ for _, workspace in safe_ipairs(hl.get_workspaces()) do
     apply_workspace_mode(workspace)
     for _, window in safe_ipairs(workspace:get_windows()) do adopt_existing_side_intent(window, workspace) end
     defensively_fit_float_workspace(workspace)
+    rebase_workspace_reflow_anchors(workspace)
   end
 end
 
@@ -1217,6 +1423,7 @@ hl.on("window.open", function(window)
       initial_placement = "app"
     end
     fit_window_to_floating_bounds(window)
+    rebase_reflow_anchor(window)
     if persistence_eligible and not record then persist_window_placement(window, workspace) end
   end
   debug_window_geometry("event.window_open_after", window, workspace, {
@@ -1233,6 +1440,7 @@ hl.on("window.close", function(window)
   if workspace then persist_window_placement(window, workspace) end
   release_geometry_slot(window, false)
   forget_window_persistence_semantics(window)
+  clear_reflow_anchor(window)
 end)
 
 hl.on("hyprland.shutdown", function()
@@ -1266,9 +1474,14 @@ hl.on("window.move_to_workspace", function(window, workspace)
   end
   if workspace_is_regular(workspace) then
     local float_enabled = workspace_float_enabled(workspace)
+    local anchor = reflow_anchor(window)
+    local returning_to_source = (metadata and workspace_selector(workspace) == metadata.source) or
+      (side and workspace_selector(workspace) == side.source) or
+      (anchor and workspace_selector(workspace) == anchor.source_workspace)
     set_window_floating(window, float_enabled)
     release_geometry_slot(window, true)
     if float_enabled then claim_geometry_slot(window, workspace) end
+    if not returning_to_source then clear_reflow_anchor(window) end
   elseif metadata or side then
     set_window_floating(window, true)
   end
@@ -1282,7 +1495,7 @@ hl.on("workspace.move_to_monitor", function(workspace, monitor)
     monitor = monitor and monitor.name or "nil",
   })
   refresh_workspace_xwayland_size_hints(workspace)
-  defensively_fit_float_workspace(workspace)
+  defensively_fit_float_workspace(workspace, "workspace.move_to_monitor")
 end)
 
 -- Hyprland emits this after monitor layout changes. It carries no monitor, so
@@ -1290,7 +1503,9 @@ end)
 hl.on("monitor.layout_changed", function()
   debug_log("event.monitor_layout_changed")
   for _, window in safe_ipairs(hl.get_windows()) do safely_apply_xwayland_size_hints(window) end
-  for _, workspace in safe_ipairs(hl.get_workspaces()) do defensively_fit_float_workspace(workspace) end
+  for _, workspace in safe_ipairs(hl.get_workspaces()) do
+    defensively_fit_float_workspace(workspace, "monitor.layout_changed")
+  end
 end)
 
 -- LayerSurface::onMap arranges exclusive reservations before this event.
@@ -1307,7 +1522,7 @@ hl.on("layer.opened", function(layer)
   })
   for _, workspace in safe_ipairs(hl.get_workspaces()) do
     if workspace_is_regular(workspace) and workspace_float_enabled(workspace) and workspace.monitor == monitor then
-      defensively_fit_float_workspace(workspace)
+      defensively_fit_float_workspace(workspace, "layer.opened")
     end
   end
 end)

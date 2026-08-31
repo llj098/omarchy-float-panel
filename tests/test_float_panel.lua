@@ -12,6 +12,12 @@ local size_hint_calls = {}
 local size_hint_errors = {}
 local operation_log = {}
 local windows_by_address = {}
+local debug_log_path = (os.getenv("HOME") or "") .. "/float-panel-debug-test.log"
+FLOAT_PANEL_DEBUG_LOG_PATH = debug_log_path
+os.remove(debug_log_path)
+os.remove(debug_log_path .. ".1")
+local debug_marker = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-debug", "w"))
+debug_marker:close()
 
 local function apply_size_hints_bridge(address)
   table.insert(size_hint_calls, address)
@@ -1033,5 +1039,92 @@ local geometry_state = geometry_file:read("*a")
 geometry_file:close()
 assert(geometry_state:find("\tv1\t", 1, true) == nil and geometry_state:find("v1\t", 1, true) == 1,
   "geometry state must use the versioned flat format")
+
+-- Free-window topology reflow is always derived from one immutable source box:
+-- grow proportionally, shrink proportionally, then restore exactly at source.
+local anchor_window = persisted_window("0xanchor1", "AnchorApp", 678, 268, 300, 200)
+anchor_window.title = "DO_NOT_LOG_REFLOW_SECRET"
+ws1.monitor, ws1.windows = own_monitor, { anchor_window }
+handlers["window.open"](anchor_window)
+local grow_monitor = {
+  name = "grow", x = 2000, y = 100, width = 1600, height = 900, scale = 1, transform = 0,
+  reserved = { left = 0, right = 0, top = 0, bottom = 0 },
+}
+anchor_window.monitor = grow_monitor
+anchor_window.at = { x = 2668, y = 348 } -- compositor-style origin translation; size stays unchanged
+ws1.monitor = grow_monitor
+handlers["workspace.move_to_monitor"](ws1, grow_monitor)
+assert(anchor_window.at.x == 3088 and anchor_window.at.y == 556 and
+  anchor_window.size.x == 500 and anchor_window.size.y == 432,
+  "a larger work area must scale free-window size and preserve right/bottom free-space ratios")
+
+local small_monitor = {
+  name = "small", x = -1000, y = 50, width = 700, height = 450, scale = 1, transform = 0,
+  reserved = { left = 0, right = 0, top = 0, bottom = 0 },
+}
+anchor_window.monitor, ws1.monitor = small_monitor, small_monitor
+handlers["workspace.move_to_monitor"](ws1, small_monitor)
+assert(anchor_window.at.x == -526 and anchor_window.at.y == 278 and
+  anchor_window.size.x == 214 and anchor_window.size.y == 210,
+  "a smaller work area must recompute from the source anchor rather than the prior enlarged box")
+assert(anchor_window.at.x >= -988 and anchor_window.at.y >= 62 and
+  anchor_window.at.x + anchor_window.size.x <= -312 and anchor_window.at.y + anchor_window.size.y <= 488,
+  "proportional free reflow must remain wholly inside current floating bounds")
+
+anchor_window.monitor, ws1.monitor = own_monitor, own_monitor
+handlers["workspace.move_to_monitor"](ws1, own_monitor)
+assert(anchor_window.at.x == 678 and anchor_window.at.y == 268 and
+  anchor_window.size.x == 300 and anchor_window.size.y == 200,
+  "large-small-large/source round trips must reproduce the immutable anchor box")
+
+-- The same source anchor follows a window while it is minimized; neither that
+-- special-workspace reflow nor shutdown persistence may rebase it.
+local minimized_anchor = persisted_window("0xanchor2", "MinimizedAnchorApp", 678, 268, 300, 200)
+ws1.windows = { minimized_anchor }
+handlers["window.open"](minimized_anchor)
+active_window = minimized_anchor
+binds["SUPER + M"]()
+minimized_anchor.workspace = special
+handlers["window.move_to_workspace"](minimized_anchor, special)
+minimized_anchor.monitor, ws1.monitor = small_monitor, small_monitor
+local get_windows_before_anchor_test = hl.get_windows
+hl.get_windows = function() return { minimized_anchor } end
+handlers["workspace.move_to_monitor"](ws1, small_monitor)
+assert(minimized_anchor.at.x == -526 and minimized_anchor.at.y == 278 and
+  minimized_anchor.size.x == 214 and minimized_anchor.size.y == 210,
+  "minimized free windows must use the source workspace's proportional anchor")
+handlers["hyprland.shutdown"]()
+minimized_anchor.monitor, ws1.monitor = own_monitor, own_monitor
+handlers["workspace.move_to_monitor"](ws1, own_monitor)
+assert(minimized_anchor.at.x == 678 and minimized_anchor.at.y == 268 and
+  minimized_anchor.size.x == 300 and minimized_anchor.size.y == 200,
+  "minimized reflow and shutdown must not overwrite the pre-reflow anchor")
+hl.get_windows = get_windows_before_anchor_test
+
+local debug_file = assert(io.open(debug_log_path, "r"))
+local debug_payload = debug_file:read("*a")
+debug_file:close()
+local anchor_log = {}
+for line in debug_payload:gmatch("[^\n]+") do
+  if line:find("window=0xanchor1", 1, true) and line:find("trigger=workspace.move_to_monitor", 1, true) then
+    table.insert(anchor_log, line)
+  end
+end
+local joined_anchor_log = table.concat(anchor_log, "\n")
+assert(#anchor_log >= 9 and joined_anchor_log:find("reflow.window_before", 1, true) and
+  joined_anchor_log:find("reflow.window_decision", 1, true) and joined_anchor_log:find("reflow.window_after", 1, true),
+  "debug-marker reflow logging must include per-window before/decision/after records")
+for _, field in ipairs({
+  "source_bounds=32,62,946,406", "target_bounds=2012,112,1576,876",
+  "anchor=678,268,300,200", "placement_ratios=", "requested_resize=500,432",
+  "requested_move=3088,556", "actual_geometry=3088,556,500,432",
+}) do
+  assert(joined_anchor_log:find(field, 1, true), "reflow debug payload is missing " .. field)
+end
+assert(not joined_anchor_log:find("DO_NOT_LOG_REFLOW_SECRET", 1, true) and
+  not joined_anchor_log:find("AnchorApp", 1, true),
+  "privacy-safe reflow records must never include titles or class/content identifiers")
+os.remove(debug_log_path)
+os.remove(debug_log_path .. ".1")
 
 print("LUA_TESTS_OK")
