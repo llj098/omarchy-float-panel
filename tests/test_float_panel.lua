@@ -377,24 +377,26 @@ ws2.windows = { tiling_candidate }
 special.windows = { special_candidate }
 local before_migration = #dispatched
 handlers["monitor.layout_changed"]()
-assert(#dispatched == before_migration + 4,
+assert(#dispatched == before_migration + 5,
   "monitor layout changes must scan every Float workspace and change only windows needing fitting")
 local migrated_resize = dispatched[before_migration + 1]
 local migrated_oversize_move = dispatched[before_migration + 2]
-local migrated_offscreen_move = dispatched[before_migration + 3]
+local migrated_edit_resize = dispatched[before_migration + 3]
+local migrated_edit_move = dispatched[before_migration + 4]
+local migrated_offscreen_move = dispatched[before_migration + 5]
 assert(migrated_resize.kind == "resize" and migrated_resize.params.window == w1,
   "oversize migration repair must resize before moving")
-assert(migrated_resize.params.x == 1146 and migrated_resize.params.y == 300,
+assert(migrated_resize.params.x == 1146 and migrated_resize.params.y == 514,
   "migration repair must shrink only the dimension exceeding the transformed logical work area")
 assert(migrated_oversize_move.kind == "move" and migrated_oversize_move.params.x == -1578 and migrated_oversize_move.params.y == 242,
   "oversize migration repair must clamp against the negative-origin work area")
-assert(migrated_offscreen_move.kind == "move" and migrated_offscreen_move.params.window == w2,
-  "an offscreen mapped Float-workspace window that already fits must move without resizing")
-assert(migrated_offscreen_move.params.x == -1578 and migrated_offscreen_move.params.y == 738,
-  "offscreen migration repair must account for reserved bottom space, gaps, and borders")
-assert(w2.size.x == 400 and w2.size.y == 200,
-  "a migrated window that already fits must preserve both dimensions")
-assert(dispatched[before_migration + 4].params.window == other_float and other_float.at.x == -532,
+assert(migrated_edit_resize.kind == "resize" and migrated_edit_resize.params.window == w2 and
+  migrated_edit_resize.params.x == 485 and migrated_edit_resize.params.y == 343,
+  "an edited window must keep its proportions on layout changes")
+assert(migrated_edit_move.kind == "move" and migrated_edit_move.params.window == w2 and
+  migrated_edit_move.params.x == -1578 and migrated_edit_move.params.y == 595,
+  "an edited window must retain its bottom alignment after layout changes")
+assert(dispatched[before_migration + 5].params.window == other_float and other_float.at.x == -532,
   "the payload-free monitor event must scan another enabled Float workspace")
 assert(inside.at.x == -1000 and inside.at.y == 300,
   "an already-fitting on-screen migrated window must not move")
@@ -1112,6 +1114,82 @@ assert(minimized_anchor.at.x == 678 and minimized_anchor.at.y == 268 and
   minimized_anchor.size.x == 300 and minimized_anchor.size.y == 200,
   "minimized reflow and shutdown must not overwrite the pre-reflow anchor")
 hl.get_windows = get_windows_before_anchor_test
+
+-- D1: a real user/application edit (move even without a size change) must end
+-- the current anchor and become the next reflow source, so left-bottom stays
+-- left-bottom instead of snapping to left-top and sizes never shrink on each hop.
+-- Workspace monitor translation is modelled like Hyprland: on move_to_monitor
+-- the live box is shifted by the monitor origin delta before the Lua event.
+local edit_window = persisted_window("0xedit1", "EditApp", 300, 200, 400, 200)
+ws1.windows = { edit_window }
+handlers["window.open"](edit_window)
+-- User drags the window to the left-bottom of its own monitor; size unchanged.
+edit_window.at = { x = 150, y = 250 }
+-- Move workspace 1 to the small monitor; Hyprland translates the window first.
+edit_window.monitor, ws1.monitor = small_monitor, small_monitor
+edit_window.at = { x = 150 + (small_monitor.x - own_monitor.x), y = 250 + (small_monitor.y - own_monitor.y) }
+handlers["workspace.move_to_monitor"](ws1, small_monitor)
+assert(edit_window.at.x == -904 and edit_window.at.y == 259 and
+  edit_window.size.x == 286 and edit_window.size.y == 210,
+  "a position-only user edit must rebase and keep the edited proportions after migrating")
+-- Back to the source monitor: Hyprland translates the small-screen box back
+-- (proportional box + monitor delta), and the source anchor restores exactly.
+edit_window.monitor, ws1.monitor = own_monitor, own_monitor
+edit_window.at = { x = -904 + (own_monitor.x - small_monitor.x), y = 259 + (own_monitor.y - small_monitor.y) }
+edit_window.size = { x = 286, y = 210 }
+handlers["workspace.move_to_monitor"](ws1, own_monitor)
+assert(edit_window.at.x == 150 and edit_window.at.y == 250 and
+  edit_window.size.x == 400 and edit_window.size.y == 200,
+  "returning to the monitor where the edit happened must restore the edited box exactly")
+
+-- D1 resize: a user resize followed by migration keeps the new proportions.
+local edit_resize = persisted_window("0xedit2", "EditResizeApp", 200, 200, 300, 200)
+ws1.windows = { edit_resize }
+handlers["window.open"](edit_resize)
+edit_resize.size = { x = 500, y = 300 }
+edit_resize.monitor, ws1.monitor = small_monitor, small_monitor
+edit_resize.at = { x = 200 + (small_monitor.x - own_monitor.x), y = 200 + (small_monitor.y - own_monitor.y) }
+handlers["workspace.move_to_monitor"](ws1, small_monitor)
+assert(edit_resize.size.x == 357 and edit_resize.size.y == 315,
+  "a user resize must become the next reflow source and keep its proportions on migration")
+
+-- D1 without migration: a position-only edit on the same monitor followed by a
+-- same-bounds reflow must also end the anchor.
+local edit_same = persisted_window("0xedit3", "EditSameApp", 300, 200, 400, 200)
+ws1.windows = { edit_same }
+handlers["window.open"](edit_same)
+edit_same.at = { x = 500, y = 300 }
+handlers["layer.opened"]({ monitor = own_monitor })
+assert(edit_same.at.x == 500 and edit_same.at.y == 300 and
+  edit_same.size.x == 400 and edit_same.size.y == 200,
+  "a position-only edit before a same-bounds reflow must rebase the anchor")
+
+-- D1 round trips: after one edit, A->B->A->B must stay stable at every hop.
+local edit_round = persisted_window("0xedit4", "EditRoundApp", 300, 200, 400, 200)
+ws1.windows = { edit_round }
+handlers["window.open"](edit_round)
+edit_round.at = { x = 150, y = 250 }
+local function translate_to(monitor)
+  edit_round.at = { x = edit_round.at.x + (monitor.x - edit_round.monitor.x), y = edit_round.at.y + (monitor.y - edit_round.monitor.y) }
+  edit_round.monitor, ws1.monitor = monitor, monitor
+end
+translate_to(grow_monitor)
+handlers["workspace.move_to_monitor"](ws1, grow_monitor)
+local round_grow = { x = edit_round.at.x, y = edit_round.at.y, w = edit_round.size.x, h = edit_round.size.y }
+translate_to(small_monitor)
+handlers["workspace.move_to_monitor"](ws1, small_monitor)
+local round_small = { x = edit_round.at.x, y = edit_round.at.y, w = edit_round.size.x, h = edit_round.size.y }
+translate_to(grow_monitor)
+handlers["workspace.move_to_monitor"](ws1, grow_monitor)
+assert(edit_round.at.x == round_grow.x and edit_round.at.y == round_grow.y and
+  edit_round.size.x == round_grow.w and edit_round.size.y == round_grow.h,
+  "A->B->A must reproduce the post-edit target box exactly")
+translate_to(small_monitor)
+handlers["workspace.move_to_monitor"](ws1, small_monitor)
+assert(edit_round.at.x == round_small.x and edit_round.at.y == round_small.y and
+  edit_round.size.x == round_small.w and edit_round.size.y == round_small.h,
+  "A->B->A->B must not drift")
+ws1.windows = {}
 
 local debug_file = assert(io.open(debug_log_path, "r"))
 local debug_payload = debug_file:read("*a")

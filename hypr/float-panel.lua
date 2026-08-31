@@ -587,9 +587,8 @@ end
 
 -- Original/source/placement fields stay immutable between explicit rebases;
 -- topology reflow updates only the observed last-applied state.
-local function rebase_reflow_anchor(window, monitor, bounds, source_workspace)
+local function rebase_reflow_anchor_from(window, box, bounds, monitor, source_workspace)
   local token = geometry_window_token(window)
-  local box = window_box(window)
   bounds = bounds or floating_window_bounds(monitor or (window and window.monitor or nil))
   monitor = monitor or (window and window.monitor or nil)
   source_workspace = source_workspace or (window and window.workspace or nil)
@@ -612,12 +611,16 @@ local function rebase_reflow_anchor(window, monitor, bounds, source_workspace)
       width = box.width / bounds.width,
       height = box.height / bounds.height,
     },
-    last_applied = window_box(window) or { x = box.x, y = box.y, width = box.width, height = box.height },
+    last_applied = { x = box.x, y = box.y, width = box.width, height = box.height },
     last_bounds = copy_bounds(bounds),
     last_monitor = monitor_snapshot(monitor),
   }
   reflow_anchors[token] = anchor
   return anchor
+end
+
+local function rebase_reflow_anchor(window, monitor, bounds, source_workspace)
+  return rebase_reflow_anchor_from(window, window_box(window), bounds, monitor, source_workspace)
 end
 
 local function clear_reflow_anchor(window)
@@ -668,6 +671,25 @@ local function side_intent_still_managed(window, side)
   local current_x, current_y = tonumber(at.x), tonumber(at.y)
   return tonumber(size.x) == side.width and tonumber(size.y) == side.height and
     ((current_x == side.x and current_y == side.y) or (current_x == translated_x and current_y == translated_y))
+end
+
+-- Where a box would be after Hyprland moves a workspace to another monitor:
+-- the window is shifted by the monitor origin delta. Same-name monitor (layout
+-- change) does not translate windows, so the box is returned unchanged.
+local function monitor_translated_box(box, from_monitor, to_monitor)
+  if not box or not from_monitor or not to_monitor or not from_monitor.name or from_monitor.name == to_monitor.name then
+    return box and { x = box.x, y = box.y, width = box.width, height = box.height } or nil
+  end
+  local from_x = math.floor(tonumber(from_monitor.x) or 0)
+  local from_y = math.floor(tonumber(from_monitor.y) or 0)
+  local to_x = math.floor(tonumber(to_monitor.x) or 0)
+  local to_y = math.floor(tonumber(to_monitor.y) or 0)
+  return {
+    x = box.x + (to_x - from_x),
+    y = box.y + (to_y - from_y),
+    width = box.width,
+    height = box.height,
+  }
 end
 
 local function fit_window_to_floating_bounds(window, target_monitor, source_workspace, trust_intent, trigger, preserve_anchor)
@@ -747,9 +769,39 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
 
   local before = window_box(window)
   anchor = anchor or rebase_reflow_anchor(window, target_monitor, bounds, source_workspace)
-  if trigger and anchor and not preserve_anchor and not boxes_equal(before, anchor.last_applied) and
-      (bounds_equal(bounds, anchor.last_bounds) or before.width ~= anchor.last_applied.width or before.height ~= anchor.last_applied.height) then
-    anchor = rebase_reflow_anchor(window, target_monitor, bounds, source_workspace)
+  if trigger and anchor and not preserve_anchor then
+    -- workspace.move_to_monitor fires after Hyprland translated member windows;
+    -- compare the live box against the last plugin-applied box translated to the
+    -- target monitor so a pure compositor translation keeps the anchor while a
+    -- real user/application edit (move or resize) ends it and becomes the new
+    -- source, fixing left-bottom -> left-top and repeated-shrink regressions.
+    local translated_last = anchor.last_monitor and target_monitor and
+      monitor_translated_box(anchor.last_applied, anchor.last_monitor, target_monitor)
+    if translated_last then
+      -- Unedited: either the live box is the translated last-applied box
+      -- (Hyprland moved the workspace) or it is byte-identical to the
+      -- last-applied box (no translation happened). Only a genuine
+      -- user/application edit differs from both.
+      if not boxes_equal(before, translated_last) and not boxes_equal(before, anchor.last_applied) then
+        -- The live box is the edited source box plus Hyprland's translation;
+        -- rebuild the anchor in the source-monitor context so the edited
+        -- proportions and position become the next reflow source and returning
+        -- to the source monitor restores the edited box exactly.
+        local edited_box = before
+        if anchor.last_monitor.name ~= target_monitor.name then
+          local delta_x = math.floor(tonumber(target_monitor.x) or 0) - math.floor(tonumber(anchor.last_monitor.x) or 0)
+          local delta_y = math.floor(tonumber(target_monitor.y) or 0) - math.floor(tonumber(anchor.last_monitor.y) or 0)
+          edited_box = { x = before.x - delta_x, y = before.y - delta_y, width = before.width, height = before.height }
+        end
+        anchor = rebase_reflow_anchor_from(window, edited_box,
+          anchor.last_bounds or bounds, anchor.last_monitor, source_workspace)
+      end
+    elseif not boxes_equal(before, anchor.last_applied) and
+        (bounds_equal(bounds, anchor.last_bounds) or
+         before.width ~= anchor.last_applied.width or before.height ~= anchor.last_applied.height) then
+      -- No monitor snapshot: fall back to the previous heuristic.
+      anchor = rebase_reflow_anchor(window, target_monitor, bounds, source_workspace)
+    end
   end
   if not anchor then return end
 
