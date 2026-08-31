@@ -8,6 +8,7 @@ python tests/validate.py
 node --check TaskListModel.js
 node tests/test_model.js
 luac -p hypr/float-panel.lua
+make -C native test
 if pkg-config --exists hyprland lua; then
   make -C native all
 fi

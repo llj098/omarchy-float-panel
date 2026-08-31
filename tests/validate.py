@@ -256,21 +256,41 @@ native_main = (ROOT / "native" / "src" / "main.cpp").read_text()
 for required in (
     "HyprlandAPI::addLuaFunction",
     '"float_panel", "window_semantics"',
+    '"float_panel", "apply_xwayland_size_hints"',
     "window->parent()",
     "m_transient",
     "m_atoms",
     "isX11OverrideRedirect()",
+    "XCB_ICCCM_SIZE_HINT_P_POSITION",
+    "XCB_ICCCM_SIZE_HINT_US_POSITION",
+    "xwaylandSizeToReal",
+    "minSizeOverride",
+    "maxSizeOverride",
+    "PRIORITY_SET_PROP",
     "GIT_COMMIT_HASH",
 ):
     assert required in native_main, f"native bridge missing required contract: {required}"
-for raw_field in ('"found"', '"xwayland"', '"has_parent"', '"transient"', '"override_redirect"', '"window_type"'):
+for raw_field in (
+    '"found"', '"xwayland"', '"has_parent"', '"parent_address"', '"transient"',
+    '"override_redirect"', '"window_type"', '"program_position"', '"user_position"',
+    '"position_specified"', '"has_xwayland_size_hints"', '"xwayland_min_size_raw"',
+    '"xwayland_min_size_logical"', '"xwayland_max_size_raw"', '"xwayland_max_size_logical"',
+):
     assert raw_field in native_main, f"native metadata bridge missing raw fact: {raw_field}"
+for result_field in ('"applied"', '"reason"', '"window-not-found"', '"not-xwayland"', '"no-size-hints"', '"invalid-size-hints"'):
+    assert result_field in native_main, f"XWayland hint applicator missing result contract: {result_field}"
+assert native_main.count('removeLuaFunction(pluginHandle, "float_panel"') == 2, \
+    "both native Lua bindings must be removed on plugin exit"
 assert "persistent_candidate" not in native_main and "persistentCandidate" not in native_main, \
     "native metadata bridge must not own persistence policy"
 assert not (ROOT / "native" / "src" / "window_policy.hpp").exists()
 assert not (ROOT / "native" / "tests" / "test_window_policy.cpp").exists()
-assert "wechat" not in native_main.lower(), \
-    "native metadata bridge must remain application-independent"
+assert "wechat" not in native_main.lower() and "m_title" not in native_main, \
+    "native metadata bridge must remain application-independent and title-free"
+rounding = (ROOT / "native" / "src" / "size_hint_rounding.hpp").read_text()
+assert "std::ceil(converted)" in rounding and "std::floor(converted)" in rounding
+assert "raw >= 5" in rounding, "finite XWayland max threshold must match CWindow::maxSize()"
+assert (ROOT / "native" / "tests" / "test_size_hint_rounding.cpp").is_file()
 policy_tests = (ROOT / "tests" / "test_float_panel.lua").read_text()
 for policy_case in (
     '"wayland"', '"normal"', '"dialog"', '"parent"', '"transient"',

@@ -1,6 +1,9 @@
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <format>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -17,15 +20,19 @@ extern "C" {
 #include <lua.h>
 }
 
+#include "size_hint_rounding.hpp"
+
 namespace {
 
 HANDLE pluginHandle = nullptr;
 
+std::string windowAddress(const PHLWINDOW& window) {
+    return std::format("0x{:x}", reinterpret_cast<uintptr_t>(window.get()));
+}
+
 PHLWINDOW windowFromAddress(std::string_view address) {
     for (const auto& window : Desktop::windowState()->windows()) {
-        if (!window)
-            continue;
-        if (std::format("0x{:x}", reinterpret_cast<uintptr_t>(window.get())) == address)
+        if (window && windowAddress(window) == address)
             return window;
     }
     return nullptr;
@@ -74,6 +81,80 @@ void setString(lua_State* state, const char* key, std::string_view value) {
     lua_setfield(state, -2, key);
 }
 
+void setVector(lua_State* state, const char* key, const Vector2D& value) {
+    lua_newtable(state);
+    lua_pushnumber(state, value.x);
+    lua_setfield(state, -2, "x");
+    lua_pushnumber(state, value.y);
+    lua_setfield(state, -2, "y");
+    lua_setfield(state, -2, key);
+}
+
+struct SXWaylandSizeHintFacts {
+    Vector2D rawMinimum;
+    Vector2D logicalMinimum;
+    Vector2D rawMaximum;
+    Vector2D logicalMaximum = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max()};
+    bool     maximumXFinite = false;
+    bool     maximumYFinite = false;
+    bool     valid          = false;
+};
+
+std::optional<SXWaylandSizeHintFacts> xwaylandSizeHintFacts(const PHLWINDOW& window) {
+    if (!window || !window->m_isX11 || !window->m_xwaylandSurface || !window->m_xwaylandSurface->m_sizeHints)
+        return std::nullopt;
+
+    const auto& hints = window->m_xwaylandSurface->m_sizeHints;
+
+    SXWaylandSizeHintFacts facts;
+    facts.rawMinimum     = {hints->min_width, hints->min_height};
+    facts.rawMaximum     = {hints->max_width, hints->max_height};
+    facts.maximumXFinite = FloatPanel::hasFiniteXWaylandMaximum(facts.rawMaximum.x);
+    facts.maximumYFinite = FloatPanel::hasFiniteXWaylandMaximum(facts.rawMaximum.y);
+
+    const auto convertedMinimum = window->xwaylandSizeToReal(facts.rawMinimum);
+    const auto logicalMinimumX  = FloatPanel::logicalMinimumComponent(convertedMinimum.x);
+    const auto logicalMinimumY  = FloatPanel::logicalMinimumComponent(convertedMinimum.y);
+    if (!logicalMinimumX || !logicalMinimumY)
+        return facts;
+    facts.logicalMinimum = {*logicalMinimumX, *logicalMinimumY};
+
+    if (facts.maximumXFinite || facts.maximumYFinite) {
+        const auto convertedMaximum = window->xwaylandSizeToReal({facts.maximumXFinite ? facts.rawMaximum.x : 1, facts.maximumYFinite ? facts.rawMaximum.y : 1});
+
+        if (facts.maximumXFinite) {
+            const auto logical = FloatPanel::logicalMaximumComponent(convertedMaximum.x);
+            if (!logical)
+                return facts;
+            facts.logicalMaximum.x = *logical;
+        }
+        if (facts.maximumYFinite) {
+            const auto logical = FloatPanel::logicalMaximumComponent(convertedMaximum.y);
+            if (!logical)
+                return facts;
+            facts.logicalMaximum.y = *logical;
+        }
+    }
+
+    facts.valid = true;
+    return facts;
+}
+
+void setSizeHintFacts(lua_State* state, const SXWaylandSizeHintFacts& facts) {
+    setBoolean(state, "size_hints_valid", facts.valid);
+    setVector(state, "xwayland_min_size_raw", facts.rawMinimum);
+    setVector(state, "xwayland_max_size_raw", facts.rawMaximum);
+    setBoolean(state, "xwayland_max_width_finite", facts.maximumXFinite);
+    setBoolean(state, "xwayland_max_height_finite", facts.maximumYFinite);
+
+    if (!facts.valid)
+        return;
+
+    setVector(state, "xwayland_min_size_logical", facts.logicalMinimum);
+    if (facts.maximumXFinite || facts.maximumYFinite)
+        setVector(state, "xwayland_max_size_logical", facts.logicalMaximum);
+}
+
 int luaWindowSemantics(lua_State* state) {
     const std::string_view address = luaL_checkstring(state, 1);
     const auto             window  = windowFromAddress(address);
@@ -89,15 +170,72 @@ int luaWindowSemantics(lua_State* state) {
     const bool transient        = window->m_isX11 && window->m_xwaylandSurface && window->m_xwaylandSurface->m_transient;
     const bool overrideRedirect = window->m_isX11 && window->isX11OverrideRedirect();
     const auto type             = x11WindowType(window);
+    const auto* sizeHints       = window->m_isX11 && window->m_xwaylandSurface ? window->m_xwaylandSurface->m_sizeHints.get() : nullptr;
+    const bool pPosition        = sizeHints && (sizeHints->flags & XCB_ICCCM_SIZE_HINT_P_POSITION);
+    const bool usPosition       = sizeHints && (sizeHints->flags & XCB_ICCCM_SIZE_HINT_US_POSITION);
+    const auto sizeFacts        = xwaylandSizeHintFacts(window);
 
-    // Expose compositor facts only. Persistence policy belongs to the Lua
-    // consumer so it can change without rebuilding this ABI-coupled bridge.
+    // Expose compositor facts only. Persistence and placement policies belong
+    // to the Lua consumer so they can change without rebuilding this bridge.
     setBoolean(state, "found", true);
     setBoolean(state, "xwayland", window->m_isX11);
     setBoolean(state, "has_parent", hasParent);
+    if (parent)
+        setString(state, "parent_address", windowAddress(parent));
     setBoolean(state, "transient", transient);
     setBoolean(state, "override_redirect", overrideRedirect);
     setString(state, "window_type", type);
+    setBoolean(state, "program_position", pPosition);
+    setBoolean(state, "user_position", usPosition);
+    setBoolean(state, "position_specified", pPosition || usPosition);
+    setBoolean(state, "has_xwayland_size_hints", sizeFacts.has_value());
+    if (sizeFacts)
+        setSizeHintFacts(state, *sizeFacts);
+    return 1;
+}
+
+int luaApplyXWaylandSizeHints(lua_State* state) {
+    const std::string_view address = luaL_checkstring(state, 1);
+    const auto             window  = windowFromAddress(address);
+
+    lua_newtable(state);
+    setBoolean(state, "found", static_cast<bool>(window));
+    setBoolean(state, "xwayland", window && window->m_isX11);
+    setBoolean(state, "applied", false);
+
+    if (!window) {
+        setString(state, "reason", "window-not-found");
+        return 1;
+    }
+    if (!window->m_isX11 || !window->m_xwaylandSurface) {
+        setString(state, "reason", "not-xwayland");
+        return 1;
+    }
+
+    const auto facts = xwaylandSizeHintFacts(window);
+    if (!facts) {
+        setString(state, "reason", "no-size-hints");
+        return 1;
+    }
+
+    setSizeHintFacts(state, *facts);
+    if (!facts->valid) {
+        setString(state, "reason", "invalid-size-hints");
+        return 1;
+    }
+
+    window->m_ruleApplicator->minSizeOverride(
+        Desktop::Types::COverridableVar(facts->logicalMinimum, Desktop::Types::PRIORITY_SET_PROP));
+    if (facts->maximumXFinite || facts->maximumYFinite) {
+        window->m_ruleApplicator->maxSizeOverride(
+            Desktop::Types::COverridableVar(facts->logicalMaximum, Desktop::Types::PRIORITY_SET_PROP));
+        setString(state, "reason", "applied-min-max");
+    } else {
+        window->m_ruleApplicator->maxSize().unset(Desktop::Types::PRIORITY_SET_PROP);
+        setString(state, "reason", "applied-min-only");
+    }
+
+    setBoolean(state, "applied", true);
     return 1;
 }
 
@@ -108,8 +246,6 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 }
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
-    pluginHandle = handle;
-
     const auto running = HyprlandAPI::getHyprlandVersion(handle);
     if (running.hash != GIT_COMMIT_HASH)
         throw std::runtime_error(std::format("float-panel native bridge was built for Hyprland {}, running {}", GIT_COMMIT_HASH, running.hash));
@@ -117,16 +253,24 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "window_semantics", luaWindowSemantics))
         throw std::runtime_error("failed to register hl.plugin.float_panel.window_semantics");
 
+    if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "apply_xwayland_size_hints", luaApplyXWaylandSizeHints)) {
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        throw std::runtime_error("failed to register hl.plugin.float_panel.apply_xwayland_size_hints");
+    }
+
+    pluginHandle = handle;
     return {
         "float-panel-native",
-        "Window relationship metadata bridge for fatlj.float-panel",
+        "Window semantics and XWayland size-hint bridge for fatlj.float-panel",
         "fatlj",
-        "0.1.0",
+        "0.2.0",
     };
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    if (pluginHandle)
+    if (pluginHandle) {
+        HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "apply_xwayland_size_hints");
         HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "window_semantics");
+    }
     pluginHandle = nullptr;
 }
