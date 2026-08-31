@@ -197,6 +197,9 @@ BarWidget {
             "workspace": sourceName
         });
         Hyprland.dispatch("(function() return function() " + statements.join("; ") + " end end)()");
+        // Reconcile after every click so a dead compositor address cannot
+        // remain as an inert TaskList icon.
+        Hyprland.refreshToplevels();
     }
 
     FileView {
@@ -218,14 +221,6 @@ BarWidget {
     }
 
     Component.onCompleted: Hyprland.refreshToplevels()
-
-    Connections {
-        target: Hyprland.toplevels
-
-        function onValuesChanged() {
-            Hyprland.refreshToplevels();
-        }
-    }
 
     Connections {
         target: Hyprland

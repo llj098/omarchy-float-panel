@@ -39,7 +39,6 @@ for required in (
     "fatlj_float_panel.toggle_workspace_mode(",
     "workspace.toplevels.values",
     "minimizedWorkspace.toplevels.values",
-    "Hyprland.toplevels",
     "Hyprland.refreshToplevels()",
     "TaskListModel.launchOrderFromTags(ipc.tags)",
     "Qt.LeftButton",
@@ -62,6 +61,12 @@ for required in (
     '"ignored": true',
 ):
     assert required in qml, f"TaskList.qml missing required contract: {required}"
+
+task_activation = qml[qml.index("    function activateGroup("):qml.index("    FileView {")]
+assert task_activation.index("Hyprland.dispatch") < task_activation.index("Hyprland.refreshToplevels()"), \
+    "TaskList clicks must reconcile stale toplevels after dispatch"
+assert "target: Hyprland.toplevels" not in qml, \
+    "toplevel value changes are already reactive and must not recursively request another refresh"
 
 switcher = (ROOT / "AppSwitcher.qml").read_text()
 for required in (
