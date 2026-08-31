@@ -191,6 +191,22 @@ local function debug_window_action(event, window, workspace, fields)
   debug_log(event, fields)
 end
 
+local function debug_window_geometry(event, window, workspace, fields)
+  if not debug_enabled then return end
+  fields = fields or {}
+  local at = window and window.at or nil
+  local size = window and window.size or nil
+  fields.class = window and window.class or "nil"
+  fields.initial_class = window and window.initial_class or "nil"
+  fields.x = at and at.x or "nil"
+  fields.y = at and at.y or "nil"
+  fields.width = size and size.x or "nil"
+  fields.height = size and size.y or "nil"
+  fields.floating = window and window.floating == true or false
+  fields.xwayland = window and window.xwayland == true or false
+  debug_window_action(event, window, workspace, fields)
+end
+
 local function toggle_workspace_mode(workspace, event)
   if not workspace_is_regular(workspace) then return end
 
@@ -1074,9 +1090,13 @@ end
 hl.on("window.open", function(window)
   tag_window_launch_order(window)
   local workspace = window and window.workspace or nil
-  if workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
+  local float_enabled = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
+  local slot, record
+  debug_window_geometry("event.window_open_before", window, workspace, { float_workspace = float_enabled })
+  if float_enabled then
     set_window_floating(window, true)
-    local _, _, record = claim_geometry_slot(window, workspace)
+    local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
+    slot, record = claimed_slot, claimed_record
     if record then
       restore_window_placement(window, workspace, record)
     else
@@ -1084,6 +1104,11 @@ hl.on("window.open", function(window)
     end
     fit_window_to_floating_bounds(window)
   end
+  debug_window_geometry("event.window_open_after", window, workspace, {
+    float_workspace = float_enabled,
+    geometry_slot = slot or "none",
+    restored_intent = record and record.intent or "none",
+  })
 end)
 
 hl.on("window.close", function(window)
