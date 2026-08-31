@@ -177,7 +177,9 @@ for required in (
     'float-panel-geometries',
     'native/build/float-panel-native.so',
     'hl.plugin.load(native_bridge_path)',
-    'hl.plugin.float_panel.window_semantics',
+    'native_float_panel.window_semantics',
+    'native_float_panel.apply_xwayland_size_hints',
+    'safely_apply_xwayland_size_hints(window)',
     'window_persistence_semantics(window)',
     'local function window_persistence_policy(semantics)',
     'semantics.xwayland == false',
@@ -199,6 +201,8 @@ for required in (
     "geometry_slot = slot or \"none\"",
     "restored_intent = record and record.intent or \"none\"",
     'debug_log("event.layer_opened"',
+    'refresh_workspace_xwayland_size_hints(workspace)',
+    'for _, window in safe_ipairs(hl.get_windows()) do safely_apply_xwayland_size_hints(window) end',
     'window_side_intent(window)',
     'side_geometry(side.side, window.monitor)',
     'update_side_intent(window, workspace, side, geometry)',
@@ -218,8 +222,12 @@ for required in (
     'config_gap("general.gaps_out")',
     "relative = true",
     "hl.dsp.window.resize",
-    'name = "float-panel-wechat-min-size"',
-    "min_size = { 1, 1 }",
+    'semantics.parent_address',
+    'semantics.position_specified == true',
+    'semantics.program_position == true',
+    'semantics.user_position == true',
+    'pcall(hl.get_window, "address:" .. parent_address)',
+    'initial_placement = "parent"',
     "special:omarchy-minimized-",
 ):
     assert required in lua, f"float-panel.lua missing required contract: {required}"
@@ -238,6 +246,8 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
 
 assert "bar.run" not in qml and "hyprctl dispatch" not in qml, \
     "TaskList actions must use one in-process Hyprland request"
+assert "wechat" not in lua.lower() and "min_size = { 1, 1 }" not in lua, \
+    "XWayland constraints must not use an application-class override"
 assert "Timer {" not in qml, "TaskList IPC refresh must be event-driven"
 assert "Qt.callLater(function() { list.positionViewAtIndex" in switcher, \
     "AppSwitcher must position its list after QML has applied the snapshot"

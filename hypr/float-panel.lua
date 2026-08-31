@@ -24,10 +24,20 @@ do
   end
 end
 
-local native_window_semantics = type(hl.plugin) == "table" and
-  type(hl.plugin.float_panel) == "table" and
-  type(hl.plugin.float_panel.window_semantics) == "function" and
-  hl.plugin.float_panel.window_semantics or nil
+local native_float_panel = type(hl.plugin) == "table" and type(hl.plugin.float_panel) == "table" and
+  hl.plugin.float_panel or nil
+local native_window_semantics = native_float_panel and type(native_float_panel.window_semantics) == "function" and
+  native_float_panel.window_semantics or nil
+local native_apply_xwayland_size_hints = native_float_panel and
+  type(native_float_panel.apply_xwayland_size_hints) == "function" and
+  native_float_panel.apply_xwayland_size_hints or nil
+
+local function safely_apply_xwayland_size_hints(window)
+  local address = tostring(window and window.address or "")
+  if not native_apply_xwayland_size_hints or address == "" then return false end
+  local ok, result = pcall(native_apply_xwayland_size_hints, address)
+  return ok and type(result) == "table" and result.applied == true
+end
 
 local function debug_flag_enabled()
   local file = io.open(debug_flag_path, "r")
@@ -67,15 +77,6 @@ end
 -- Negative float gaps inherit general.gaps_out in Hyprland 0.56.2, keeping
 -- native floating maximization inside the same gapped workspace work area.
 hl.config({ general = { float_gaps = -1 } })
-
--- WeChat's XWayland WM_NORMAL_HINTS block interactive shrinking on fractional-scale
--- monitors even though the client accepts smaller configure sizes. Override only the
--- compositor's minimum; the application remains free to lay out its own contents.
-hl.window_rule({
-  name = "float-panel-wechat-min-size",
-  match = { class = "^wechat$", xwayland = true },
-  min_size = { 1, 1 },
-})
 
 local order_tag_prefix = "float-panel-order-"
 local geometric_max_tag_prefix = "float-panel-geometric-max-v1-"
@@ -633,14 +634,25 @@ local function adopt_existing_side_intent(window, workspace)
   end
 end
 
+local function refresh_workspace_xwayland_size_hints(workspace)
+  if not workspace then return end
+  for _, window in safe_ipairs(workspace:get_windows()) do safely_apply_xwayland_size_hints(window) end
+  if not workspace_is_regular(workspace) then return end
+
+  local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
+  for _, window in safe_ipairs(hl.get_windows()) do
+    if window.workspace and window.workspace.special == true and window.workspace.name == minimized_name then
+      safely_apply_xwayland_size_hints(window)
+    end
+  end
+end
+
 local function defensively_fit_float_workspace(workspace)
   if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
 
   -- Pinned windows intentionally use the same monitor-bound fitting path.
   -- Pinning changes workspace visibility, not the monitor work-area limits.
-  for _, window in safe_ipairs(workspace:get_windows()) do
-    fit_window_to_floating_bounds(window)
-  end
+  for _, window in safe_ipairs(workspace:get_windows()) do fit_window_to_floating_bounds(window) end
 
   -- Minimized windows belong to a special workspace and are absent from
   -- workspace:get_windows(). Reflow them against their source workspace now,
@@ -834,24 +846,25 @@ end
 
 local function window_persistence_semantics(window)
   local token = geometry_window_token(window)
-  if not token then return false, "missing-window-token" end
+  if not token then return false, "missing-window-token", nil end
   local cached = geometry_window_semantics[token]
-  if cached then return cached.eligible, cached.reason end
+  if cached then return cached.eligible, cached.reason, cached.semantics end
 
-  local eligible, reason = false, "native-bridge-unavailable"
+  local eligible, reason, semantics = false, "native-bridge-unavailable", nil
   if native_window_semantics then
-    local ok, semantics = pcall(native_window_semantics, tostring(window.address or ""))
+    local ok, result = pcall(native_window_semantics, tostring(window.address or ""))
     if not ok then
       reason = "native-bridge-error"
-    elseif type(semantics) ~= "table" or semantics.found ~= true then
+    elseif type(result) ~= "table" or result.found ~= true then
       reason = "native-window-not-found"
     else
+      semantics = result
       eligible, reason = window_persistence_policy(semantics)
     end
   end
 
-  geometry_window_semantics[token] = { eligible = eligible, reason = reason }
-  return eligible, reason
+  geometry_window_semantics[token] = { eligible = eligible, reason = reason, semantics = semantics }
+  return eligible, reason, semantics
 end
 
 local function forget_window_persistence_semantics(window)
@@ -1138,6 +1151,26 @@ local function restore_window_placement(window, workspace, record)
   return false
 end
 
+local function place_window_over_parent(window, semantics)
+  if type(semantics) ~= "table" or semantics.position_specified == true or
+      semantics.program_position == true or semantics.user_position == true then return false end
+  local parent_address = tostring(semantics.parent_address or "")
+  if parent_address == "" or parent_address == "0x0" or not parent_address:match("^0x%x+$") then return false end
+
+  local ok, parent = pcall(hl.get_window, "address:" .. parent_address)
+  if not ok or not parent then return false end
+  local parent_at, parent_size = parent.at, parent.size
+  local child_size = window and window.size or nil
+  if not parent_at or not parent_size or not child_size then return false end
+
+  local x = nearest_integer((tonumber(parent_at.x) or 0) +
+    ((tonumber(parent_size.x) or 0) - (tonumber(child_size.x) or 0)) / 2)
+  local y = nearest_integer((tonumber(parent_at.y) or 0) +
+    ((tonumber(parent_size.y) or 0) - (tonumber(child_size.y) or 0)) / 2)
+  hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
+  return true
+end
+
 load_float_workspaces()
 load_geometry_records()
 
@@ -1145,6 +1178,7 @@ load_geometry_records()
 -- launch order after its own restart without a separate ordering database.
 for _, window in safe_ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
+  safely_apply_xwayland_size_hints(window)
   local workspace = source_float_workspace(window)
   if workspace then claim_geometry_slot(window, workspace) end
 end
@@ -1161,10 +1195,11 @@ end
 
 hl.on("window.open", function(window)
   tag_window_launch_order(window)
+  safely_apply_xwayland_size_hints(window)
   local workspace = window and window.workspace or nil
   local float_enabled = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
-  local persistence_eligible, persistence_reason = window_persistence_semantics(window)
-  local slot, record
+  local persistence_eligible, persistence_reason, semantics = window_persistence_semantics(window)
+  local slot, record, initial_placement
   debug_window_geometry("event.window_open_before", window, workspace, {
     float_workspace = float_enabled,
     persistence = persistence_reason,
@@ -1173,18 +1208,21 @@ hl.on("window.open", function(window)
     set_window_floating(window, true)
     local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
     slot, record = claimed_slot, claimed_record
-    if persistence_eligible then
-      if record then
-        restore_window_placement(window, workspace, record)
-      else
-        persist_window_placement(window, workspace)
-      end
+    if persistence_eligible and record then
+      restore_window_placement(window, workspace, record)
+      initial_placement = "restored"
+    elseif place_window_over_parent(window, semantics) then
+      initial_placement = "parent"
+    else
+      initial_placement = "app"
     end
     fit_window_to_floating_bounds(window)
+    if persistence_eligible and not record then persist_window_placement(window, workspace) end
   end
   debug_window_geometry("event.window_open_after", window, workspace, {
     float_workspace = float_enabled,
     geometry_slot = slot or "none",
+    initial_placement = initial_placement or "none",
     persistence = persistence_reason,
     restored_intent = record and record.intent or "none",
   })
@@ -1243,16 +1281,16 @@ hl.on("workspace.move_to_monitor", function(workspace, monitor)
     workspace = workspace and workspace.name or "nil",
     monitor = monitor and monitor.name or "nil",
   })
+  refresh_workspace_xwayland_size_hints(workspace)
   defensively_fit_float_workspace(workspace)
 end)
 
 -- Hyprland emits this after monitor layout changes. It carries no monitor, so
--- inspect every plugin-enabled regular Float workspace defensively.
+-- refresh constraints globally and inspect every plugin-enabled Float workspace.
 hl.on("monitor.layout_changed", function()
   debug_log("event.monitor_layout_changed")
-  for _, workspace in safe_ipairs(hl.get_workspaces()) do
-    defensively_fit_float_workspace(workspace)
-  end
+  for _, window in safe_ipairs(hl.get_windows()) do safely_apply_xwayland_size_hints(window) end
+  for _, workspace in safe_ipairs(hl.get_workspaces()) do defensively_fit_float_workspace(workspace) end
 end)
 
 -- LayerSurface::onMap arranges exclusive reservations before this event.

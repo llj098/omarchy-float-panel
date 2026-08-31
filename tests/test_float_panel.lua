@@ -8,6 +8,22 @@ local window_rules = {}
 local configs = {}
 local resize_adjustment = nil
 local native_semantics_by_address = {}
+local size_hint_calls = {}
+local size_hint_errors = {}
+local operation_log = {}
+local windows_by_address = {}
+
+local function apply_size_hints_bridge(address)
+  table.insert(size_hint_calls, address)
+  table.insert(operation_log, { kind = "apply_size_hints", address = address })
+  if size_hint_errors[address] then error("synthetic size-hint bridge failure") end
+  return {
+    found = true,
+    xwayland = true,
+    applied = true,
+    reason = "applied",
+  }
+end
 
 local function workspace(id, name, special)
   local value = { id = id, name = name, config_name = tostring(name), special = special == true, windows = {} }
@@ -58,6 +74,7 @@ hl = {
   },
   dispatch = function(action)
     table.insert(dispatched, action)
+    table.insert(operation_log, { kind = action.kind, window = action.params and action.params.window or nil })
     if action.kind == "float" then
       action.params.window.floating = action.params.action == "on"
     elseif action.kind == "move" then
@@ -97,6 +114,10 @@ hl = {
   get_active_workspace = function() return active_workspace end,
   get_active_window = function() return active_window end,
   get_windows = function() return { w1, w2 } end,
+  get_window = function(selector)
+    local address = type(selector) == "string" and selector:match("^address:(0x%x+)$") or nil
+    return address and windows_by_address[address] or nil
+  end,
   get_active_monitor = function() return active_monitor end,
   get_workspaces = function() return { ws1, ws2, ws3, special } end,
   get_workspace = function(selector)
@@ -130,8 +151,12 @@ hl = {
           transient = false,
           override_redirect = false,
           window_type = "normal",
+          program_position = false,
+          user_position = false,
+          position_specified = false,
         }
       end,
+      apply_xwayland_size_hints = apply_size_hints_bridge,
     },
   },
 }
@@ -197,9 +222,7 @@ assert(type(handlers["layer.opened"]) == "function")
 assert(handlers["workspace.work_area_changed"] == nil)
 assert(handlers["monitor.removed"] == nil,
   "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
-assert(#window_rules == 1, "the WeChat size override must be registered once")
-assert(window_rules[1].match.class == "^wechat$" and window_rules[1].match.xwayland == true)
-assert(window_rules[1].min_size[1] == 1 and window_rules[1].min_size[2] == 1)
+assert(#window_rules == 0, "size hints must be normalized generically instead of by application class")
 assert(w1.order_tag and w1.order_tag:match("^%+float%-panel%-order%-%d+$"), "existing windows must receive a launch-order tag")
 assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all existing windows must receive a launch-order tag")
 
@@ -744,8 +767,113 @@ local function persisted_window(address, class, x, y, width, height)
     address = address, initial_class = class, class = class, xdg_tag = nil,
     workspace = ws1, monitor = own_monitor, floating = false, mapped = true, hidden = false,
     fullscreen = 0, pid = 1, tags = {}, at = { x = x, y = y }, size = { x = width, y = height },
+    xwayland = true,
   }
 end
+
+local parent = persisted_window("0x5000", "ParentApp", 400, 180, 500, 300)
+windows_by_address[parent.address] = parent
+local function parent_semantics(parent_address, position_specified)
+  return {
+    found = true,
+    xwayland = true,
+    has_parent = parent_address ~= nil,
+    parent_address = parent_address,
+    transient = parent_address ~= nil,
+    override_redirect = false,
+    window_type = parent_address and "utility" or "normal",
+    program_position = position_specified == true,
+    user_position = false,
+    position_specified = position_specified == true,
+  }
+end
+
+-- Corrected XWayland constraints must be applied before Float placement.
+local hinted = persisted_window("0x5001", "HintedApp", 100, 90, 240, 160)
+operation_log = {}
+handlers["window.open"](hinted)
+local apply_index, float_index
+for index, operation in ipairs(operation_log) do
+  if operation.kind == "apply_size_hints" and operation.address == hinted.address then apply_index = index end
+  if operation.kind == "float" and operation.window == hinted then float_index = index end
+end
+assert(apply_index and float_index and apply_index < float_index,
+  "corrected XWayland hints must be applied before floating and placement")
+
+-- A parented window without PPosition/USPosition is centered after its desired size is known.
+local centered = persisted_window("0x5002", "ChildApp", 80, 70, 200, 100)
+native_semantics_by_address[centered.address] = parent_semantics(parent.address, false)
+handlers["window.open"](centered)
+assert(centered.at.x == 550 and centered.at.y == 280,
+  "a parented window without an explicit position must center over its concrete parent")
+assert(not table.concat(centered.tags, "\n"):find("float%-panel%-geometry%-slot%-v1%-"),
+  "parented utility windows must remain outside geometry persistence")
+
+local positioned = persisted_window("0x5003", "PositionedChild", 440, 210, 180, 120)
+native_semantics_by_address[positioned.address] = parent_semantics(parent.address, true)
+handlers["window.open"](positioned)
+assert(positioned.at.x == 440 and positioned.at.y == 210,
+  "PPosition/USPosition must preserve the application's initial placement")
+
+local missing_parent = persisted_window("0x5004", "MissingParentChild", 460, 220, 180, 120)
+native_semantics_by_address[missing_parent.address] = parent_semantics("0xdead", false)
+handlers["window.open"](missing_parent)
+assert(missing_parent.at.x == 460 and missing_parent.at.y == 220,
+  "an unresolved parent address must preserve application placement")
+
+local wechat_image = persisted_window("0x5005", "WeChatImage", 470, 230, 190, 130)
+native_semantics_by_address[wechat_image.address] = parent_semantics(nil, true)
+handlers["window.open"](wechat_image)
+assert(wechat_image.at.x == 470 and wechat_image.at.y == 230 and
+  wechat_image.size.x == 190 and wechat_image.size.y == 130,
+  "a no-parent explicitly positioned image window must remain unchanged without a class hack")
+
+local bridge_failure = persisted_window("0x5006", "BridgeFailure", 480, 240, 180, 120)
+size_hint_errors[bridge_failure.address] = true
+local bridge_ok = pcall(handlers["window.open"], bridge_failure)
+size_hint_errors[bridge_failure.address] = nil
+assert(bridge_ok and bridge_failure.floating and bridge_failure.at.x == 480 and bridge_failure.at.y == 240,
+  "a size-hint bridge error must fail safely without blocking normal Float placement")
+
+hl.plugin.float_panel.apply_xwayland_size_hints = nil
+dofile("hypr/float-panel.lua")
+local bridge_absent = persisted_window("0x5009", "BridgeAbsent", 490, 250, 170, 110)
+assert(pcall(handlers["window.open"], bridge_absent) and bridge_absent.floating,
+  "an absent size-hint bridge must fail safely")
+hl.plugin.float_panel.apply_xwayland_size_hints = apply_size_hints_bridge
+dofile("hypr/float-panel.lua")
+
+-- Scale-changing monitor routes must refresh corrected constraints before fitting.
+local reflow_hinted = persisted_window("0x5007", "ReflowHinted", 120, 90, 240, 160)
+local previous_reflow_windows = ws1.windows
+local previous_reflow_get_windows = hl.get_windows
+ws1.windows = { reflow_hinted }
+hl.get_windows = function() return { reflow_hinted } end
+size_hint_calls = {}
+handlers["workspace.move_to_monitor"](ws1, own_monitor)
+handlers["monitor.layout_changed"]()
+hl.get_windows = previous_reflow_get_windows
+local reflow_calls = 0
+for _, address in ipairs(size_hint_calls) do
+  if address == reflow_hinted.address then reflow_calls = reflow_calls + 1 end
+end
+assert(reflow_calls == 2,
+  "workspace-monitor and monitor-layout reflow must each refresh corrected XWayland constraints")
+ws1.windows = previous_reflow_windows
+
+-- A first-open record must capture the final post-fit application placement.
+local post_fit = persisted_window("0x5008", "PostFitPersist", 2000, 100, 200, 100)
+handlers["window.open"](post_fit)
+assert(post_fit.at.x == 778 and post_fit.at.y == 100, "first open must fit application placement to the work area")
+local post_fit_file = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-geometries", "r"))
+local post_fit_state = post_fit_file:read("*a")
+post_fit_file:close()
+local post_fit_record
+for line in post_fit_state:gmatch("[^\n]+") do
+  if line:find("506f737446697450657273697374", 1, true) then post_fit_record = line end
+end
+assert(post_fit_record and post_fit_record:find("\t778\t100\t200\t100\t", 1, true),
+  "new geometry persistence must run after full work-area fitting")
 
 -- A free Float window must reopen at its last closed geometry.
 local saved = persisted_window("0x1001", "PersistApp", 200, 100, 400, 200)
