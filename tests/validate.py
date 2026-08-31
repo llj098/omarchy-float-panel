@@ -184,9 +184,9 @@ for required in (
     'hl.plugin.load(native_bridge_path)',
     'native_float_panel.window_semantics',
     'read_native_window_semantics(window)',
+    'local function ignore_window_minimum_size(window)',
+    'hl.dsp.window.set_prop({ prop = "min_size", value = "1 1", window = window })',
     'hl.window_rule({',
-    'name = "fatlj-float-panel-ignore-min-size"',
-    'min_size = { 1, 1 }',
     'name = "fatlj-float-panel-auxiliary-no-border"',
     'match = { tag = auxiliary_no_border_tag }',
     'border_size = 0',
@@ -254,15 +254,14 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
     assert forbidden not in switcher
     assert forbidden not in lua
 
-assert "native_float_panel.apply_xwayland_size_hints" not in lua and "hl.dsp.window.set_prop" not in lua, \
-    "Lua must not install corrected per-window size constraints"
-
-global_min_rule = '''hl.window_rule({
-  name = "fatlj-float-panel-ignore-min-size",
-  min_size = { 1, 1 },
-})'''
-assert lua.count(global_min_rule) == 1, \
-    "one match-free rule must ignore minimum-size hints for every application"
+assert "native_float_panel.apply_xwayland_size_hints" not in lua, \
+    "native corrected size-hint application must remain removed"
+assert lua.count('hl.dsp.window.set_prop({ prop = "min_size", value = "1 1", window = window })') == 1, \
+    "the only minimum-size effect must be the generic highest-priority 1x1 override"
+assert lua.count("\n  ignore_window_minimum_size(window)") == 2, \
+    "minimum-size override must cover existing mapped windows and window.open"
+assert "fatlj-float-panel-ignore-min-size" not in lua and "min_size = { 1, 1 }" not in lua, \
+    "a lower-priority window rule must not leave stale SET_PROP constraints active"
 
 auxiliary_border_rule = '''hl.window_rule({
   name = "fatlj-float-panel-auxiliary-no-border",

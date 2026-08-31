@@ -78,6 +78,7 @@ hl = {
       fullscreen = function(params) return { kind = "fullscreen", params = params } end,
       fullscreen_state = function(params) return { kind = "fullscreen_state", params = params } end,
       alter_zorder = function(params) return { kind = "alter_zorder", params = params } end,
+      set_prop = function(params) return { kind = "set_prop", params = params } end,
     },
     focus = function(params) return { kind = "focus", params = params } end,
     global = function(name) return { kind = "global", name = name } end,
@@ -109,6 +110,10 @@ hl = {
         x = action.params.x + (resize_adjustment and resize_adjustment.x or 0),
         y = action.params.y + (resize_adjustment and resize_adjustment.y or 0),
       }
+    elseif action.kind == "set_prop" then
+      local window = action.params.window
+      window.applied_props = window.applied_props or {}
+      window.applied_props[action.params.prop] = action.params.value
     elseif action.kind == "tag" then
       local window, tag = action.params.window, action.params.tag
       if tag:sub(1, 1) == "+" then
@@ -220,16 +225,14 @@ assert(type(handlers["layer.opened"]) == "function")
 assert(handlers["workspace.work_area_changed"] == nil)
 assert(handlers["monitor.removed"] == nil,
   "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
-assert(#window_rules == 2, "the global minimum-size and auxiliary no-border rules must be installed")
-local window_rules_by_name = {}
-for _, rule in ipairs(window_rules) do window_rules_by_name[rule.name] = rule end
-local minimum_rule = window_rules_by_name["fatlj-float-panel-ignore-min-size"]
-assert(minimum_rule and minimum_rule.min_size[1] == 1 and minimum_rule.min_size[2] == 1 and minimum_rule.match == nil,
-  "all applications must ignore minimum-size hints without an app/class/title match")
-local auxiliary_rule = window_rules_by_name["fatlj-float-panel-auxiliary-no-border"]
+assert(#window_rules == 1, "only the auxiliary no-border rule must be installed")
+local auxiliary_rule = window_rules[1]
 assert(auxiliary_rule and auxiliary_rule.border_size == 0 and
   auxiliary_rule.match.tag == "float-panel-auxiliary-no-border",
   "standard auxiliary-window facts must feed one tag-matched no-border rule")
+assert(w1.applied_props and w1.applied_props.min_size == "1 1" and
+  w2.applied_props and w2.applied_props.min_size == "1 1",
+  "all existing mapped applications must receive the highest-priority minimum-size override")
 assert(w1.order_tag and w1.order_tag:match("^%+float%-panel%-order%-%d+$"), "existing windows must receive a launch-order tag")
 assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all existing windows must receive a launch-order tag")
 
@@ -834,6 +837,8 @@ assert(missing_parent.at.x == 460 and missing_parent.at.y == 220,
 local wechat_image = persisted_window("0x5005", "WeChatImage", 470, 230, 190, 130)
 native_semantics_by_address[wechat_image.address] = parent_semantics(nil, true)
 handlers["window.open"](wechat_image)
+assert(wechat_image.applied_props and wechat_image.applied_props.min_size == "1 1",
+  "newly opened applications must ignore their minimum-size hints")
 assert(wechat_image.at.x == 470 and wechat_image.at.y == 230 and
   wechat_image.size.x == 190 and wechat_image.size.y == 130,
   "a no-parent explicitly positioned image window must remain unchanged without a class hack")

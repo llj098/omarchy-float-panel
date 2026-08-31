@@ -113,7 +113,7 @@ For native edge/corner resizing without holding `Super`, enable Hyprland's suppo
 hl.config({ general = { resize_on_border = true } })
 ```
 
-Application minimum-size hints are ignored globally through one match-free Hyprland window rule with `min_size = { 1, 1 }`; no application name, class, or title is special-cased. Application maximum-size hints retain Hyprland's native behavior.
+Application minimum-size hints are ignored globally by applying Hyprland's standard per-window `min_size = 1 1` property to every existing mapped window and every `window.open`; the highest-priority property also replaces stale constraints left on persistent XWayland window objects by earlier plugin versions. No application name, class, or title is special-cased. Application maximum-size hints retain Hyprland's native behavior.
 
 ## Minimize and restore
 

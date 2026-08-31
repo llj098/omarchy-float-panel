@@ -78,10 +78,12 @@ end
 -- native floating maximization inside the same gapped workspace work area.
 hl.config({ general = { float_gaps = -1 } })
 
-hl.window_rule({
-  name = "fatlj-float-panel-ignore-min-size",
-  min_size = { 1, 1 },
-})
+local function ignore_window_minimum_size(window)
+  if not window or window.mapped ~= true or window.hidden == true then return false end
+  return pcall(function()
+    hl.dispatch(hl.dsp.window.set_prop({ prop = "min_size", value = "1 1", window = window }))
+  end)
+end
 
 local auxiliary_no_border_tag = "float-panel-auxiliary-no-border"
 hl.window_rule({
@@ -1403,6 +1405,7 @@ load_geometry_records()
 -- Process start ticks survive focus/Z-order changes and let the shell reconstruct
 -- launch order after its own restart without a separate ordering database.
 for _, window in safe_ipairs(hl.get_windows()) do
+  ignore_window_minimum_size(window)
   tag_window_launch_order(window)
   local semantics = read_native_window_semantics(window)
   tag_auxiliary_window_no_border(window, semantics)
@@ -1422,6 +1425,7 @@ for _, workspace in safe_ipairs(hl.get_workspaces()) do
 end
 
 hl.on("window.open", function(window)
+  ignore_window_minimum_size(window)
   tag_window_launch_order(window)
   local workspace = window and window.workspace or nil
   local float_enabled = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
