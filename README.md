@@ -59,7 +59,7 @@ Add the Hyprland integration near the end of `~/.config/hypr/hyprland.lua`, afte
 dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/hypr/float-panel.lua")
 ```
 
-`float-panel.lua` loads the bridge with Hyprland's native `hl.plugin.load()` API when the built `.so` exists. The bridge registers only `hl.plugin.float_panel.window_semantics()`; the placement policy and state remain in Lua. Hyprland reloads the Lua configuration once after first loading the native plugin. If the bridge is absent, mismatched, or unavailable, geometry persistence fails closed while the remaining Float/Tiling behavior continues.
+`float-panel.lua` loads the bridge with Hyprland's native `hl.plugin.load()` API when the built `.so` exists. The bridge registers only `hl.plugin.float_panel.window_semantics()` and returns raw compositor facts (`found`, XWayland status, parent/transient/override state, and normalized window type). Lua alone decides which windows may persist geometry; all placement policy and state remain outside the ABI-coupled C++ bridge. Hyprland reloads the Lua configuration once after first loading the native plugin. If the bridge is absent, mismatched, or unavailable, geometry persistence fails closed while the remaining Float/Tiling behavior continues.
 
 Hyprland should reload the configuration automatically. After updating an already loaded plugin checkout, let the file watcher settle and then restart Omarchy Shell once: the watcher notices QML/JavaScript changes, but the running engine can retain an imported JavaScript module cache. Do not overlap the restart with an in-progress file copy/hot reload.
 

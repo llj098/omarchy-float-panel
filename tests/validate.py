@@ -179,10 +179,12 @@ for required in (
     'hl.plugin.load(native_bridge_path)',
     'hl.plugin.float_panel.window_semantics',
     'window_persistence_semantics(window)',
-    'semantics.persistent_candidate == true',
-    'reason = "transient"',
-    'reason = "has-parent"',
-    'reason = "override-redirect"',
+    'local function window_persistence_policy(semantics)',
+    'semantics.xwayland == false',
+    'window_type == "normal" or window_type == "dialog"',
+    'return false, "transient"',
+    'return false, "has-parent"',
+    'return false, "override-redirect"',
     'window.initial_class',
     'window.xdg_tag',
     'load_geometry_records()',
@@ -251,7 +253,6 @@ for forbidden_event in ('layer.closed', 'config.props_refreshed'):
 assert not (ROOT / "patches" / "hyprland-0.56.2-work-area-event.patch").exists(), \
     "the plugin must not require a custom Hyprland build"
 native_main = (ROOT / "native" / "src" / "main.cpp").read_text()
-native_policy = (ROOT / "native" / "src" / "window_policy.hpp").read_text()
 for required in (
     "HyprlandAPI::addLuaFunction",
     '"float_panel", "window_semantics"',
@@ -262,11 +263,22 @@ for required in (
     "GIT_COMMIT_HASH",
 ):
     assert required in native_main, f"native bridge missing required contract: {required}"
-assert "persistentCandidate" in native_policy
-assert "hasParent || transient || overrideRedirect" in native_policy
-assert 'windowType == "normal" || windowType == "dialog"' in native_policy
-assert "wechat" not in native_main.lower() and "wechat" not in native_policy.lower(), \
-    "native persistence semantics must remain application-independent"
+for raw_field in ('"found"', '"xwayland"', '"has_parent"', '"transient"', '"override_redirect"', '"window_type"'):
+    assert raw_field in native_main, f"native metadata bridge missing raw fact: {raw_field}"
+assert "persistent_candidate" not in native_main and "persistentCandidate" not in native_main, \
+    "native metadata bridge must not own persistence policy"
+assert not (ROOT / "native" / "src" / "window_policy.hpp").exists()
+assert not (ROOT / "native" / "tests" / "test_window_policy.cpp").exists()
+assert "wechat" not in native_main.lower(), \
+    "native metadata bridge must remain application-independent"
+policy_tests = (ROOT / "tests" / "test_float_panel.lua").read_text()
+for policy_case in (
+    '"wayland"', '"normal"', '"dialog"', '"parent"', '"transient"',
+    '"override"', '"utility"', '"tooltip"', '"bridge-error"', '"not-found"',
+):
+    assert policy_case in policy_tests, f"Lua persistence policy matrix missing: {policy_case}"
+assert "synthetic native bridge failure" in policy_tests
+assert "must fail closed without stripping an existing tag" in policy_tests
 
 assert 'mode = "maximized"' not in lua, "Float maximize must not use Hyprland's single fullscreen owner"
 assert "monocle" not in lua.lower() and "workspace_rule" not in lua, "geometry maximize must not change tiled layouts"

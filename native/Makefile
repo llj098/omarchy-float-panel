@@ -7,23 +7,14 @@ LDLIBS += $(shell pkg-config --libs lua)
 
 TARGET := build/float-panel-native.so
 SOURCE := src/main.cpp
-HEADERS := src/window_policy.hpp
-POLICY_TEST := build/test-window-policy
 
-.PHONY: all clean test
+.PHONY: all clean
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCE) $(HEADERS)
+$(TARGET): $(SOURCE)
 	@mkdir -p $(@D)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $(SOURCE) -o $@ $(LDLIBS)
-
-$(POLICY_TEST): tests/test_window_policy.cpp $(HEADERS)
-	@mkdir -p $(@D)
-	$(CXX) -std=c++23 -O2 -Wall -Wextra -Wpedantic -Isrc $< -o $@
-
-test: $(POLICY_TEST)
-	./$(POLICY_TEST)
 
 clean:
 	rm -rf build

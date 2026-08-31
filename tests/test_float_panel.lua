@@ -121,13 +121,14 @@ hl = {
     load = function() end,
     float_panel = {
       window_semantics = function(address)
-        return native_semantics_by_address[address] or {
+        local semantics = native_semantics_by_address[address]
+        if semantics == "error" then error("synthetic native bridge failure") end
+        return semantics or {
           found = true,
           xwayland = true,
           has_parent = false,
           transient = false,
           override_redirect = false,
-          persistent_candidate = true,
           window_type = "normal",
         }
       end,
@@ -786,6 +787,44 @@ assert(multi_b_reopened.at.x == 520 and multi_b_reopened.at.y == 190 and
   multi_b_reopened.size.x == 370 and multi_b_reopened.size.y == 250,
   "an identical app window must reclaim the unoccupied geometry slot")
 
+-- Lua owns the persistence policy over raw native metadata. Accepted cases
+-- must claim a fresh slot, semantic rejections must purge stale tags, and
+-- bridge failures/not-found must fail closed without stripping live tags.
+local stale_policy_tag = "float-panel-geometry-slot-v1-31-5374616c65--99"
+local policy_cases = {
+  { "wayland", { found = true, xwayland = false, has_parent = false, transient = false, override_redirect = false, window_type = "wayland" }, "accept" },
+  { "normal", { found = true, xwayland = true, has_parent = false, transient = false, override_redirect = false, window_type = "normal" }, "accept" },
+  { "dialog", { found = true, xwayland = true, has_parent = false, transient = false, override_redirect = false, window_type = "dialog" }, "accept" },
+  { "parent", { found = true, xwayland = true, has_parent = true, transient = false, override_redirect = false, window_type = "normal" }, "reject" },
+  { "transient", { found = true, xwayland = true, has_parent = false, transient = true, override_redirect = false, window_type = "normal" }, "reject" },
+  { "override", { found = true, xwayland = true, has_parent = false, transient = false, override_redirect = true, window_type = "normal" }, "reject" },
+  { "utility", { found = true, xwayland = true, has_parent = false, transient = false, override_redirect = false, window_type = "utility" }, "reject" },
+  { "tooltip", { found = true, xwayland = true, has_parent = false, transient = false, override_redirect = false, window_type = "tooltip" }, "reject" },
+  { "bridge-error", "error", "preserve" },
+  { "not-found", { found = false }, "preserve" },
+}
+for index, case in ipairs(policy_cases) do
+  local address = string.format("0x26%02x", index)
+  native_semantics_by_address[address] = case[2]
+  local candidate = persisted_window(address, "Policy" .. tostring(index), 180, 120, 260, 170)
+  candidate.tags = { stale_policy_tag }
+  handlers["window.open"](candidate)
+  local geometry_tags = {}
+  for _, tag in ipairs(candidate.tags) do
+    if tag:find("^float%-panel%-geometry%-slot%-v1%-") then table.insert(geometry_tags, tag) end
+  end
+  if case[3] == "accept" then
+    assert(#geometry_tags == 1 and geometry_tags[1] ~= stale_policy_tag,
+      case[1] .. " must claim a fresh geometry slot")
+  elseif case[3] == "reject" then
+    assert(#geometry_tags == 0, case[1] .. " must remain outside the geometry slot pool")
+  else
+    assert(#geometry_tags == 1 and geometry_tags[1] == stale_policy_tag,
+      case[1] .. " must fail closed without stripping an existing tag")
+  end
+  handlers["window.close"](candidate)
+end
+
 -- Parent/transient/type metadata, not app class or title, must keep auxiliary
 -- windows out of the geometry slot pool and preserve each requested box.
 local transient_main = persisted_window("0x2051", "TransientApp", 140, 100, 320, 200)
@@ -798,7 +837,6 @@ for _, address in ipairs({ "0x2052", "0x2053" }) do
     has_parent = true,
     transient = true,
     override_redirect = false,
-    persistent_candidate = false,
     window_type = "utility",
   }
 end

@@ -817,6 +817,21 @@ end
 
 local geometry_window_semantics = {}
 
+-- The native bridge reports compositor facts only. Keep persistence policy in
+-- Lua so policy changes do not require rebuilding an ABI-coupled plugin.
+local function window_persistence_policy(semantics)
+  if semantics.override_redirect == true then return false, "override-redirect" end
+  if semantics.transient == true then return false, "transient" end
+  if semantics.has_parent == true then return false, "has-parent" end
+
+  local window_type = tostring(semantics.window_type or "unknown")
+  if semantics.xwayland == false then return true, "independent-" .. window_type end
+  if semantics.xwayland == true and (window_type == "normal" or window_type == "dialog") then
+    return true, "independent-" .. window_type
+  end
+  return false, "window-type-" .. window_type
+end
+
 local function window_persistence_semantics(window)
   local token = geometry_window_token(window)
   if not token then return false, "missing-window-token" end
@@ -830,16 +845,8 @@ local function window_persistence_semantics(window)
       reason = "native-bridge-error"
     elseif type(semantics) ~= "table" or semantics.found ~= true then
       reason = "native-window-not-found"
-    elseif semantics.persistent_candidate == true then
-      eligible, reason = true, "independent-" .. tostring(semantics.window_type or "unknown")
-    elseif semantics.override_redirect == true then
-      reason = "override-redirect"
-    elseif semantics.transient == true then
-      reason = "transient"
-    elseif semantics.has_parent == true then
-      reason = "has-parent"
     else
-      reason = "window-type-" .. tostring(semantics.window_type or "unknown")
+      eligible, reason = window_persistence_policy(semantics)
     end
   end
 

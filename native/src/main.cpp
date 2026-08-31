@@ -17,8 +17,6 @@ extern "C" {
 #include <lua.h>
 }
 
-#include "window_policy.hpp"
-
 namespace {
 
 HANDLE pluginHandle = nullptr;
@@ -91,14 +89,14 @@ int luaWindowSemantics(lua_State* state) {
     const bool transient        = window->m_isX11 && window->m_xwaylandSurface && window->m_xwaylandSurface->m_transient;
     const bool overrideRedirect = window->m_isX11 && window->isX11OverrideRedirect();
     const auto type             = x11WindowType(window);
-    const bool candidate        = FloatPanel::persistentCandidate(window->m_isX11, hasParent, transient, overrideRedirect, type);
 
+    // Expose compositor facts only. Persistence policy belongs to the Lua
+    // consumer so it can change without rebuilding this ABI-coupled bridge.
     setBoolean(state, "found", true);
     setBoolean(state, "xwayland", window->m_isX11);
     setBoolean(state, "has_parent", hasParent);
     setBoolean(state, "transient", transient);
     setBoolean(state, "override_redirect", overrideRedirect);
-    setBoolean(state, "persistent_candidate", candidate);
     setString(state, "window_type", type);
     return 1;
 }
