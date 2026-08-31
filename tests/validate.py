@@ -175,6 +175,14 @@ for required in (
     'side_intent_tag_prefix = "float-panel-side-v1-"',
     'geometry_slot_tag_prefix = "float-panel-geometry-slot-v1-"',
     'float-panel-geometries',
+    'native/build/float-panel-native.so',
+    'hl.plugin.load(native_bridge_path)',
+    'hl.plugin.float_panel.window_semantics',
+    'window_persistence_semantics(window)',
+    'semantics.persistent_candidate == true',
+    'reason = "transient"',
+    'reason = "has-parent"',
+    'reason = "override-redirect"',
     'window.initial_class',
     'window.xdg_tag',
     'load_geometry_records()',
@@ -242,6 +250,23 @@ for forbidden_event in ('layer.closed', 'config.props_refreshed'):
     assert f'hl.on("{forbidden_event}"' not in lua, "layout repair must not stitch unrelated events"
 assert not (ROOT / "patches" / "hyprland-0.56.2-work-area-event.patch").exists(), \
     "the plugin must not require a custom Hyprland build"
+native_main = (ROOT / "native" / "src" / "main.cpp").read_text()
+native_policy = (ROOT / "native" / "src" / "window_policy.hpp").read_text()
+for required in (
+    "HyprlandAPI::addLuaFunction",
+    '"float_panel", "window_semantics"',
+    "window->parent()",
+    "m_transient",
+    "m_atoms",
+    "isX11OverrideRedirect()",
+    "GIT_COMMIT_HASH",
+):
+    assert required in native_main, f"native bridge missing required contract: {required}"
+assert "persistentCandidate" in native_policy
+assert "hasParent || transient || overrideRedirect" in native_policy
+assert 'windowType == "normal" || windowType == "dialog"' in native_policy
+assert "wechat" not in native_main.lower() and "wechat" not in native_policy.lower(), \
+    "native persistence semantics must remain application-independent"
 
 assert 'mode = "maximized"' not in lua, "Float maximize must not use Hyprland's single fullscreen owner"
 assert "monocle" not in lua.lower() and "workspace_rule" not in lua, "geometry maximize must not change tiled layouts"

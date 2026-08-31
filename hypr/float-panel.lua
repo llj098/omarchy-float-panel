@@ -7,7 +7,27 @@ local geometry_state_path = home .. "/.local/state/omarchy/float-panel-geometrie
 local debug_flag_path = home .. "/.local/state/omarchy/float-panel-debug"
 local debug_log_path = "/tmp/float-panel-debug.log"
 local debug_log_limit = 5 * 1024 * 1024
+local native_bridge_path = home .. "/.config/omarchy/plugins/fatlj.float-panel/native/build/float-panel-native.so"
 local float_workspaces = {}
+
+-- The native bridge exposes compositor-owned parent/transient/type metadata
+-- without patching Hyprland or launching an external process. On the first
+-- load Hyprland loads the .so after evaluating the config, then reloads the
+-- Lua config with the registered callback available.
+do
+  local bridge = io.open(native_bridge_path, "r")
+  if bridge then
+    bridge:close()
+    if type(hl.plugin) == "table" and type(hl.plugin.load) == "function" then
+      hl.plugin.load(native_bridge_path)
+    end
+  end
+end
+
+local native_window_semantics = type(hl.plugin) == "table" and
+  type(hl.plugin.float_panel) == "table" and
+  type(hl.plugin.float_panel.window_semantics) == "function" and
+  hl.plugin.float_panel.window_semantics or nil
 
 local function debug_flag_enabled()
   local file = io.open(debug_flag_path, "r")
@@ -795,6 +815,43 @@ local function geometry_window_token(window)
   return tostring(window)
 end
 
+local geometry_window_semantics = {}
+
+local function window_persistence_semantics(window)
+  local token = geometry_window_token(window)
+  if not token then return false, "missing-window-token" end
+  local cached = geometry_window_semantics[token]
+  if cached then return cached.eligible, cached.reason end
+
+  local eligible, reason = false, "native-bridge-unavailable"
+  if native_window_semantics then
+    local ok, semantics = pcall(native_window_semantics, tostring(window.address or ""))
+    if not ok then
+      reason = "native-bridge-error"
+    elseif type(semantics) ~= "table" or semantics.found ~= true then
+      reason = "native-window-not-found"
+    elseif semantics.persistent_candidate == true then
+      eligible, reason = true, "independent-" .. tostring(semantics.window_type or "unknown")
+    elseif semantics.override_redirect == true then
+      reason = "override-redirect"
+    elseif semantics.transient == true then
+      reason = "transient"
+    elseif semantics.has_parent == true then
+      reason = "has-parent"
+    else
+      reason = "window-type-" .. tostring(semantics.window_type or "unknown")
+    end
+  end
+
+  geometry_window_semantics[token] = { eligible = eligible, reason = reason }
+  return eligible, reason
+end
+
+local function forget_window_persistence_semantics(window)
+  local token = geometry_window_token(window)
+  if token then geometry_window_semantics[token] = nil end
+end
+
 local function release_geometry_slot(window, remove_tag)
   local token = geometry_window_token(window)
   local claim = token and geometry_window_claims[token] or nil
@@ -813,9 +870,17 @@ local function release_geometry_slot(window, remove_tag)
 end
 
 local function claim_geometry_slot(window, workspace)
-  local identity = placement_identity(window, workspace)
   local token = geometry_window_token(window)
-  if not identity or not token then return nil, nil end
+  if not token then return nil, nil end
+  local eligible, reason = window_persistence_semantics(window)
+  if not eligible then
+    if reason ~= "native-bridge-unavailable" and reason ~= "native-bridge-error" and reason ~= "native-window-not-found" then
+      release_geometry_slot(window, true)
+    end
+    return nil, nil
+  end
+  local identity = placement_identity(window, workspace)
+  if not identity then return nil, nil end
 
   local existing = geometry_window_claims[token]
   if existing and existing.key == identity.key then
@@ -1091,22 +1156,29 @@ hl.on("window.open", function(window)
   tag_window_launch_order(window)
   local workspace = window and window.workspace or nil
   local float_enabled = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
+  local persistence_eligible, persistence_reason = window_persistence_semantics(window)
   local slot, record
-  debug_window_geometry("event.window_open_before", window, workspace, { float_workspace = float_enabled })
+  debug_window_geometry("event.window_open_before", window, workspace, {
+    float_workspace = float_enabled,
+    persistence = persistence_reason,
+  })
   if float_enabled then
     set_window_floating(window, true)
     local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
     slot, record = claimed_slot, claimed_record
-    if record then
-      restore_window_placement(window, workspace, record)
-    else
-      persist_window_placement(window, workspace)
+    if persistence_eligible then
+      if record then
+        restore_window_placement(window, workspace, record)
+      else
+        persist_window_placement(window, workspace)
+      end
     end
     fit_window_to_floating_bounds(window)
   end
   debug_window_geometry("event.window_open_after", window, workspace, {
     float_workspace = float_enabled,
     geometry_slot = slot or "none",
+    persistence = persistence_reason,
     restored_intent = record and record.intent or "none",
   })
 end)
@@ -1115,6 +1187,7 @@ hl.on("window.close", function(window)
   local workspace = source_float_workspace(window)
   if workspace then persist_window_placement(window, workspace) end
   release_geometry_slot(window, false)
+  forget_window_persistence_semantics(window)
 end)
 
 hl.on("hyprland.shutdown", function()

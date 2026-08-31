@@ -29,7 +29,8 @@ Hyprland supports tiled and floating windows concurrently. The Lua integration k
 ## Requirements
 
 - Omarchy 4 / `quattro` shell plugin system
-- Hyprland with Lua configuration (0.55 or newer)
+- Hyprland 0.56.2 with Lua configuration, development headers, and `pkg-config` metadata
+- A C++23 compiler and the Lua development package matching Hyprland
 - Quickshell 0.3.1 or a compatible build
 
 This does not target the legacy Waybar-based Omarchy releases.
@@ -47,15 +48,18 @@ omarchy-shell shell rescanPlugins
 sleep 2 # rescan is asynchronous
 omarchy plugin enable fatlj.float-panel
 omarchy bar move fatlj.float-panel --section left --after omarchy.workspaces
+make -C native
 ```
 
-Third-party plugins execute unsandboxed inside `omarchy-shell`; review the checkout before enabling it.
+Third-party QML plugins execute unsandboxed inside `omarchy-shell`. The native metadata bridge is also loaded into the Hyprland compositor, so review the checkout before enabling it. Hyprland's C++ plugin ABI is not stable: rebuild `native/build/float-panel-native.so` against the installed Hyprland headers after every Hyprland upgrade. The bridge checks the exact build commit and refuses to load on a mismatch.
 
 Add the Hyprland integration near the end of `~/.config/hypr/hyprland.lua`, after `require("default.hypr.omarchy")` and the normal Omarchy/user modules:
 
 ```lua
 dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/hypr/float-panel.lua")
 ```
+
+`float-panel.lua` loads the bridge with Hyprland's native `hl.plugin.load()` API when the built `.so` exists. The bridge registers only `hl.plugin.float_panel.window_semantics()`; the placement policy and state remain in Lua. Hyprland reloads the Lua configuration once after first loading the native plugin. If the bridge is absent, mismatched, or unavailable, geometry persistence fails closed while the remaining Float/Tiling behavior continues.
 
 Hyprland should reload the configuration automatically. After updating an already loaded plugin checkout, let the file watcher settle and then restart Omarchy Shell once: the watcher notices QML/JavaScript changes, but the running engine can retain an imported JavaScript module cache. Do not overlap the restart with an in-progress file copy/hot reload.
 
@@ -89,7 +93,9 @@ Float-window placement is stored atomically at:
 ~/.local/state/omarchy/float-panel-geometries
 ```
 
-The application key is the workspace plus Hyprland's immutable `initial_class`; an application-provided `xdg_tag` further separates stable window roles. Identical windows without a role use numbered slots, so closing and reopening one while its peers remain open restores its own slot. If all indistinguishable instances close, their next launch order deterministically consumes the saved slots because neither Hyprland nor the application provides a cross-process window ID. Free windows restore at their saved logical size, shrink but never grow to fit a smaller work area, and retain relative position; left/right/max placements are recomputed from the current monitor work area. `window.close` records the final placement, and `hyprland.shutdown` records windows still open. Tiling workspaces are not restored or allowed to overwrite Float geometry. Compositor-only fullscreen persists its underlying placement rather than reopening fullscreen. Delete this file and reload Hyprland to reset remembered placements.
+Before assigning a geometry slot, the native bridge reads compositor-owned window relationships. Independent Wayland toplevels and X11 `NORMAL`/parentless `DIALOG` windows are eligible; parented/transient windows, override-redirect windows, and X11 utility, tooltip, menu, notification, splash, toolbar, dock, desktop, combo, and drag-and-drop types never claim, save, or restore geometry. This is based on standard window semantics rather than application class or title.
+
+For eligible windows, the application key is the workspace plus Hyprland's immutable `initial_class`; an application-provided `xdg_tag` further separates stable window roles. Identical windows without a role use numbered slots, so closing and reopening one while its peers remain open restores its own slot. If all indistinguishable instances close, their next launch order deterministically consumes the saved slots because neither Hyprland nor the application provides a cross-process window ID. Free windows restore at their saved logical size, shrink but never grow to fit a smaller work area, and retain relative position; left/right/max placements are recomputed from the current monitor work area. `window.close` records the final placement, and `hyprland.shutdown` records windows still open. Tiling workspaces are not restored or allowed to overwrite Float geometry. Compositor-only fullscreen persists its underlying placement rather than reopening fullscreen. Delete this file and reload Hyprland to reset remembered placements.
 
 In a floating workspace, `Super+Left` and `Super+Right` snap the active window to the left or right half of the current monitor and record that placement intent in a live-window tag. Geometry is calculated from the monitor's scale, reserved bar area, live `gaps_out`/`gaps_in`, and border size, so managed halves recompute exactly across reload, monitor migration, and monitor layout/scale changes instead of remaining defensively shrunk after returning to a larger work area. On module startup, existing exact plugin-style halves are adopted; only anchored full-height matches within a 2-pixel client size-increment delta qualify. Before later reflow, cached observed geometry is checked (including Hyprland's monitor-origin translation); a mouse-edited mismatch clears side intent and falls back to free-window fit-only behavior. Keyboard resize also clears side intent. `Super+Up` saves the exact floating box and source workspace in a live-window tag, then resizes and moves that still-floating window to its monitor's usable work area. If Up started from a managed half, Down restores the corresponding half on the current monitor; Up from a free window retains exact free restore semantics. Multiple tagged windows can therefore stay at the same full size; AppSwitcher and TaskList select one with their existing exact-address focus/raise path and do not resize the others. `Super+Down` restores/clamps only the selected window's saved box and clears its tag. Config reloads preserve tags and exact max geometry; monitor migration refills tagged windows against the destination work area, while ordinary floats retain fit-only behavior. Moving a tagged window to another regular workspace or switching its source workspace to Tiling clears the metadata. Clients intentionally continue reporting `fullscreen = 0` and `fullscreenClient = 0`; they do not receive the maximized protocol state. The integration sets `general.float_gaps = -1`, which inherits `gaps_out`; centered keyboard resizing uses that gap, border, reserved area, scale, and transform to clamp against the active window's own monitor. `Super+F` toggles split fullscreen state (`internal = 2`, `client = 0`) to fill the display while retaining client chrome. In a tiling workspace these keys retain Omarchy's original relative-resize, directional-focus, or synchronized-fullscreen behavior. Hyprland's native `monitor.layout_changed` event defensively checks every plugin Float workspace after scale, mode/resolution, transform, or logical-position changes: oversized ordinary floats shrink, off-screen coordinates clamp, already-fitting geometry stays unchanged, and tagged geometric-max peers refill current bounds. Tiling and special/minimized workspaces are ignored. After a newly mapped layer has established its exclusive reservation, Hyprland's post-arrange `layer.opened` event refits only Float workspaces on that exact monitor. Dynamic exclusive-zone mutations without a layer remap, and standalone gap changes, are not claimed by these event routes.
 

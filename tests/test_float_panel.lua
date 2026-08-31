@@ -7,6 +7,7 @@ local bind_options = {}
 local window_rules = {}
 local configs = {}
 local resize_adjustment = nil
+local native_semantics_by_address = {}
 
 local function workspace(id, name, special)
   local value = { id = id, name = name, config_name = tostring(name), special = special == true, windows = {} }
@@ -116,6 +117,22 @@ hl = {
   unbind = function(keys) table.insert(unbound, keys) end,
   window_rule = function(rule) table.insert(window_rules, rule) end,
   config = function(config) table.insert(configs, config) end,
+  plugin = {
+    load = function() end,
+    float_panel = {
+      window_semantics = function(address)
+        return native_semantics_by_address[address] or {
+          found = true,
+          xwayland = true,
+          has_parent = false,
+          transient = false,
+          override_redirect = false,
+          persistent_candidate = true,
+          window_type = "normal",
+        }
+      end,
+    },
+  },
 }
 
 o = {
@@ -768,6 +785,40 @@ handlers["window.open"](multi_b_reopened)
 assert(multi_b_reopened.at.x == 520 and multi_b_reopened.at.y == 190 and
   multi_b_reopened.size.x == 370 and multi_b_reopened.size.y == 250,
   "an identical app window must reclaim the unoccupied geometry slot")
+
+-- Parent/transient/type metadata, not app class or title, must keep auxiliary
+-- windows out of the geometry slot pool and preserve each requested box.
+local transient_main = persisted_window("0x2051", "TransientApp", 140, 100, 320, 200)
+handlers["window.open"](transient_main)
+handlers["window.close"](transient_main)
+for _, address in ipairs({ "0x2052", "0x2053" }) do
+  native_semantics_by_address[address] = {
+    found = true,
+    xwayland = true,
+    has_parent = true,
+    transient = true,
+    override_redirect = false,
+    persistent_candidate = false,
+    window_type = "utility",
+  }
+end
+local transient_a = persisted_window("0x2052", "TransientApp", 470, 190, 350, 230)
+transient_a.tags = { "float-panel-geometry-slot-v1-31-5472616e7369656e74417070--2" }
+handlers["window.open"](transient_a)
+assert(transient_a.at.x == 470 and transient_a.at.y == 190 and
+  transient_a.size.x == 350 and transient_a.size.y == 230,
+  "a transient utility must retain application-requested geometry")
+assert(not table.concat(transient_a.tags, "\n"):find("float%-panel%-geometry%-slot%-v1%-"),
+  "a transient utility must not claim a geometry slot")
+transient_a.at, transient_a.size = { x = 80, y = 90 }, { x = 180, y = 120 }
+handlers["window.close"](transient_a)
+local transient_b = persisted_window("0x2053", "TransientApp", 520, 220, 280, 180)
+handlers["window.open"](transient_b)
+assert(transient_b.at.x == 520 and transient_b.at.y == 220 and
+  transient_b.size.x == 280 and transient_b.size.y == 180,
+  "a later same-class transient must not restore an earlier transient box")
+assert(not table.concat(transient_b.tags, "\n"):find("float%-panel%-geometry%-slot%-v1%-"),
+  "later transient instances must remain outside the slot pool")
 
 local role_main = persisted_window("0x2101", "RoleApp", 130, 100, 300, 180)
 local role_tool = persisted_window("0x2102", "RoleApp", 480, 200, 360, 240)
