@@ -61,7 +61,7 @@ Add the Hyprland integration near the end of `~/.config/hypr/hyprland.lua`, afte
 dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/hypr/float-panel.lua")
 ```
 
-`float-panel.lua` loads the bridge with Hyprland's native `hl.plugin.load()` API when the built `.so` exists. Its sole binding, `hl.plugin.float_panel.window_semantics(address)`, is read-only and returns compositor facts: XWayland and parent/transient/override/type state, concrete parent address, ICCCM `program_position`/`user_position`, and raw/logical size hints. Logical minimum components round up and finite maximum components round down. Lua owns all effects and policy: it installs corrected constraints through Hyprland's standard `hl.dsp.window.set_prop` dispatcher before initial Float placement and on scale-changing reflow, centers an unpositioned child over a resolvable parent, and then runs the normal work-area fit. Explicitly positioned or parentless windows keep application placement. Missing or failing native reads degrade safely; persistence fails closed when semantics are unavailable.
+`float-panel.lua` loads the bridge with Hyprland's native `hl.plugin.load()` API when the built `.so` exists. Its sole binding, `hl.plugin.float_panel.window_semantics(address)`, is read-only and returns compositor facts: XWayland and parent/transient/override/type state, concrete parent address, and ICCCM `program_position`/`user_position`. Lua owns all placement and persistence policy: it centers an unpositioned child over a resolvable parent and then runs the normal work-area fit. Explicitly positioned or parentless windows keep application placement. Missing or failing native reads degrade safely; persistence fails closed when semantics are unavailable.
 
 Hyprland should reload the configuration automatically. After updating an already loaded plugin checkout, let the file watcher settle and then restart Omarchy Shell once: the watcher notices QML/JavaScript changes, but the running engine can retain an imported JavaScript module cache. Do not overlap the restart with an in-progress file copy/hot reload.
 
@@ -111,7 +111,7 @@ For native edge/corner resizing without holding `Super`, enable Hyprland's suppo
 hl.config({ general = { resize_on_border = true } })
 ```
 
-XWayland minimum/maximum constraints are handled generically: the read-only native bridge converts each window's raw hints at its current logical scale, and Lua applies those facts with Hyprland's standard per-window `min_size`/`max_size` property dispatcher. No application name, class, or title is special-cased. Lua refreshes the properties before initial Float sizing and after monitor layout or workspace-monitor changes that can alter scale.
+Application minimum-size hints are ignored globally through one match-free Hyprland window rule with `min_size = { 1, 1 }`; no application name, class, or title is special-cased. Application maximum-size hints retain Hyprland's native behavior.
 
 ## Minimize and restore
 

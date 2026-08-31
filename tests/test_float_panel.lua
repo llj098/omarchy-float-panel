@@ -78,7 +78,6 @@ hl = {
       fullscreen = function(params) return { kind = "fullscreen", params = params } end,
       fullscreen_state = function(params) return { kind = "fullscreen_state", params = params } end,
       alter_zorder = function(params) return { kind = "alter_zorder", params = params } end,
-      set_prop = function(params) return { kind = "set_prop", params = params } end,
     },
     focus = function(params) return { kind = "focus", params = params } end,
     global = function(name) return { kind = "global", name = name } end,
@@ -88,8 +87,6 @@ hl = {
     table.insert(operation_log, {
       kind = action.kind,
       window = action.params and action.params.window or nil,
-      prop = action.params and action.params.prop or nil,
-      value = action.params and action.params.value or nil,
     })
     if action.kind == "float" then
       action.params.window.floating = action.params.action == "on"
@@ -112,10 +109,6 @@ hl = {
         x = action.params.x + (resize_adjustment and resize_adjustment.x or 0),
         y = action.params.y + (resize_adjustment and resize_adjustment.y or 0),
       }
-    elseif action.kind == "set_prop" then
-      local window = action.params.window
-      window.applied_props = window.applied_props or {}
-      window.applied_props[action.params.prop] = action.params.value
     elseif action.kind == "tag" then
       local window, tag = action.params.window, action.params.tag
       if tag:sub(1, 1) == "+" then
@@ -227,7 +220,10 @@ assert(type(handlers["layer.opened"]) == "function")
 assert(handlers["workspace.work_area_changed"] == nil)
 assert(handlers["monitor.removed"] == nil,
   "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
-assert(#window_rules == 0, "size hints must be normalized generically instead of by application class")
+assert(#window_rules == 1, "one global minimum-size rule must be installed")
+assert(window_rules[1].name == "fatlj-float-panel-ignore-min-size" and
+  window_rules[1].min_size[1] == 1 and window_rules[1].min_size[2] == 1 and window_rules[1].match == nil,
+  "all applications must ignore minimum-size hints without an app/class/title match")
 assert(w1.order_tag and w1.order_tag:match("^%+float%-panel%-order%-%d+$"), "existing windows must receive a launch-order tag")
 assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all existing windows must receive a launch-order tag")
 
@@ -800,34 +796,6 @@ local function parent_semantics(parent_address, position_specified)
   }
 end
 
-local function size_hint_semantics(minimum, maximum)
-  local semantics = parent_semantics(nil, false)
-  semantics.has_xwayland_size_hints = true
-  semantics.size_hints_valid = true
-  semantics.xwayland_min_size_logical = minimum
-  semantics.xwayland_max_width_finite = maximum ~= nil
-  semantics.xwayland_max_height_finite = maximum ~= nil
-  semantics.xwayland_max_size_logical = maximum
-  return semantics
-end
-
--- Lua must install corrected native facts through Hyprland's standard
--- set_prop dispatcher before Float placement.
-local hinted = persisted_window("0x5001", "HintedApp", 100, 90, 240, 160)
-native_semantics_by_address[hinted.address] = size_hint_semantics({ x = 120, y = 90 }, { x = 800, y = 600 })
-operation_log = {}
-handlers["window.open"](hinted)
-local min_index, max_index, float_index
-for index, operation in ipairs(operation_log) do
-  if operation.kind == "set_prop" and operation.window == hinted and operation.prop == "min_size" then min_index = index end
-  if operation.kind == "set_prop" and operation.window == hinted and operation.prop == "max_size" then max_index = index end
-  if operation.kind == "float" and operation.window == hinted then float_index = index end
-end
-assert(min_index and max_index and float_index and min_index < max_index and max_index < float_index,
-  "corrected XWayland hints must be installed by Lua before floating and placement")
-assert(hinted.applied_props.min_size == "120 90" and hinted.applied_props.max_size == "800 600",
-  "Lua must preserve the bridge's corrected logical size constraints")
-
 -- A parented window without PPosition/USPosition is centered after its desired size is known.
 local centered = persisted_window("0x5002", "ChildApp", 80, 70, 200, 100)
 native_semantics_by_address[centered.address] = parent_semantics(parent.address, false)
@@ -861,36 +829,15 @@ native_semantics_by_address[bridge_failure.address] = "error"
 local bridge_ok = pcall(handlers["window.open"], bridge_failure)
 native_semantics_by_address[bridge_failure.address] = nil
 assert(bridge_ok and bridge_failure.floating and bridge_failure.at.x == 480 and bridge_failure.at.y == 240,
-  "a size-hint bridge error must fail safely without blocking normal Float placement")
+  "a native bridge error must fail safely without blocking normal Float placement")
 
 hl.plugin.float_panel.window_semantics = nil
 dofile("hypr/float-panel.lua")
 local bridge_absent = persisted_window("0x5009", "BridgeAbsent", 490, 250, 170, 110)
 assert(pcall(handlers["window.open"], bridge_absent) and bridge_absent.floating,
-  "an absent size-hint bridge must fail safely")
+  "an absent native bridge must fail safely")
 hl.plugin.float_panel.window_semantics = window_semantics_bridge
 dofile("hypr/float-panel.lua")
-
--- Scale-changing monitor routes must refresh corrected constraints before fitting.
-local reflow_hinted = persisted_window("0x5007", "ReflowHinted", 120, 90, 240, 160)
-local previous_reflow_windows = ws1.windows
-local previous_reflow_get_windows = hl.get_windows
-ws1.windows = { reflow_hinted }
-hl.get_windows = function() return { reflow_hinted } end
-native_semantics_by_address[reflow_hinted.address] = size_hint_semantics({ x = 100, y = 80 })
-operation_log = {}
-handlers["workspace.move_to_monitor"](ws1, own_monitor)
-handlers["monitor.layout_changed"]()
-hl.get_windows = previous_reflow_get_windows
-local reflow_calls = 0
-for _, operation in ipairs(operation_log) do
-  if operation.kind == "set_prop" and operation.window == reflow_hinted and operation.prop == "min_size" then
-    reflow_calls = reflow_calls + 1
-  end
-end
-assert(reflow_calls == 2,
-  "workspace-monitor and monitor-layout reflow must each refresh corrected XWayland constraints")
-ws1.windows = previous_reflow_windows
 
 -- A first-open record must capture the final post-fit application placement.
 local post_fit = persisted_window("0x5008", "PostFitPersist", 2000, 100, 200, 100)

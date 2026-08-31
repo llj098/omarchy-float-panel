@@ -184,9 +184,9 @@ for required in (
     'hl.plugin.load(native_bridge_path)',
     'native_float_panel.window_semantics',
     'read_native_window_semantics(window)',
-    'safely_install_xwayland_size_constraints(window)',
-    'hl.dsp.window.set_prop({ prop = "min_size"',
-    'hl.dsp.window.set_prop({ prop = "max_size"',
+    'hl.window_rule({',
+    'name = "fatlj-float-panel-ignore-min-size"',
+    'min_size = { 1, 1 }',
     'window_persistence_semantics(window)',
     'local function window_persistence_policy(semantics)',
     'semantics.xwayland == false',
@@ -208,8 +208,6 @@ for required in (
     "geometry_slot = slot or \"none\"",
     "restored_intent = record and record.intent or \"none\"",
     'debug_log("event.layer_opened"',
-    'refresh_workspace_xwayland_size_hints(workspace)',
-    'for _, window in safe_ipairs(hl.get_windows()) do safely_install_xwayland_size_constraints(window) end',
     'window_side_intent(window)',
     'side_geometry(side.side, window.monitor)',
     'update_side_intent(window, workspace, side, geometry)',
@@ -251,13 +249,20 @@ for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9
     assert forbidden not in switcher
     assert forbidden not in lua
 
-assert "native_float_panel.apply_xwayland_size_hints" not in lua, \
-    "Lua must consume read-only native facts and apply constraints through the standard dispatcher"
+assert "native_float_panel.apply_xwayland_size_hints" not in lua and "hl.dsp.window.set_prop" not in lua, \
+    "Lua must not install corrected per-window size constraints"
+
+global_min_rule = '''hl.window_rule({
+  name = "fatlj-float-panel-ignore-min-size",
+  min_size = { 1, 1 },
+})'''
+assert lua.count(global_min_rule) == 1, \
+    "one match-free rule must ignore minimum-size hints for every application"
 
 assert "bar.run" not in qml and "hyprctl dispatch" not in qml, \
     "TaskList actions must use one in-process Hyprland request"
-assert "wechat" not in lua.lower() and "min_size = { 1, 1 }" not in lua, \
-    "XWayland constraints must not use an application-class override"
+assert "wechat" not in lua.lower(), \
+    "the global minimum-size policy must not use an application-specific override"
 assert "Timer {" not in qml, "TaskList IPC refresh must be event-driven"
 assert "Qt.callLater(function() { list.positionViewAtIndex" in switcher, \
     "AppSwitcher must position its list after QML has applied the snapshot"
@@ -282,21 +287,20 @@ for required in (
     "isX11OverrideRedirect()",
     "XCB_ICCCM_SIZE_HINT_P_POSITION",
     "XCB_ICCCM_SIZE_HINT_US_POSITION",
-    "xwaylandSizeToReal",
     "GIT_COMMIT_HASH",
 ):
     assert required in native_main, f"native bridge missing required contract: {required}"
 for raw_field in (
     '"found"', '"xwayland"', '"has_parent"', '"parent_address"', '"transient"',
     '"override_redirect"', '"window_type"', '"program_position"', '"user_position"',
-    '"position_specified"', '"has_xwayland_size_hints"', '"xwayland_min_size_raw"',
-    '"xwayland_min_size_logical"', '"xwayland_max_size_raw"', '"xwayland_max_size_logical"',
+    '"position_specified"',
 ):
     assert raw_field in native_main, f"native metadata bridge missing raw fact: {raw_field}"
 assert native_main.count('removeLuaFunction(pluginHandle, "float_panel"') == 1, \
     "the single read-only native binding must be removed on plugin exit"
 for forbidden_native_effect in (
     "apply_xwayland_size_hints", "minSizeOverride", "maxSizeOverride", "PRIORITY_SET_PROP",
+    "xwaylandSizeToReal", "xwayland_min_size", "xwayland_max_size", "size_hints_valid",
 ):
     assert forbidden_native_effect not in native_main, \
         f"native bridge must remain read-only: {forbidden_native_effect}"
@@ -306,10 +310,10 @@ assert not (ROOT / "native" / "src" / "window_policy.hpp").exists()
 assert not (ROOT / "native" / "tests" / "test_window_policy.cpp").exists()
 assert "wechat" not in native_main.lower() and "m_title" not in native_main, \
     "native metadata bridge must remain application-independent and title-free"
-rounding = (ROOT / "native" / "src" / "size_hint_rounding.hpp").read_text()
-assert "std::ceil(converted)" in rounding and "std::floor(converted)" in rounding
-assert "raw >= 5" in rounding, "finite XWayland max threshold must match CWindow::maxSize()"
-assert (ROOT / "native" / "tests" / "test_size_hint_rounding.cpp").is_file()
+assert not (ROOT / "native" / "src" / "size_hint_rounding.hpp").exists()
+assert not (ROOT / "native" / "tests" / "test_size_hint_rounding.cpp").exists()
+native_makefile = (ROOT / "native" / "Makefile").read_text()
+assert "size_hint_rounding" not in native_makefile and "test-size-hint-rounding" not in native_makefile
 policy_tests = (ROOT / "tests" / "test_float_panel.lua").read_text()
 for policy_case in (
     '"wayland"', '"normal"', '"dialog"', '"parent"', '"transient"',

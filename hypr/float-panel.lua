@@ -11,8 +11,8 @@ local native_bridge_path = home .. "/.config/omarchy/plugins/fatlj.float-panel/n
 local float_workspaces = {}
 
 -- The read-only native bridge exposes compositor-owned relationships, window
--- types, placement flags, and scale-corrected size-hint facts without patching
--- Hyprland or launching an external process. On the first load Hyprland loads
+-- types, and placement flags without patching Hyprland or launching an external
+-- process. On the first load Hyprland loads
 -- the .so after evaluating the config, then reloads the Lua config with the
 -- registered callback available.
 do
@@ -37,32 +37,6 @@ local function read_native_window_semantics(window)
   if not ok then return nil, "error" end
   if type(result) ~= "table" or result.found ~= true then return nil, "not-found" end
   return result, "found"
-end
-
-local function size_hint_prop_value(size)
-  local x = tonumber(size and size.x)
-  local y = tonumber(size and size.y)
-  if not x or not y or x <= 0 or y <= 0 or x ~= x or y ~= y or x == math.huge or y == math.huge then return nil end
-  return string.format("%.17g %.17g", x, y)
-end
-
-local function safely_install_xwayland_size_constraints(window)
-  local semantics = read_native_window_semantics(window)
-  if not semantics or semantics.xwayland ~= true or semantics.has_xwayland_size_hints ~= true or
-      semantics.size_hints_valid ~= true then return false end
-
-  local minimum = size_hint_prop_value(semantics.xwayland_min_size_logical)
-  if not minimum then return false end
-
-  local ok = pcall(function()
-    hl.dispatch(hl.dsp.window.set_prop({ prop = "min_size", value = minimum, window = window }))
-    if semantics.xwayland_max_width_finite == true or semantics.xwayland_max_height_finite == true then
-      local maximum = size_hint_prop_value(semantics.xwayland_max_size_logical)
-      if not maximum then error("invalid corrected XWayland maximum") end
-      hl.dispatch(hl.dsp.window.set_prop({ prop = "max_size", value = maximum, window = window }))
-    end
-  end)
-  return ok
 end
 
 local function debug_flag_enabled()
@@ -103,6 +77,11 @@ end
 -- Negative float gaps inherit general.gaps_out in Hyprland 0.56.2, keeping
 -- native floating maximization inside the same gapped workspace work area.
 hl.config({ general = { float_gaps = -1 } })
+
+hl.window_rule({
+  name = "fatlj-float-panel-ignore-min-size",
+  min_size = { 1, 1 },
+})
 
 local order_tag_prefix = "float-panel-order-"
 local geometric_max_tag_prefix = "float-panel-geometric-max-v1-"
@@ -853,19 +832,6 @@ local function adopt_existing_side_intent(window, workspace)
   end
 end
 
-local function refresh_workspace_xwayland_size_hints(workspace)
-  if not workspace then return end
-  for _, window in safe_ipairs(workspace:get_windows()) do safely_install_xwayland_size_constraints(window) end
-  if not workspace_is_regular(workspace) then return end
-
-  local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
-  for _, window in safe_ipairs(hl.get_windows()) do
-    if window.workspace and window.workspace.special == true and window.workspace.name == minimized_name then
-      safely_install_xwayland_size_constraints(window)
-    end
-  end
-end
-
 local function defensively_fit_float_workspace(workspace, trigger)
   if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
 
@@ -1407,7 +1373,6 @@ load_geometry_records()
 -- launch order after its own restart without a separate ordering database.
 for _, window in safe_ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
-  safely_install_xwayland_size_constraints(window)
   local workspace = source_float_workspace(window)
   if workspace then claim_geometry_slot(window, workspace) end
 end
@@ -1425,7 +1390,6 @@ end
 
 hl.on("window.open", function(window)
   tag_window_launch_order(window)
-  safely_install_xwayland_size_constraints(window)
   local workspace = window and window.workspace or nil
   local float_enabled = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
   local persistence_eligible, persistence_reason, semantics = window_persistence_semantics(window)
@@ -1506,7 +1470,6 @@ hl.on("window.move_to_workspace", function(window, workspace)
     release_geometry_slot(window, true)
     if float_enabled then claim_geometry_slot(window, workspace) end
     if not returning_to_source then clear_reflow_anchor(window) end
-    safely_install_xwayland_size_constraints(window)
   elseif metadata or side then
     set_window_floating(window, true)
   end
@@ -1519,15 +1482,13 @@ hl.on("workspace.move_to_monitor", function(workspace, monitor)
     workspace = workspace and workspace.name or "nil",
     monitor = monitor and monitor.name or "nil",
   })
-  refresh_workspace_xwayland_size_hints(workspace)
   defensively_fit_float_workspace(workspace, "workspace.move_to_monitor")
 end)
 
 -- Hyprland emits this after monitor layout changes. It carries no monitor, so
--- refresh constraints globally and inspect every plugin-enabled Float workspace.
+-- inspect every plugin-enabled Float workspace.
 hl.on("monitor.layout_changed", function()
   debug_log("event.monitor_layout_changed")
-  for _, window in safe_ipairs(hl.get_windows()) do safely_install_xwayland_size_constraints(window) end
   for _, workspace in safe_ipairs(hl.get_workspaces()) do
     defensively_fit_float_workspace(workspace, "monitor.layout_changed")
   end
