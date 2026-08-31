@@ -1482,6 +1482,7 @@ hl.on("window.move_to_workspace", function(window, workspace)
     release_geometry_slot(window, true)
     if float_enabled then claim_geometry_slot(window, workspace) end
     if not returning_to_source then clear_reflow_anchor(window) end
+    safely_apply_xwayland_size_hints(window)
   elseif metadata or side then
     set_window_floating(window, true)
   end

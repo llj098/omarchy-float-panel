@@ -453,11 +453,14 @@ handlers["workspace.move_to_monitor"](ws2, migrated_monitor)
 handlers["workspace.move_to_monitor"](special, migrated_monitor)
 assert(#dispatched == before_wrong_routes, "tiling and special workspaces must not route defensive fitting")
 local route_window = {
-  workspace = ws1, floating = false, mapped = true, fullscreen = 0, monitor = migrated_monitor,
+  address = "0xroute", workspace = ws1, floating = false, mapped = true, fullscreen = 0, monitor = migrated_monitor,
   at = { x = 4000, y = 4000 }, size = { x = 2000, y = 2000 },
 }
 local before_window_route = #dispatched
+local before_window_route_hints = #size_hint_calls
 handlers["window.move_to_workspace"](route_window, ws1)
+assert(#size_hint_calls == before_window_route_hints + 1 and size_hint_calls[#size_hint_calls] == route_window.address,
+  "moving a window to a regular workspace must refresh scale-corrected size hints")
 assert(#dispatched == before_window_route + 1 and dispatched[#dispatched].kind == "float",
   "window.move_to_workspace must keep only its workspace-mode routing")
 assert(route_window.at.x == 4000 and route_window.size.x == 2000,
