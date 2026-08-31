@@ -83,6 +83,13 @@ hl.window_rule({
   min_size = { 1, 1 },
 })
 
+local auxiliary_no_border_tag = "float-panel-auxiliary-no-border"
+hl.window_rule({
+  name = "fatlj-float-panel-auxiliary-no-border",
+  match = { tag = auxiliary_no_border_tag },
+  border_size = 0,
+})
+
 local order_tag_prefix = "float-panel-order-"
 local geometric_max_tag_prefix = "float-panel-geometric-max-v1-"
 local side_intent_tag_prefix = "float-panel-side-v1-"
@@ -121,6 +128,30 @@ local function tag_window_launch_order(window)
     tag = "+" .. order_tag_prefix .. string.format("%.0f", start_ticks),
     window = window,
   }))
+end
+
+local auxiliary_no_border_types = {
+  utility = true,
+  tooltip = true,
+  menu = true,
+  popup_menu = true,
+  dropdown_menu = true,
+}
+
+local function auxiliary_window_needs_no_border(semantics)
+  if type(semantics) ~= "table" then return false end
+  if semantics.override_redirect == true then return true end
+  return semantics.xwayland == true and auxiliary_no_border_types[tostring(semantics.window_type or "")] == true
+end
+
+local function tag_auxiliary_window_no_border(window, semantics)
+  if not window or not auxiliary_window_needs_no_border(semantics) then return false end
+  for _, tag in ipairs(window.tags or {}) do
+    if tag == auxiliary_no_border_tag then return true end
+  end
+  return pcall(function()
+    hl.dispatch(hl.dsp.window.tag({ tag = "+" .. auxiliary_no_border_tag, window = window }))
+  end)
 end
 
 local function workspace_is_regular(workspace)
@@ -1373,6 +1404,8 @@ load_geometry_records()
 -- launch order after its own restart without a separate ordering database.
 for _, window in safe_ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
+  local semantics = read_native_window_semantics(window)
+  tag_auxiliary_window_no_border(window, semantics)
   local workspace = source_float_workspace(window)
   if workspace then claim_geometry_slot(window, workspace) end
 end
@@ -1393,6 +1426,7 @@ hl.on("window.open", function(window)
   local workspace = window and window.workspace or nil
   local float_enabled = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
   local persistence_eligible, persistence_reason, semantics = window_persistence_semantics(window)
+  tag_auxiliary_window_no_border(window, semantics)
   local slot, record, initial_placement
   debug_window_geometry("event.window_open_before", window, workspace, {
     float_workspace = float_enabled,

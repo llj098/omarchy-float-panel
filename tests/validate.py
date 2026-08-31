@@ -187,6 +187,11 @@ for required in (
     'hl.window_rule({',
     'name = "fatlj-float-panel-ignore-min-size"',
     'min_size = { 1, 1 }',
+    'name = "fatlj-float-panel-auxiliary-no-border"',
+    'match = { tag = auxiliary_no_border_tag }',
+    'border_size = 0',
+    'local function auxiliary_window_needs_no_border(semantics)',
+    'local function tag_auxiliary_window_no_border(window, semantics)',
     'window_persistence_semantics(window)',
     'local function window_persistence_policy(semantics)',
     'semantics.xwayland == false',
@@ -258,6 +263,18 @@ global_min_rule = '''hl.window_rule({
 })'''
 assert lua.count(global_min_rule) == 1, \
     "one match-free rule must ignore minimum-size hints for every application"
+
+auxiliary_border_rule = '''hl.window_rule({
+  name = "fatlj-float-panel-auxiliary-no-border",
+  match = { tag = auxiliary_no_border_tag },
+  border_size = 0,
+})'''
+assert lua.count(auxiliary_border_rule) == 1, \
+    "one standard tag-matched rule must suppress compositor borders on auxiliary windows"
+assert lua.count("\n  tag_auxiliary_window_no_border(window, semantics)") == 2, \
+    "auxiliary border policy must cover existing windows and window.open"
+for window_type in ("utility", "tooltip", "menu", "popup_menu", "dropdown_menu"):
+    assert f"{window_type} = true" in lua, f"missing standard no-border auxiliary type: {window_type}"
 
 assert "bar.run" not in qml and "hyprctl dispatch" not in qml, \
     "TaskList actions must use one in-process Hyprland request"

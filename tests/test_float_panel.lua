@@ -220,10 +220,16 @@ assert(type(handlers["layer.opened"]) == "function")
 assert(handlers["workspace.work_area_changed"] == nil)
 assert(handlers["monitor.removed"] == nil,
   "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
-assert(#window_rules == 1, "one global minimum-size rule must be installed")
-assert(window_rules[1].name == "fatlj-float-panel-ignore-min-size" and
-  window_rules[1].min_size[1] == 1 and window_rules[1].min_size[2] == 1 and window_rules[1].match == nil,
+assert(#window_rules == 2, "the global minimum-size and auxiliary no-border rules must be installed")
+local window_rules_by_name = {}
+for _, rule in ipairs(window_rules) do window_rules_by_name[rule.name] = rule end
+local minimum_rule = window_rules_by_name["fatlj-float-panel-ignore-min-size"]
+assert(minimum_rule and minimum_rule.min_size[1] == 1 and minimum_rule.min_size[2] == 1 and minimum_rule.match == nil,
   "all applications must ignore minimum-size hints without an app/class/title match")
+local auxiliary_rule = window_rules_by_name["fatlj-float-panel-auxiliary-no-border"]
+assert(auxiliary_rule and auxiliary_rule.border_size == 0 and
+  auxiliary_rule.match.tag == "float-panel-auxiliary-no-border",
+  "standard auxiliary-window facts must feed one tag-matched no-border rule")
 assert(w1.order_tag and w1.order_tag:match("^%+float%-panel%-order%-%d+$"), "existing windows must receive a launch-order tag")
 assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all existing windows must receive a launch-order tag")
 
@@ -779,6 +785,13 @@ local function persisted_window(address, class, x, y, width, height)
   }
 end
 
+local function has_auxiliary_no_border_tag(window)
+  for _, tag in ipairs(window.tags or {}) do
+    if tag == "float-panel-auxiliary-no-border" then return true end
+  end
+  return false
+end
+
 local parent = persisted_window("0x5000", "ParentApp", 400, 180, 500, 300)
 windows_by_address[parent.address] = parent
 local function parent_semantics(parent_address, position_specified)
@@ -802,6 +815,7 @@ native_semantics_by_address[centered.address] = parent_semantics(parent.address,
 handlers["window.open"](centered)
 assert(centered.at.x == 550 and centered.at.y == 280,
   "a parented window without an explicit position must center over its concrete parent")
+assert(has_auxiliary_no_border_tag(centered), "a standard X11 utility must receive the no-border lifecycle tag")
 assert(not table.concat(centered.tags, "\n"):find("float%-panel%-geometry%-slot%-v1%-"),
   "parented utility windows must remain outside geometry persistence")
 
@@ -823,6 +837,27 @@ handlers["window.open"](wechat_image)
 assert(wechat_image.at.x == 470 and wechat_image.at.y == 230 and
   wechat_image.size.x == 190 and wechat_image.size.y == 130,
   "a no-parent explicitly positioned image window must remain unchanged without a class hack")
+assert(not has_auxiliary_no_border_tag(wechat_image), "a normal X11 window must retain its compositor border")
+
+local dialog = persisted_window("0x5010", "DialogApp", 470, 230, 190, 130)
+native_semantics_by_address[dialog.address] = parent_semantics(nil, false)
+native_semantics_by_address[dialog.address].window_type = "dialog"
+handlers["window.open"](dialog)
+assert(not has_auxiliary_no_border_tag(dialog), "an ordinary X11 dialog must retain its compositor border")
+
+for index, window_type in ipairs({ "tooltip", "menu", "popup_menu", "dropdown_menu" }) do
+  local auxiliary = persisted_window(string.format("0x502%d", index), "AuxiliaryApp", 470, 230, 190, 130)
+  native_semantics_by_address[auxiliary.address] = parent_semantics(nil, false)
+  native_semantics_by_address[auxiliary.address].window_type = window_type
+  handlers["window.open"](auxiliary)
+  assert(has_auxiliary_no_border_tag(auxiliary), window_type .. " must receive the no-border lifecycle tag")
+end
+
+local override_redirect = persisted_window("0x5030", "OverrideApp", 470, 230, 190, 130)
+native_semantics_by_address[override_redirect.address] = parent_semantics(nil, false)
+native_semantics_by_address[override_redirect.address].override_redirect = true
+handlers["window.open"](override_redirect)
+assert(has_auxiliary_no_border_tag(override_redirect), "override-redirect windows must receive the no-border lifecycle tag")
 
 local bridge_failure = persisted_window("0x5006", "BridgeFailure", 480, 240, 180, 120)
 native_semantics_by_address[bridge_failure.address] = "error"

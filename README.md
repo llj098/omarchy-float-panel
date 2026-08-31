@@ -63,6 +63,8 @@ dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/
 
 `float-panel.lua` loads the bridge with Hyprland's native `hl.plugin.load()` API when the built `.so` exists. Its sole binding, `hl.plugin.float_panel.window_semantics(address)`, is read-only and returns compositor facts: XWayland and parent/transient/override/type state, concrete parent address, and ICCCM `program_position`/`user_position`. Lua owns all placement and persistence policy: it centers an unpositioned child over a resolvable parent and then runs the normal work-area fit. Explicitly positioned or parentless windows keep application placement. Missing or failing native reads degrade safely; persistence fails closed when semantics are unavailable.
 
+Lua also tags standard X11 auxiliary surfaces (`UTILITY`, tooltip, menu, popup/dropdown menu, or true override-redirect) and one tag-matched Hyprland rule disables their compositor border. This is application-independent and applies to existing and newly opened windows; ordinary `NORMAL` and `DIALOG` windows keep their border. Client-owned transparent shadow margins are not cropped or resized.
+
 Hyprland should reload the configuration automatically. After updating an already loaded plugin checkout, let the file watcher settle and then restart Omarchy Shell once: the watcher notices QML/JavaScript changes, but the running engine can retain an imported JavaScript module cache. Do not overlap the restart with an in-progress file copy/hot reload.
 
 ```bash
