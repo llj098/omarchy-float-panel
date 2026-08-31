@@ -1346,8 +1346,10 @@ end
 local function restore_free_record(window, record)
   local bounds = floating_window_bounds(window and window.monitor or nil)
   if not bounds then return false end
-  local width = math.max(1, math.min(record.width, bounds.width))
-  local height = math.max(1, math.min(record.height, bounds.height))
+  local width = nearest_integer(record.width * bounds.width / record.bounds_width)
+  local height = nearest_integer(record.height * bounds.height / record.bounds_height)
+  width = math.max(1, math.min(width, bounds.width))
+  height = math.max(1, math.min(height, bounds.height))
   hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
 
   local actual = window.size or {}

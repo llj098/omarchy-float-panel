@@ -915,9 +915,9 @@ local compact_monitor = {
 local edge_reopened = persisted_window("0x1102", "EdgeApp", 30, 40, 100, 80)
 edge_reopened.monitor = compact_monitor
 handlers["window.open"](edge_reopened)
-assert(edge_reopened.at.x == 2258 and edge_reopened.at.y == 358 and
-  edge_reopened.size.x == 430 and edge_reopened.size.y == 230,
-  "free geometry must retain right/bottom relative placement without growing on a different work area")
+assert(edge_reopened.at.x == 2381 and edge_reopened.at.y == 318 and
+  edge_reopened.size.x == 307 and edge_reopened.size.y == 270,
+  "free geometry must scale size proportionally and retain right/bottom placement on a different work area")
 
 -- Identical windows claim separate slots; reopening B while A is live must restore B.
 local multi_a = persisted_window("0x2001", "MultiApp", 120, 90, 300, 180)
