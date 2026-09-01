@@ -76,13 +76,14 @@ for required in (
     'name: "alt-release"',
     "onReleased: root.commit()",
     "TaskListModel.listSwitcherToplevels",
-    "Hyprland.activeToplevel",
-    "active.workspace",
-    "Hyprland.focusedWorkspace",
-    "workspace.monitor || Hyprland.focusedMonitor",
+    "Socket {",
+    "path: Hyprland.requestSocketPath",
+    'write("j/clients")',
+    "JSON.parse",
+    "client.focusHistoryID",
+    "client.mapped !== true",
     "special:omarchy-minimized-",
-    "ipc.mapped !== true",
-    "TaskListModel.hasEmbeddedNul(ipc.class)",
+    "TaskListModel.hasEmbeddedNul(client.class)",
     "Color.menu.background",
     "Color.menu.selectedBackground",
     "Color.menu.selectedBorder",
@@ -96,20 +97,31 @@ for required in (
 ):
     assert required in switcher, f"AppSwitcher.qml missing required contract: {required}"
 
+for forbidden_cache_source in (
+    "Hyprland.activeToplevel",
+    "Hyprland.focusedWorkspace",
+    "workspace.toplevels.values",
+    "Hyprland.toplevels.values",
+):
+    assert forbidden_cache_source not in switcher, \
+        f"AppSwitcher must not trust a possibly disconnected Quickshell cache: {forbidden_cache_source}"
+
 activation = switcher[switcher.index("  function dispatchActivation("):switcher.index("  function commit()")]
 live_target = "local selected = hl.get_window("
-fullscreen_guard = "selected and tonumber(selected.fullscreen) ~= 0"
+existence_guard = "if not selected or not selected.workspace then return end"
+fullscreen_guard = "if tonumber(selected.fullscreen) ~= 0"
 lower = 'hl.dsp.window.alter_zorder({ mode = \\"bottom\\", window = window })'
-focus = 'hl.dsp.focus({ window = '
-raise_top = 'hl.dsp.window.alter_zorder({ mode = \\"top\\", window = '
+focus = 'hl.dsp.focus({ window = selected })'
+raise_top = 'hl.dsp.window.alter_zorder({ mode = \\"top\\", window = selected })'
 assert live_target in activation
+assert existence_guard in activation
 assert fullscreen_guard in activation
 assert "window.workspace == workspace" in activation
 assert "window.allowed_over_fullscreen" in activation
-assert activation.index(live_target) < activation.index(fullscreen_guard) < activation.index(lower) < activation.index(focus) < activation.index(raise_top)
+assert activation.index(live_target) < activation.index(existence_guard) < activation.index(fullscreen_guard) < activation.index(lower) < activation.index(focus) < activation.index(raise_top)
 assert activation.count(lower) == 1, "fullscreen cleanup must remain conditional and normal activation unchanged"
 assert "Number(ipc.fullscreen)" not in switcher, "mutable fullscreen state must not come from stale lastIpcObject"
-assert "dispatchActivation(target, workspaceName === minimizedName, destination)" in switcher
+assert "dispatchActivation(target, restore, destination, sourceName, minimizedName)" in switcher
 assert "groupSwitcherToplevels" not in switcher
 assert "floatWorkspaceNames" not in switcher and "workspaceFloatEnabled" not in switcher, \
     "Alt-Tab must remain available on regular Tiling workspaces"

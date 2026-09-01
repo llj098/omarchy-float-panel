@@ -19,7 +19,8 @@ Item {
   property string capturedWorkspaceSelector: ""
   property string minimizedWorkspaceName: ""
   property var targetScreen: null
-  property var mruAddresses: []
+  property bool clientsRequestPending: false
+  property int pendingDirection: 0
   property bool debugEnabled: false
 
   readonly property color background: Color.menu.background
@@ -37,27 +38,13 @@ Item {
     if (debugEnabled) console.info("[fatlj.float-panel] " + event + " " + JSON.stringify(fields || {}))
   }
 
-  function findWorkspaceByName(name) {
-    var values = Hyprland.workspaces.values
-    for (var i = 0; i < values.length; i++) {
-      if (String(values[i].name || "") === name) return values[i]
-    }
-    return null
-  }
-
-  function screenForMonitor(monitor) {
+  function screenForMonitorId(monitorId) {
     var screens = Quickshell.screens
     for (var i = 0; i < screens.length; i++) {
-      if (Hyprland.monitorFor(screens[i]) === monitor) return screens[i]
+      var monitor = Hyprland.monitorFor(screens[i])
+      if (monitor && Number(monitor.id) === Number(monitorId)) return screens[i]
     }
     return screens.length > 0 ? screens[0] : null
-  }
-
-  function rawAppId(toplevel) {
-    if (toplevel && toplevel.wayland && toplevel.wayland.appId)
-      return String(toplevel.wayland.appId)
-    var ipc = toplevel ? toplevel.lastIpcObject : null
-    return ipc ? String(ipc.class || ipc.initialClass || "") : ""
   }
 
   function desktopEntry(appId) {
@@ -74,92 +61,99 @@ Item {
     return Quickshell.iconPath(value || "application-x-executable", true)
   }
 
-  function mruRank(address, ipcRank) {
-    var index = mruAddresses.indexOf(String(address || ""))
-    if (index >= 0) return index
-    var rank = Number(ipcRank)
-    return isFinite(rank) && rank >= 0 ? mruAddresses.length + rank : null
+  function clientAddress(client) {
+    return String(client && client.address || "").replace(/^0x/, "")
   }
 
-  function describeToplevel(toplevel) {
-    var ipc = toplevel ? toplevel.lastIpcObject : null
-    if (!ipc || ipc.mapped !== true || TaskListModel.hasEmbeddedNul(ipc.class) || TaskListModel.hasEmbeddedNul(ipc.initialClass))
+  function describeClient(client) {
+    if (!client || client.mapped !== true || TaskListModel.hasEmbeddedNul(client.class) || TaskListModel.hasEmbeddedNul(client.initialClass))
       return { ignored: true }
 
-    var appId = rawAppId(toplevel)
+    var appId = String(client.class || client.initialClass || "")
     var entry = desktopEntry(appId)
     var name = entry && shell && shell.appLibrary ? shell.appLibrary.entryName(entry) : (entry ? entry.name : "")
     return {
-      key: appId || ("window:" + String(toplevel.address || "")),
+      key: appId || ("window:" + clientAddress(client)),
       appId: appId,
-      name: name || appId || toplevel.title || "Application",
+      name: name || appId || client.title || "Application",
       iconSource: iconSource(entry ? entry.icon : appId),
-      address: String(toplevel.address || ""),
-      title: String(toplevel.title || ""),
-      order: TaskListModel.launchOrderFromTags(ipc.tags),
-      mru: mruRank(toplevel.address, ipc.focusHistoryID),
-      activated: Number(ipc.focusHistoryID) === 0 || (Hyprland.activeToplevel &&
-        String(Hyprland.activeToplevel.address || "").replace(/^0x/, "") === String(toplevel.address || "").replace(/^0x/, ""))
+      address: clientAddress(client),
+      title: String(client.title || ""),
+      order: TaskListModel.launchOrderFromTags(client.tags),
+      mru: Number(client.focusHistoryID),
+      activated: Number(client.focusHistoryID) === 0
     }
   }
 
-  function seedMru() {
-    var ranked = []
-    var values = Hyprland.toplevels.values
-    for (var i = 0; i < values.length; i++) {
-      var ipc = values[i].lastIpcObject
-      var rank = ipc ? Number(ipc.focusHistoryID) : -1
-      if (isFinite(rank) && rank >= 0)
-        ranked.push({ address: String(values[i].address || ""), rank: rank })
+  function requestBegin(direction) {
+    if (clientsRequestPending) {
+      pendingDirection += direction
+      return
     }
-    ranked.sort(function(a, b) { return a.rank - b.rank })
-    mruAddresses = ranked.map(function(item) { return item.address })
-    touchActive()
+    pendingDirection = direction
+    clientsRequestPending = true
+    clientsSocket.connected = true
   }
 
-  function touchActive() {
-    var active = Hyprland.activeToplevel
-    var address = active ? String(active.address || "") : ""
-    if (!address) return
-    var next = [address]
-    for (var i = 0; i < mruAddresses.length; i++) {
-      if (mruAddresses[i] !== address) next.push(mruAddresses[i])
+  function acceptClientsResponse(text) {
+    if (!clientsRequestPending) return
+    var clients
+    try {
+      clients = JSON.parse(String(text || ""))
+    } catch (error) {
+      return
     }
-    mruAddresses = next
+    if (!Array.isArray(clients)) return
+
+    clientsRequestPending = false
+    clientsSocket.connected = false
+    var direction = pendingDirection
+    pendingDirection = 0
+    beginFromClients(clients, direction)
   }
 
-  function currentRegularWorkspace() {
-    var active = Hyprland.activeToplevel
-    var activeWorkspace = active ? active.workspace : null
-    if (activeWorkspace && String(activeWorkspace.name || "").indexOf("special:") !== 0)
-      return activeWorkspace
+  function beginFromClients(clients, direction) {
+    var active = null
+    for (var i = 0; i < clients.length; i++) {
+      var client = clients[i]
+      var workspaceName = client && client.workspace ? String(client.workspace.name || "") : ""
+      if (client && client.mapped === true && Number(client.focusHistoryID) === 0 && workspaceName.indexOf("special:") !== 0) {
+        active = client
+        break
+      }
+    }
+    if (!active || !active.workspace) return
 
-    var focused = Hyprland.focusedWorkspace
-    return focused && String(focused.name || "").indexOf("special:") !== 0 ? focused : null
-  }
+    var sourceName = String(active.workspace.name || "")
+    var workspaceId = Number(active.workspace.id)
+    if (!sourceName || !isFinite(workspaceId) || workspaceId <= 0) return
 
-  function begin(direction) {
-    var workspace = currentRegularWorkspace()
-    if (!workspace) return
+    var minimizedName = "special:omarchy-minimized-" + String(workspaceId)
+    var visible = []
+    var minimized = []
+    for (var j = 0; j < clients.length; j++) {
+      var candidate = clients[j]
+      var candidateWorkspace = candidate && candidate.workspace ? String(candidate.workspace.name || "") : ""
+      if (candidateWorkspace === sourceName) visible.push(candidate)
+      else if (candidateWorkspace === minimizedName) minimized.push(candidate)
+    }
 
-    var minimizedName = "special:omarchy-minimized-" + String(workspace.id)
-    var minimized = findWorkspaceByName(minimizedName)
     var items = TaskListModel.listSwitcherToplevels(
-      workspace.toplevels.values,
-      minimized ? minimized.toplevels.values : [],
-      function(toplevel) { return root.describeToplevel(toplevel) }
+      visible,
+      minimized,
+      function(client) { return root.describeClient(client) }
     )
     if (items.length < 2) return
 
     snapshot = items
-    capturedWorkspaceName = String(workspace.name || "")
-    capturedWorkspaceSelector = workspace.id > 0 ? String(workspace.id) : "name:" + capturedWorkspaceName
+    capturedWorkspaceName = sourceName
+    capturedWorkspaceSelector = String(workspaceId)
     minimizedWorkspaceName = minimizedName
-    targetScreen = screenForMonitor(workspace.monitor || Hyprland.focusedMonitor)
+    targetScreen = screenForMonitorId(active.monitor)
 
     var activeIndex = -1
-    for (var i = 0; i < items.length; i++) {
-      if (items[i].active) { activeIndex = i; break }
+    for (var k = 0; k < items.length; k++) {
+      if (items[k].active) { activeIndex = k; break }
     }
     selectedIndex = activeIndex >= 0
       ? (activeIndex + direction + items.length) % items.length
@@ -171,7 +165,7 @@ Item {
 
   function step(direction) {
     if (!opened) {
-      begin(direction)
+      requestBegin(direction)
       return
     }
     if (snapshot.length === 0) return
@@ -195,18 +189,29 @@ Item {
     return JSON.stringify(String(value || ""))
   }
 
-  function dispatchActivation(target, restore, destination) {
-    var actions = []
+  function dispatchActivation(target, restore, destination, sourceName, minimizedName) {
+    var actions = [
+      "local selected = hl.get_window(" + luaString(target) + ")",
+      "if not selected or not selected.workspace then return end",
+      "local selected_workspace = selected.workspace.name",
+      "if selected_workspace ~= " + luaString(sourceName) + " and selected_workspace ~= " + luaString(minimizedName) + " then return end"
+    ]
     if (restore)
-      actions.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = " + luaString(target) + " }))")
-    actions.push("local selected = hl.get_window(" + luaString(target) + "); if selected and tonumber(selected.fullscreen) ~= 0 then local workspace = selected.workspace; local windows = hl.get_windows(); for i = #windows, 1, -1 do local window = windows[i]; if window.workspace == workspace and window.floating and not window.pinned and tonumber(window.fullscreen) == 0 and window.allowed_over_fullscreen then hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"bottom\", window = window })) end end end")
-    actions.push("hl.dispatch(hl.dsp.focus({ window = " + luaString(target) + " }))")
-    actions.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = " + luaString(target) + " }))")
+      actions.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = selected }))")
+    actions.push("if tonumber(selected.fullscreen) ~= 0 then local workspace = selected.workspace; local windows = hl.get_windows(); for i = #windows, 1, -1 do local window = windows[i]; if window.workspace == workspace and window.floating and not window.pinned and tonumber(window.fullscreen) == 0 and window.allowed_over_fullscreen then hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"bottom\", window = window })) end end end")
+    actions.push("hl.dispatch(hl.dsp.focus({ window = selected }))")
+    actions.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = selected }))")
     debugLog("switcher.activate", { target: target, restore: restore, destination: destination })
     Hyprland.dispatch("(function() return function() " + actions.join("; ") + " end end)()")
   }
 
   function commit() {
+    if (clientsRequestPending) {
+      clientsRequestPending = false
+      pendingDirection = 0
+      clientsSocket.connected = false
+      return "pending-cancelled"
+    }
     if (!opened || selectedIndex < 0 || selectedIndex >= snapshot.length) return "inactive"
 
     var group = snapshot[selectedIndex]
@@ -216,25 +221,34 @@ Item {
     var destination = capturedWorkspaceSelector
     var sourceName = capturedWorkspaceName
     var minimizedName = minimizedWorkspaceName
+    var restore = selected ? selected.minimized === true : false
     cancel()
     if (!target || !destination) return "invalid-selection"
 
-    var current = null
-    var values = Hyprland.toplevels.values
-    for (var i = 0; i < values.length; i++) {
-      if (String(values[i].address || "") === address) { current = values[i]; break }
-    }
-    var ipc = current ? current.lastIpcObject : null
-    if (!current || !ipc || ipc.mapped !== true || TaskListModel.hasEmbeddedNul(ipc.class) || TaskListModel.hasEmbeddedNul(ipc.initialClass)) return "stale-window"
-
-    var workspaceName = current.workspace ? String(current.workspace.name || "") : ""
-    if (workspaceName !== sourceName && workspaceName !== minimizedName) return "moved-window"
-
-    dispatchActivation(target, workspaceName === minimizedName, destination)
+    dispatchActivation(target, restore, destination, sourceName, minimizedName)
     return "activated:" + address
   }
 
-  Component.onCompleted: seedMru()
+  Socket {
+    id: clientsSocket
+    path: Hyprland.requestSocketPath
+    connected: false
+    onConnectionStateChanged: {
+      if (connected && root.clientsRequestPending) {
+        write("j/clients")
+        flush()
+      }
+    }
+    onError: {
+      root.clientsRequestPending = false
+      root.pendingDirection = 0
+      connected = false
+    }
+    parser: StdioCollector {
+      waitForEnd: false
+      onDataChanged: root.acceptClientsResponse(text)
+    }
+  }
 
   FileView {
     path: Quickshell.env("HOME") + "/.local/state/omarchy/float-panel-debug"
@@ -243,11 +257,6 @@ Item {
     onLoaded: root.debugEnabled = true
     onLoadFailed: root.debugEnabled = false
     onFileChanged: reload()
-  }
-
-  Connections {
-    target: Hyprland
-    function onActiveToplevelChanged() { root.touchActive() }
   }
 
   GlobalShortcut {
