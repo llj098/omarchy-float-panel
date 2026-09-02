@@ -23,6 +23,7 @@ Item {
   property int pendingDirection: 0
   property bool debugEnabled: false
 
+  readonly property string luaLogWirePrefix: "custom>>fatlj.float-panel:log:"
   readonly property color background: Color.menu.background
   readonly property color foreground: Color.menu.text
   readonly property color border: Color.menu.border
@@ -36,6 +37,12 @@ Item {
 
   function debugLog(event, fields) {
     if (debugEnabled) console.info("[fatlj.float-panel] " + event + " " + JSON.stringify(fields || {}))
+  }
+
+  function acceptLuaLogLine(line) {
+    var value = String(line || "")
+    if (value.indexOf(luaLogWirePrefix) === 0)
+      console.info(value.slice(luaLogWirePrefix.length))
   }
 
   function screenForMonitorId(monitorId) {
@@ -227,6 +234,16 @@ Item {
 
     dispatchActivation(target, restore, destination, sourceName, minimizedName)
     return "activated:" + address
+  }
+
+  Socket {
+    id: luaLogSocket
+    path: Hyprland.eventSocketPath
+    connected: true
+    parser: SplitParser {
+      splitMarker: "\n"
+      onRead: function(data) { root.acceptLuaLogLine(data) }
+    }
   }
 
   Socket {

@@ -5,8 +5,7 @@ local home = os.getenv("HOME") or ""
 local state_path = home .. "/.local/state/omarchy/float-panel-workspaces"
 local geometry_state_path = home .. "/.local/state/omarchy/float-panel-geometries"
 local debug_flag_path = home .. "/.local/state/omarchy/float-panel-debug"
-local debug_log_path = rawget(_G, "FLOAT_PANEL_DEBUG_LOG_PATH") or "/tmp/float-panel-debug.log"
-local debug_log_limit = 5 * 1024 * 1024
+local debug_sink = rawget(_G, "FLOAT_PANEL_DEBUG_SINK")
 local native_bridge_path = home .. "/.config/omarchy/plugins/fatlj.float-panel/native/build/float-panel-native.so"
 local float_workspaces = {}
 
@@ -57,15 +56,7 @@ local debug_enabled = debug_flag_enabled()
 local function debug_log(event, fields)
   if not debug_enabled then return end
 
-  local current = io.open(debug_log_path, "r")
-  local size = current and current:seek("end") or 0
-  if current then current:close() end
-  if size >= debug_log_limit then
-    os.remove(debug_log_path .. ".1")
-    os.rename(debug_log_path, debug_log_path .. ".1")
-  end
-
-  local parts = { os.date("!%Y-%m-%dT%H:%M:%SZ"), tostring(event) }
+  local parts = { "[fatlj.float-panel]", tostring(event) }
   local keys = {}
   for key in pairs(fields or {}) do table.insert(keys, key) end
   table.sort(keys)
@@ -74,10 +65,14 @@ local function debug_log(event, fields)
     table.insert(parts, tostring(key) .. "=" .. value)
   end
 
-  local file = io.open(debug_log_path, "a")
-  if not file then return end
-  file:write(table.concat(parts, " "), "\n")
-  file:close()
+  local line = table.concat(parts, " ")
+  if type(debug_sink) == "function" then
+    debug_sink(line)
+  else
+    pcall(function()
+      hl.dispatch(hl.dsp.event("fatlj.float-panel:log:" .. line))
+    end)
+  end
 end
 
 -- Negative float gaps inherit general.gaps_out in Hyprland 0.56.2, keeping

@@ -160,13 +160,25 @@ hl.config({ cursor = { no_warps = true } })
 
 ## Debug logging
 
-Create the marker below and reload Hyprland plus Omarchy Shell to enable explicit plugin traces:
+All runtime diagnostics go to the systemd journal through the same QML `console.info()` calls used by official Omarchy widgets. QML components log directly. Lua sends privacy-safe lines through Hyprland's built-in custom IPC event; the unique AppSwitcher instance reads them from a dedicated event socket and calls `console.info()`. The plugin must not create private log files, spawn logging subprocesses, extend the native bridge for logging, or implement its own size limits or rotation; retention and rotation follow the host's journald configuration (`SystemMaxUse`, `RuntimeMaxUse`, `MaxRetentionSec`, and related settings).
+
+Logging is opt-in. Create or remove the shared marker, then reload Hyprland and Omarchy Shell:
 
 ```bash
+# Enable
 touch ~/.local/state/omarchy/float-panel-debug
+
+# Disable
+rm -f ~/.local/state/omarchy/float-panel-debug
 ```
 
-Lua bind/context and monitor-reflow records are written to `/tmp/float-panel-debug.log`, rotated at 5 MiB to one `.1` file. Each topology reflow emits privacy-safe per-window `before`, `decision`, and `after` records with the trigger, source/target bounds, anchor and normalized ratios, requested resize/move, and actual geometry. TaskList and AppSwitcher records use the `fatlj.float-panel` prefix in the Omarchy Shell log. Reflow records contain addresses and workspace/monitor identifiers, never window titles, class names, or typed/content text. Remove the marker and reload both components to disable logging.
+Read all plugin records across both services with:
+
+```bash
+journalctl --user -g 'fatlj\.float-panel'
+```
+
+Lua, TaskList, and AppSwitcher records all use the `[fatlj.float-panel]` prefix. Each topology reflow emits privacy-safe per-window `before`, `decision`, and `after` records with the trigger, source/target bounds, anchor and normalized ratios, requested resize/move, and actual geometry. Formal logs may contain addresses, application class, and workspace/monitor identifiers, but never window titles, typed text, chat/content text, image contents, or other user content.
 
 ## Validation
 

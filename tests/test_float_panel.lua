@@ -11,10 +11,8 @@ local native_semantics_by_address = {}
 local semantics_calls = {}
 local operation_log = {}
 local windows_by_address = {}
-local debug_log_path = (os.getenv("HOME") or "") .. "/float-panel-debug-test.log"
-FLOAT_PANEL_DEBUG_LOG_PATH = debug_log_path
-os.remove(debug_log_path)
-os.remove(debug_log_path .. ".1")
+local journal_lines = {}
+FLOAT_PANEL_DEBUG_SINK = function(line) table.insert(journal_lines, line) end
 local debug_marker = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-debug", "w"))
 debug_marker:close()
 
@@ -1232,9 +1230,7 @@ assert(edit_round.at.x == round_small.x and edit_round.at.y == round_small.y and
   "A->B->A->B must not drift")
 ws1.windows = {}
 
-local debug_file = assert(io.open(debug_log_path, "r"))
-local debug_payload = debug_file:read("*a")
-debug_file:close()
+local debug_payload = table.concat(journal_lines, "\n")
 local anchor_log = {}
 for line in debug_payload:gmatch("[^\n]+") do
   if line:find("window=0xanchor1", 1, true) and line:find("trigger=workspace.move_to_monitor", 1, true) then
@@ -1255,7 +1251,7 @@ end
 assert(not joined_anchor_log:find("DO_NOT_LOG_REFLOW_SECRET", 1, true) and
   not joined_anchor_log:find("AnchorApp", 1, true),
   "privacy-safe reflow records must never include titles or class/content identifiers")
-os.remove(debug_log_path)
-os.remove(debug_log_path .. ".1")
+assert(joined_anchor_log:find("[fatlj.float-panel]", 1, true),
+  "Lua debug records must use the shared journal prefix")
 
 print("LUA_TESTS_OK")

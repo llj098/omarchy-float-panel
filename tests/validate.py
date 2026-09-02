@@ -94,6 +94,10 @@ for required in (
     "hl.dsp.window.alter_zorder",
     '"switcher.activate"',
     'float-panel-debug',
+    'luaLogWirePrefix: "custom>>fatlj.float-panel:log:"',
+    'path: Hyprland.eventSocketPath',
+    'id: luaLogSocket',
+    'console.info(value.slice(luaLogWirePrefix.length))',
 ):
     assert required in switcher, f"AppSwitcher.qml missing required contract: {required}"
 
@@ -216,7 +220,9 @@ for required in (
     'load_geometry_records()',
     'save_geometry_records()',
     'claim_geometry_slot(window, workspace)',
-    'debug_log_limit = 5 * 1024 * 1024',
+    'local debug_sink = rawget(_G, "FLOAT_PANEL_DEBUG_SINK")',
+    'local parts = { "[fatlj.float-panel]", tostring(event) }',
+    'hl.dispatch(hl.dsp.event("fatlj.float-panel:log:" .. line))',
     'debug_window_action("bind.direction"',
     "local function debug_window_geometry(event, window, workspace, fields)",
     'debug_window_geometry("event.window_open_before"',
@@ -253,6 +259,13 @@ for required in (
     "special:omarchy-minimized-",
 ):
     assert required in lua, f"float-panel.lua missing required contract: {required}"
+
+for forbidden_file_logger in (
+    "/tmp/float-panel-debug.log", "FLOAT_PANEL_DEBUG_LOG_PATH", "debug_log_limit",
+    "io.open(debug_log_path", "os.rename(debug_log_path", "systemd-cat",
+):
+    assert forbidden_file_logger not in lua, \
+        f"Lua diagnostics must use the journal, not private log rotation: {forbidden_file_logger}"
 
 for unsafe_iteration in (
     " in ipairs(hl.get_windows())",
@@ -345,6 +358,8 @@ for forbidden_native_effect in (
         f"native bridge must remain read-only: {forbidden_native_effect}"
 assert "persistent_candidate" not in native_main and "persistentCandidate" not in native_main, \
     "native metadata bridge must not own persistence policy"
+assert "sd_journal" not in native_main and "systemd/sd-journal" not in native_main, \
+    "logging must use the official QML console path, not expand the native bridge"
 for forbidden_native_policy in (
     "m_workspace", "workspaceFloatEnabled", "maximizeGeometricWindow", "geometryRecords",
     "maximizeRequestFacts", '"maximize_request_present"', '"maximize_requested"',
