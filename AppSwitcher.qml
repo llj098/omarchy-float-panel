@@ -20,6 +20,7 @@ Item {
   property string minimizedWorkspaceName: ""
   property var targetScreen: null
   property bool clientsRequestPending: false
+  property bool commitWhenReady: false
   property int pendingDirection: 0
   property bool debugEnabled: false
 
@@ -99,6 +100,7 @@ Item {
     }
     pendingDirection = direction
     clientsRequestPending = true
+    commitWhenReady = false
     clientsSocket.connected = true
   }
 
@@ -115,8 +117,11 @@ Item {
     clientsRequestPending = false
     clientsSocket.connected = false
     var direction = pendingDirection
+    var shouldCommit = commitWhenReady
     pendingDirection = 0
+    commitWhenReady = false
     beginFromClients(clients, direction)
+    if (shouldCommit) commit()
   }
 
   function beginFromClients(clients, direction) {
@@ -185,6 +190,7 @@ Item {
     opened = false
     snapshot = []
     selectedIndex = -1
+    commitWhenReady = false
   }
 
   function windowSelector(address) {
@@ -214,10 +220,8 @@ Item {
 
   function commit() {
     if (clientsRequestPending) {
-      clientsRequestPending = false
-      pendingDirection = 0
-      clientsSocket.connected = false
-      return "pending-cancelled"
+      commitWhenReady = true
+      return "pending-commit"
     }
     if (!opened || selectedIndex < 0 || selectedIndex >= snapshot.length) return "inactive"
 
@@ -258,6 +262,7 @@ Item {
     }
     onError: {
       root.clientsRequestPending = false
+      root.commitWhenReady = false
       root.pendingDirection = 0
       connected = false
     }

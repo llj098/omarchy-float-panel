@@ -229,10 +229,13 @@ local resize_routes = {
 for _, route in ipairs(resize_routes) do assert(type(binds[route[1]]) == "function", route[1] .. " must be rebound") end
 assert(binds["ALT + TAB"].kind == "global" and binds["ALT + TAB"].name == "fatlj.float-panel:alt-tab-next")
 assert(binds["ALT + SHIFT + TAB"].name == "fatlj.float-panel:alt-tab-previous")
+assert(bind_options["ALT + TAB"].repeating == true and bind_options["ALT + SHIFT + TAB"].repeating == true,
+  "forward and reverse Alt-Tab must use native keyboard repeat")
 assert(binds["ALT + ALT_L"].name == "fatlj.float-panel:alt-release")
 assert(bind_options["ALT + ALT_L"].release == true and bind_options["ALT + ALT_R"].release == true)
-assert(bind_options["ALT + ALT_L"].transparent == true and bind_options["ALT + ALT_R"].transparent == true,
-  "Alt release binds must survive shadowing by the intervening Alt+Tab chord")
+assert(bind_options["ALT + ALT_L"].transparent == true and bind_options["ALT + ALT_R"].transparent == true and
+  bind_options["ALT + ALT_L"].ignore_mods == true and bind_options["ALT + ALT_R"].ignore_mods == true,
+  "Alt release must survive shadowing and extra held modifiers")
 local unbound_set = {}
 for _, keys in ipairs(unbound) do unbound_set[keys] = true end
 for _, route in ipairs(resize_routes) do assert(unbound_set[route[1]], route[1] .. " stock binding must be unbound") end

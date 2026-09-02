@@ -1722,11 +1722,12 @@ o.bind("SUPER + DOWN", "Focus down / restore in floating mode", function() mode_
 o.bind("SUPER + F", "Full screen", mode_aware_fullscreen)
 o.bind("SUPER + TAB", "Next workspace", function() workspace_super_tab(true) end)
 o.bind("SUPER + SHIFT + TAB", "Previous workspace", function() workspace_super_tab(false) end)
-o.bind("ALT + TAB", "Select next application", hl.dsp.global("fatlj.float-panel:alt-tab-next"))
-o.bind("ALT + SHIFT + TAB", "Select previous application", hl.dsp.global("fatlj.float-panel:alt-tab-previous"))
--- Keep modifier-release binds transparent so an intervening ALT+TAB chord does
--- not shadow them before Alt is released.
-o.bind("ALT + ALT_L", "Activate selected application", hl.dsp.global("fatlj.float-panel:alt-release"), { release = true, transparent = true })
-o.bind("ALT + ALT_R", "Activate selected application", hl.dsp.global("fatlj.float-panel:alt-release"), { release = true, transparent = true })
+o.bind("ALT + TAB", "Select next application", hl.dsp.global("fatlj.float-panel:alt-tab-next"), { repeating = true })
+o.bind("ALT + SHIFT + TAB", "Select previous application", hl.dsp.global("fatlj.float-panel:alt-tab-previous"), { repeating = true })
+-- Extra held modifiers must not suppress Alt release after changing direction.
+o.bind("ALT + ALT_L", "Activate selected application", hl.dsp.global("fatlj.float-panel:alt-release"),
+  { release = true, transparent = true, ignore_mods = true })
+o.bind("ALT + ALT_R", "Activate selected application", hl.dsp.global("fatlj.float-panel:alt-release"),
+  { release = true, transparent = true, ignore_mods = true })
 o.bind("SUPER + SHIFT + T", "Toggle workspace floating mode", toggle_active_workspace_mode)
 o.bind("SUPER + M", "Minimize window", minimize_active_window)

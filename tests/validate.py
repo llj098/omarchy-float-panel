@@ -98,6 +98,11 @@ for required in (
     'path: Hyprland.eventSocketPath',
     'id: luaLogSocket',
     'console.info(value.slice(luaLogWirePrefix.length))',
+    'property bool commitWhenReady: false',
+    'var shouldCommit = commitWhenReady',
+    'if (shouldCommit) commit()',
+    'commitWhenReady = true',
+    'return "pending-commit"',
 ):
     assert required in switcher, f"AppSwitcher.qml missing required contract: {required}"
 
@@ -129,6 +134,11 @@ assert "dispatchActivation(target, restore, destination, sourceName, minimizedNa
 assert "groupSwitcherToplevels" not in switcher
 assert "floatWorkspaceNames" not in switcher and "workspaceFloatEnabled" not in switcher, \
     "Alt-Tab must remain available on regular Tiling workspaces"
+assert 'return "pending-cancelled"' not in switcher, \
+    "releasing Alt during a live-client request must commit after the response, not cancel"
+request_accept = switcher[switcher.index("  function acceptClientsResponse("):switcher.index("  function beginFromClients(")]
+assert request_accept.index("var shouldCommit = commitWhenReady") < request_accept.index("beginFromClients(clients, direction)") < request_accept.index("if (shouldCommit) commit()"), \
+    "a quick Alt release must commit exactly after building the live snapshot"
 
 lua = (ROOT / "hypr" / "float-panel.lua").read_text()
 for required in (
@@ -178,7 +188,8 @@ for required in (
     'o.bind("ALT + ALT_L"',
     'o.bind("ALT + ALT_R"',
     'hl.dsp.global("fatlj.float-panel:alt-tab-next")',
-    '{ release = true, transparent = true }',
+    '{ repeating = true }',
+    '{ release = true, transparent = true, ignore_mods = true }',
     'hl.unbind("SUPER + LEFT")',
     '{ "SUPER + code:20", "Expand window left", -100, 0 }',
     '{ "SUPER + code:21", "Shrink window left", 100, 0 }',
