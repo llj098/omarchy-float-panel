@@ -29,10 +29,13 @@ HANDLE pluginHandle = nullptr;
 using CustomEvent = Event::CEventBus::CCustomEvent;
 
 SP<CustomEvent>                                    maximizeRequestEvent;
+CHyprSignalListener                                configPreReloadListener;
+CHyprSignalListener                                configReloadedListener;
 CHyprSignalListener                                windowCreateListener;
 CHyprSignalListener                                windowDestroyListener;
 std::unordered_map<uintptr_t, CHyprSignalListener> maximizeRequestListeners;
-std::unordered_map<uintptr_t, bool>               maximizeRequestFacts;
+uint64_t                                           configReloadGeneration    = 0;
+uint64_t                                           announcedReloadGeneration = 0;
 
 std::string windowAddress(const PHLWINDOW& window) {
     return std::format("0x{:x}", reinterpret_cast<uintptr_t>(window.get()));
@@ -89,19 +92,17 @@ void setString(lua_State* state, const char* key, std::string_view value) {
     lua_setfield(state, -2, key);
 }
 
-void forwardMaximizeRequest(const PHLWINDOWREF& reference, const bool snapshot = false) {
+void forwardMaximizeRequest(const PHLWINDOWREF& reference) {
     const auto window = reference.lock();
     if (!window || !maximizeRequestEvent)
         return;
 
     const auto request = window->m_isX11 && window->m_xwaylandSurface ? window->m_xwaylandSurface->m_state.requestsMaximize :
                                                                       window->m_xdgSurface->m_toplevel->m_state.requestsMaximize;
-    if (!request.has_value() && !snapshot)
+    if (!request.has_value())
         return;
-    if (request.has_value())
-        maximizeRequestFacts[reinterpret_cast<uintptr_t>(window.get())] = *request;
 
-    const auto result = maximizeRequestEvent->emit({PHLWINDOWREF(window), request.value_or(false)});
+    const auto result = maximizeRequestEvent->emit({PHLWINDOWREF(window), *request});
     (void)result;
 }
 
@@ -114,7 +115,6 @@ void trackMaximizeRequests(const PHLWINDOW& window) {
          window->m_xwaylandSurface->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); }) :
          window->m_xdgSurface->m_toplevel->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); });
     maximizeRequestListeners[reinterpret_cast<uintptr_t>(window.get())] = listener;
-    forwardMaximizeRequest(reference, true);
 }
 
 int luaCapabilities(lua_State* state) {
@@ -144,16 +144,8 @@ int luaWindowSemantics(lua_State* state) {
 
     // Expose compositor facts only. Persistence and placement policies belong
     // to the Lua consumer so they can change without rebuilding this bridge.
-    const auto currentMaximizeRequest = window->m_isX11 && window->m_xwaylandSurface ? window->m_xwaylandSurface->m_state.requestsMaximize :
-                                                                                        window->m_xdgSurface->m_toplevel->m_state.requestsMaximize;
-    const auto capturedMaximizeRequest = maximizeRequestFacts.find(reinterpret_cast<uintptr_t>(window.get()));
-    const bool maximizeRequestPresent  = capturedMaximizeRequest != maximizeRequestFacts.end() || currentMaximizeRequest.has_value();
-    const bool maximizeRequested       = capturedMaximizeRequest != maximizeRequestFacts.end() ? capturedMaximizeRequest->second :
-                                                                                                  currentMaximizeRequest.value_or(false);
     setBoolean(state, "found", true);
     setBoolean(state, "xwayland", window->m_isX11);
-    setBoolean(state, "maximize_request_present", maximizeRequestPresent);
-    setBoolean(state, "maximize_requested", maximizeRequested);
     setBoolean(state, "has_parent", hasParent);
     if (parent)
         setString(state, "parent_address", windowAddress(parent));
@@ -193,11 +185,23 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("failed to register float_panel.maximize_request");
     }
 
+    // Lua rebuilds its event handler on every config reload, after this plugin
+    // event already exists. Re-announce it once per reload so the new handler
+    // attaches to the standard custom event before clients can issue requests.
+    configPreReloadListener = Event::bus()->m_events.config.preReload.listen([] {
+        ++configReloadGeneration;
+        Event::bus()->m_events.pluginEventRemoved.emit("float_panel.maximize_request");
+    });
+    configReloadedListener  = Event::bus()->m_events.config.reloaded.listen([] {
+        if (!maximizeRequestEvent || announcedReloadGeneration == configReloadGeneration)
+            return;
+        announcedReloadGeneration = configReloadGeneration;
+        Event::bus()->m_events.pluginEventAdded.emit(maximizeRequestEvent);
+    });
+
     windowCreateListener = Event::bus()->m_events.window.create.listen([](PHLWINDOW window) { trackMaximizeRequests(window); });
     windowDestroyListener = Event::bus()->m_events.window.destroy.listen([](PHLWINDOWREF window) {
-        const auto key = reinterpret_cast<uintptr_t>(window.get());
-        maximizeRequestListeners.erase(key);
-        maximizeRequestFacts.erase(key);
+        maximizeRequestListeners.erase(reinterpret_cast<uintptr_t>(window.get()));
     });
 
     pluginHandle = handle;
@@ -205,20 +209,21 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         "float-panel-native",
         "Raw window semantics and request bridge for fatlj.float-panel",
         "fatlj",
-        "0.5.0",
+        "0.5.1",
     };
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    configPreReloadListener.reset();
+    configReloadedListener.reset();
     windowCreateListener.reset();
     windowDestroyListener.reset();
     maximizeRequestListeners.clear();
-    maximizeRequestFacts.clear();
-    maximizeRequestEvent.reset();
     if (pluginHandle) {
         HyprlandAPI::removeEvent(pluginHandle, "float_panel.maximize_request");
         HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "capabilities");
         HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "window_semantics");
     }
+    maximizeRequestEvent.reset();
     pluginHandle = nullptr;
 }

@@ -21,7 +21,6 @@ debug_marker:close()
 local function window_semantics_bridge(address)
   table.insert(semantics_calls, address)
   local semantics = native_semantics_by_address[address]
-  local window = windows_by_address[address] or {}
   if semantics == "error" then error("synthetic native bridge failure") end
   return semantics or {
     found = true,
@@ -33,8 +32,6 @@ local function window_semantics_bridge(address)
     program_position = false,
     user_position = false,
     position_specified = false,
-    maximize_request_present = window.maximize_request_present == true,
-    maximize_requested = window.maximize_requested == true,
   }
 end
 
@@ -822,8 +819,9 @@ end
 -- The native bridge forwards only the raw request. Lua owns all workspace,
 -- persistence, and geometry policy.
 local startup_max = persisted_window("0x5040", "StartupMaxApp", 210, 130, 280, 180)
-startup_max.maximize_request_present, startup_max.maximize_requested = true, true
-windows_by_address[startup_max.address] = startup_max
+startup_max.mapped = false
+handlers["float_panel.maximize_request"](startup_max, true)
+startup_max.mapped = true
 handlers["window.open"](startup_max)
 assert(startup_max.at.x == 32 and startup_max.at.y == 62 and
   startup_max.size.x == 946 and startup_max.size.y == 406 and geometric_tag(startup_max),
@@ -831,8 +829,9 @@ assert(startup_max.at.x == 32 and startup_max.at.y == 62 and
 handlers["window.close"](startup_max)
 
 local startup_false = persisted_window("0x5042", "StartupFalseApp", 215, 135, 285, 185)
-startup_false.maximize_request_present, startup_false.maximize_requested = true, false
-windows_by_address[startup_false.address] = startup_false
+startup_false.mapped = false
+handlers["float_panel.maximize_request"](startup_false, false)
+startup_false.mapped = true
 handlers["window.open"](startup_false)
 assert(startup_false.at.x == 215 and startup_false.at.y == 135 and
   startup_false.size.x == 285 and startup_false.size.y == 185 and not geometric_tag(startup_false),

@@ -107,9 +107,7 @@ local geometry_claims = {}
 local geometry_window_claims = {}
 local reflow_anchors = {}
 local pending_startup_maximize = {}
-local startup_maximize_eligible = {}
 local opened_window_tokens = {}
-local apply_startup_maximize_request
 
 local function process_start_ticks(pid)
   pid = tonumber(pid)
@@ -567,17 +565,9 @@ if native_maximize_request_event then
   hl.on("float_panel.maximize_request", function(window, requested)
     local token = geometry_window_token(window)
     if not token then return end
-    local value = requested == true
-    debug_log("event.maximize_request", { window = token, requested = value })
-    if opened_window_tokens[token] then
-      local eligible = startup_maximize_eligible[token]
-      startup_maximize_eligible[token] = nil
-      if value and eligible and apply_startup_maximize_request then
-        apply_startup_maximize_request(window)
-      end
-      return
-    end
-    pending_startup_maximize[token] = value
+    if opened_window_tokens[token] then return end
+    pending_startup_maximize[token] = requested == true
+    debug_log("event.maximize_request", { window = token, requested = requested == true })
   end)
 end
 
@@ -1407,14 +1397,6 @@ persist_window_placement = function(window, workspace)
   return false
 end
 
-apply_startup_maximize_request = function(window)
-  local workspace = source_float_workspace(window)
-  if workspace and maximize_geometric_window(window, workspace) then
-    persist_window_placement(window, workspace)
-    debug_window_geometry("event.startup_maximize_applied", window, workspace)
-  end
-end
-
 persist_workspace_placements = function(workspace)
   local changed = false
   if workspace_is_regular(workspace) then
@@ -1518,11 +1500,9 @@ end
 
 hl.on("window.open", function(window)
   local token = geometry_window_token(window)
-  local startup_event_seen = token and pending_startup_maximize[token] ~= nil or false
   local startup_maximize = token and pending_startup_maximize[token] == true or false
   if token then
     pending_startup_maximize[token] = nil
-    startup_maximize_eligible[token] = nil
     opened_window_tokens[token] = true
   end
   ignore_window_minimum_size(window)
@@ -1530,8 +1510,6 @@ hl.on("window.open", function(window)
   local workspace = window and window.workspace or nil
   local float_enabled = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
   local persistence_eligible, persistence_reason, semantics = window_persistence_semantics(window)
-  startup_event_seen = startup_event_seen or (semantics and semantics.maximize_request_present == true)
-  startup_maximize = startup_maximize or (semantics and semantics.maximize_requested == true)
   tag_auxiliary_window_no_border(window, semantics)
   local slot, record, initial_placement
   debug_window_geometry("event.window_open_before", window, workspace, {
@@ -1555,8 +1533,6 @@ hl.on("window.open", function(window)
     if persistence_eligible and not record then
       if startup_maximize and maximize_geometric_window(window, workspace) then
         initial_placement = "app-maximized"
-      elseif native_maximize_request_event and not startup_event_seen and token then
-        startup_maximize_eligible[token] = true
       end
       persist_window_placement(window, workspace)
     end
@@ -1575,7 +1551,6 @@ hl.on("window.close", function(window)
   local token = geometry_window_token(window)
   if token then
     pending_startup_maximize[token] = nil
-    startup_maximize_eligible[token] = nil
     opened_window_tokens[token] = nil
   end
   local workspace = source_float_workspace(window)

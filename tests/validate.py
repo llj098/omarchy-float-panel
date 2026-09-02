@@ -314,6 +314,10 @@ for required in (
     "CustomEvent::TYPE_WINDOW",
     "CustomEvent::TYPE_BOOL",
     "m_state.requestsMaximize",
+    "m_events.config.preReload",
+    "m_events.config.reloaded",
+    "m_events.pluginEventRemoved.emit",
+    "m_events.pluginEventAdded.emit",
     "window->parent()",
     "m_transient",
     "m_atoms",
@@ -341,9 +345,14 @@ for forbidden_native_effect in (
         f"native bridge must remain read-only: {forbidden_native_effect}"
 assert "persistent_candidate" not in native_main and "persistentCandidate" not in native_main, \
     "native metadata bridge must not own persistence policy"
-for forbidden_native_policy in ("m_workspace", "workspaceFloatEnabled", "maximizeGeometricWindow", "geometryRecords"):
+for forbidden_native_policy in (
+    "m_workspace", "workspaceFloatEnabled", "maximizeGeometricWindow", "geometryRecords",
+    "maximizeRequestFacts", '"maximize_request_present"', '"maximize_requested"',
+):
     assert forbidden_native_policy not in native_main, \
-        f"native maximize bridge must not own Lua business policy: {forbidden_native_policy}"
+        f"native maximize bridge must not own or expose Lua business state: {forbidden_native_policy}"
+assert "maximize_request_present" not in lua and "semantics.maximize_requested" not in lua, \
+    "Lua must consume maximize requests only through the custom-event listener"
 for required_lua_policy in (
     'hl.on("float_panel.maximize_request"',
     "pending_startup_maximize",
