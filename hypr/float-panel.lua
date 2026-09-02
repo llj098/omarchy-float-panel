@@ -102,6 +102,7 @@ local geometry_claims = {}
 local geometry_window_claims = {}
 local float_workspace_rules = {}
 local reflow_anchors = {}
+local monitor_bounds_cache = {}
 local pending_startup_maximize = {}
 local opened_window_tokens = {}
 
@@ -685,22 +686,32 @@ local function format_box(box)
   return table.concat({ box.x, box.y, box.width, box.height }, ",")
 end
 
-local function debug_reflow(stage, trigger, window, workspace, bounds, anchor, fields)
-  if not debug_enabled or not trigger then return end
+local function debug_reflow(trigger, window, workspace, bounds, anchor, old_box, new_box, fields)
+  if not debug_enabled or not trigger or boxes_equal(old_box, new_box) then return end
   fields = fields or {}
   fields.trigger = trigger
   fields.source_bounds = format_bounds(anchor and anchor.source_bounds or bounds)
   fields.target_bounds = format_bounds(bounds)
-  fields.anchor = format_box(anchor and anchor.original_box or nil)
-  fields.anchor_monitor = anchor and anchor.source_monitor and
-    table.concat({ anchor.source_monitor.name, anchor.source_monitor.x, anchor.source_monitor.y }, ",") or "nil"
-  fields.placement_ratios = anchor and table.concat({
-    string.format("%.6f", anchor.placement.x), string.format("%.6f", anchor.placement.y),
-    string.format("%.6f", anchor.placement.width), string.format("%.6f", anchor.placement.height),
-  }, ",") or "nil"
-  fields.last_applied = format_box(anchor and anchor.last_applied or nil)
-  fields.actual_geometry = format_box(window_box(window))
-  debug_window_action("reflow.window_" .. stage, window, workspace, fields)
+  fields.old_geometry = format_box(old_box)
+  fields.new_geometry = format_box(new_box)
+  debug_window_action("reflow.window", window, workspace, fields)
+end
+
+local function monitor_cache_key(monitor)
+  if not monitor then return nil end
+  local name = tostring(monitor.name or "")
+  if name ~= "" then return name end
+  local id = tonumber(monitor.id)
+  return id and tostring(id) or nil
+end
+
+local function update_monitor_bounds_cache(monitor)
+  local key = monitor_cache_key(monitor)
+  local current = floating_window_bounds(monitor)
+  if not key or not current then return false end
+  local previous = monitor_bounds_cache[key]
+  monitor_bounds_cache[key] = copy_bounds(current)
+  return previous == nil or not bounds_equal(previous, current)
 end
 
 local function side_intent_still_managed(window, side)
@@ -746,23 +757,17 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
   if not bounds or not at or not size then return end
 
   local anchor = reflow_anchor(window)
-  debug_reflow("before", trigger, window, source_workspace, bounds, anchor, {
-    decision = "pending", requested_resize = "none", requested_move = "none",
-  })
+  local reflow_start_box = window_box(window)
 
   local function finish(decision, requested_resize, requested_move)
     anchor = reflow_anchor(window)
-    debug_reflow("decision", trigger, window, source_workspace, bounds, anchor, {
-      decision = decision,
-      requested_resize = requested_resize or "none",
-      requested_move = requested_move or "none",
-    })
+    local reflow_end_box = window_box(window)
     if anchor then
-      anchor.last_applied = window_box(window)
+      anchor.last_applied = reflow_end_box
       anchor.last_bounds = copy_bounds(bounds)
       anchor.last_monitor = monitor_snapshot(target_monitor)
     end
-    debug_reflow("after", trigger, window, source_workspace, bounds, anchor, {
+    debug_reflow(trigger, window, source_workspace, bounds, anchor, reflow_start_box, reflow_end_box, {
       decision = decision,
       requested_resize = requested_resize or "none",
       requested_move = requested_move or "none",
@@ -1498,6 +1503,7 @@ end
 
 load_float_workspaces()
 load_geometry_records()
+for _, monitor in safe_ipairs(hl.get_monitors()) do update_monitor_bounds_cache(monitor) end
 for name, enabled in pairs(float_workspaces) do
   if enabled then ensure_float_workspace_rule(name) end
 end
@@ -1645,23 +1651,31 @@ end)
 -- Hyprland emits this after monitor layout changes. It carries no monitor, so
 -- inspect every plugin-enabled Float workspace.
 hl.on("monitor.layout_changed", function()
+  local changed = {}
+  for _, monitor in safe_ipairs(hl.get_monitors()) do
+    if update_monitor_bounds_cache(monitor) then changed[monitor_cache_key(monitor)] = true end
+  end
+  if not next(changed) then return end
   debug_log("event.monitor_layout_changed")
   for _, workspace in safe_ipairs(hl.get_workspaces()) do
-    defensively_fit_float_workspace(workspace, "monitor.layout_changed")
+    if workspace.monitor and changed[monitor_cache_key(workspace.monitor)] then
+      defensively_fit_float_workspace(workspace, "monitor.layout_changed")
+    end
   end
 end)
 
 -- LayerSurface::onMap arranges exclusive reservations before this event.
 hl.on("layer.opened", function(layer)
   local monitor = layer and layer.monitor or nil
-  if not monitor then return end
+  if not monitor or not update_monitor_bounds_cache(monitor) then return end
   local reserved = monitor.reserved or {}
-  debug_log("event.layer_opened", {
+  debug_log("event.work_area_changed", {
     monitor = monitor.name or "nil",
     reserved_bottom = tonumber(reserved.bottom) or 0,
     reserved_left = tonumber(reserved.left) or 0,
     reserved_right = tonumber(reserved.right) or 0,
     reserved_top = tonumber(reserved.top) or 0,
+    trigger = "layer.opened",
   })
   for _, workspace in safe_ipairs(hl.get_workspaces()) do
     if workspace_is_regular(workspace) and workspace_float_enabled(workspace) and workspace.monitor == monitor then

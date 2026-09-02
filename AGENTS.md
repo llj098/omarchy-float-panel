@@ -17,4 +17,4 @@
 
 - 所有运行时诊断日志必须通过官方 widget 相同的 QML `console.info()` 路径写入 systemd journal，并统一使用 `[fatlj.float-panel]` 前缀；Lua 仅通过 Hyprland 内置 custom IPC event 发送隐私安全日志行，由唯一 AppSwitcher 实例的独立 event socket 接收并输出。
 - 禁止创建项目私有日志文件、调用 `systemd-cat` 子进程、为日志扩展 C++ bridge，或在插件中实现容量限制与轮转；保留和轮转统一由 journald 配置管理。
-- 调试日志由 `~/.local/state/omarchy/float-panel-debug` marker 统一启停；正式日志不得记录窗口标题、输入文本、聊天/页面内容、图片内容或其他用户内容。
+- 调试日志由 `~/.local/state/omarchy/float-panel-debug` marker 统一启停；reflow 只在 work area 或窗口 geometry 实际变化时记录，每个变化窗口只写一条，no-op 检查不得写日志；正式日志不得记录窗口标题、输入文本、聊天/页面内容、图片内容或其他用户内容。

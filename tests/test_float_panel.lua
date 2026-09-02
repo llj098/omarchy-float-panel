@@ -49,6 +49,8 @@ local w2 = { workspace = ws1, floating = false, mapped = true, fullscreen = 0, p
 ws1.windows = { w1, w2 }
 
 local own_monitor = {
+  id = 1,
+  name = "own",
   x = 10,
   y = 20,
   width = 2000,
@@ -136,6 +138,21 @@ hl = {
     return address and windows_by_address[address] or nil
   end,
   get_active_monitor = function() return active_monitor end,
+  get_monitors = function()
+    local seen, result = {}, {}
+    local function add(candidate)
+      local key = candidate and (candidate.name or tostring(candidate)) or nil
+      if key and not seen[key] then
+        seen[key] = true
+        table.insert(result, candidate)
+      end
+    end
+    for _, candidate in ipairs({ active_monitor, ws1.monitor, ws2.monitor, ws3.monitor, special.monitor }) do add(candidate) end
+    for _, candidate_workspace in ipairs({ ws1, ws2, ws3, special }) do
+      for _, candidate_window in ipairs(candidate_workspace.windows or {}) do add(candidate_window.monitor) end
+    end
+    return result
+  end,
   get_workspaces = function() return { ws1, ws2, ws3, special } end,
   get_workspace = function(selector)
     local id = tonumber(selector)
@@ -340,6 +357,8 @@ active_monitor = own_monitor
 active_window = w1
 
 local migrated_monitor = {
+  id = 2,
+  name = "migrated",
   x = -1600,
   y = 200,
   width = 1600,
@@ -394,6 +413,7 @@ local special_candidate = {
 ws3.windows = { other_float }
 ws2.windows = { tiling_candidate }
 special.windows = { special_candidate }
+ws1.monitor, ws2.monitor, ws3.monitor, special.monitor = migrated_monitor, migrated_monitor, migrated_monitor, migrated_monitor
 local before_migration = #dispatched
 handlers["monitor.layout_changed"]()
 assert(#dispatched == before_migration + 5,
@@ -435,11 +455,13 @@ local pinned = {
 }
 local previous_ws1_windows = ws1.windows
 ws1.windows = { pinned }
-handlers["monitor.layout_changed"]()
+handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
 assert(pinned.at.x == -532, "pinned windows must retain the existing monitor-bound fitting behavior")
 ws1.windows = previous_ws1_windows
 
 local edp_monitor = {
+  id = 3,
+  name = "edp",
   x = 0, y = 0, width = 1920, height = 1080, scale = 1.25, transform = 0,
   reserved = { left = 0, right = 0, top = 0, bottom = 0 },
 }
@@ -462,6 +484,7 @@ ws3.windows = { layer_max, layer_side, layer_free }
 local untouched_tiling_x, untouched_special_x, untouched_other_x = tiling_candidate.at.x, special_candidate.at.x, w1.at.x
 edp_monitor.reserved.bottom = 26
 local before_layer_opened = #dispatched
+local before_layer_logs = #journal_lines
 handlers["layer.opened"]({ monitor = edp_monitor })
 assert(layer_max.size.y == 814 and layer_side.size.y == 814 and layer_free.size.y == 814,
   "post-arrange layer.opened must refit every Float window from stale 840px to final 814px height")
@@ -469,9 +492,14 @@ assert(side_tag(layer_side):find("p749%-p814"), "layer reflow must update side i
 assert(tiling_candidate.at.x == untouched_tiling_x and special_candidate.at.x == untouched_special_x and w1.at.x == untouched_other_x,
   "layer.opened must leave Tiling, special, and other-monitor workspaces untouched")
 local after_layer_opened = #dispatched
+local after_layer_logs = #journal_lines
+assert(after_layer_logs == before_layer_logs + 4,
+  "one changed work area must log one event plus one line per changed window")
 handlers["layer.opened"]({ monitor = edp_monitor })
 assert(#dispatched == after_layer_opened and after_layer_opened > before_layer_opened,
   "repeated layer.opened fitting must be idempotent")
+assert(#journal_lines == after_layer_logs,
+  "an unchanged layer must neither reflow windows nor write no-op logs")
 
 local before_wrong_routes = #dispatched
 handlers["workspace.move_to_monitor"](ws2, migrated_monitor)
@@ -564,7 +592,7 @@ resize_adjustment = { x = -2, y = -1 }
 binds["SUPER + LEFT"]()
 assert(w1.size.x == 464 and w1.size.y == 405 and side_tag(w1):find("p464%-p405"),
   "snap tags must record live client-adjusted geometry rather than the request")
-handlers["monitor.layout_changed"]()
+handlers["workspace.move_to_monitor"](ws1, own_monitor)
 assert(side_tag(w1) and w1.size.x == 464 and w1.size.y == 405,
   "observed increment-adjusted geometry must survive the next reflow")
 resize_adjustment = nil
@@ -580,7 +608,7 @@ assert(not side_tag(w1) and #dispatched == before_side_resize + 3,
 
 binds["SUPER + LEFT"]()
 w1.at.x = w1.at.x + 1
-handlers["monitor.layout_changed"]()
+handlers["workspace.move_to_monitor"](ws1, own_monitor)
 assert(not side_tag(w1), "reflow must clear stale side intent after manual geometry changes")
 
 binds["SUPER + RIGHT"]()
@@ -673,8 +701,8 @@ w1.monitor = migrated_monitor
 w2.monitor = migrated_monitor
 ws1.windows = { w1, w2 }
 local before_max_migration = #dispatched
-handlers["monitor.layout_changed"]()
-assert(#dispatched == before_max_migration + 4, "monitor layout changes must resize then move each tagged max peer")
+handlers["workspace.move_to_monitor"](ws1, migrated_monitor)
+assert(#dispatched == before_max_migration + 4, "workspace migration must resize then move each tagged max peer")
 assert(w1.floating and w2.floating and w1.at.x == -1578 and w1.at.y == 242 and w1.size.x == 1146 and w1.size.y == 696,
   "migration must refill the first tagged max against the new work area")
 assert(w2.at.x == -1578 and w2.at.y == 242 and w2.size.x == 1146 and w2.size.y == 696,
@@ -1260,13 +1288,13 @@ for line in debug_payload:gmatch("[^\n]+") do
   end
 end
 local joined_anchor_log = table.concat(anchor_log, "\n")
-assert(#anchor_log >= 9 and joined_anchor_log:find("reflow.window_before", 1, true) and
-  joined_anchor_log:find("reflow.window_decision", 1, true) and joined_anchor_log:find("reflow.window_after", 1, true),
-  "debug-marker reflow logging must include per-window before/decision/after records")
+assert(#anchor_log == 3 and not joined_anchor_log:find("reflow.window_before", 1, true) and
+  not joined_anchor_log:find("reflow.window_after", 1, true),
+  "each actual geometry change must produce exactly one reflow record")
 for _, field in ipairs({
   "source_bounds=32,62,946,406", "target_bounds=2012,112,1576,876",
-  "anchor=678,268,300,200", "placement_ratios=", "requested_resize=500,432",
-  "requested_move=3088,556", "actual_geometry=3088,556,500,432",
+  "decision=free-anchor", "requested_resize=500,432", "requested_move=3088,556",
+  "old_geometry=2668,348,300,200", "new_geometry=3088,556,500,432",
 }) do
   assert(joined_anchor_log:find(field, 1, true), "reflow debug payload is missing " .. field)
 end
