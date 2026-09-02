@@ -5,6 +5,7 @@ local commands = {}
 local unbound = {}
 local bind_options = {}
 local window_rules = {}
+local window_rules_by_name = {}
 local configs = {}
 local resize_adjustment = nil
 local native_semantics_by_address = {}
@@ -152,7 +153,19 @@ hl = {
   end,
   on = function(name, callback) handlers[name] = callback end,
   unbind = function(keys) table.insert(unbound, keys) end,
-  window_rule = function(rule) table.insert(window_rules, rule) end,
+  window_rule = function(rule)
+    local handle = window_rules_by_name[rule.name]
+    if not handle then
+      handle = { enabled = rule.enabled ~= false }
+      function handle:set_enabled(enabled) self.enabled = enabled == true end
+      rule.handle = handle
+      window_rules_by_name[rule.name] = handle
+      table.insert(window_rules, rule)
+    else
+      handle.enabled = rule.enabled ~= false
+    end
+    return handle
+  end,
   config = function(config) table.insert(configs, config) end,
   plugin = {
     load = function() end,
@@ -238,6 +251,9 @@ assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all
 
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")
+assert(#window_rules == 2 and window_rules[2].match.workspace == "1" and window_rules[2].float == true and
+  window_rules_by_name["fatlj-float-workspace-1"].enabled,
+  "toggle on must install a standard pre-layout Float rule for future windows")
 assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must notify its mode")
 
 local ui_window = { workspace = ws2, floating = false, mapped = true, fullscreen = 0, pid = 1, tags = {} }
@@ -248,6 +264,9 @@ fatlj_float_panel.toggle_workspace_mode(2)
 assert(ui_window.floating, "UI toggle must float the selected monitor workspace")
 fatlj_float_panel.toggle_workspace_mode(2)
 assert(not ui_window.floating, "second UI toggle must restore tiling")
+assert(window_rules_by_name["fatlj-float-workspace-2"] and
+  not window_rules_by_name["fatlj-float-workspace-2"].enabled,
+  "toggle off must disable the pre-layout Float rule")
 assert(#commands == 3 and commands[2]:find("floating", 1, true) and commands[3]:find("tiling", 1, true),
   "UI toggle must issue the same mode notifications as the keyboard binding")
 ws2.windows = {}
@@ -847,7 +866,7 @@ assert(not tiling_request.floating and tiling_request.at.x == 230 and tiling_req
   "a Tiling workspace must retain Omarchy maximize suppression")
 handlers["window.close"](tiling_request)
 
--- A parented window without PPosition/USPosition is centered after its desired size is known.
+-- A parented window without application-specified placement is centered after its desired size is known.
 local centered = persisted_window("0x5002", "ChildApp", 80, 70, 200, 100)
 native_semantics_by_address[centered.address] = parent_semantics(parent.address, false)
 handlers["window.open"](centered)
@@ -861,7 +880,7 @@ local positioned = persisted_window("0x5003", "PositionedChild", 440, 210, 180, 
 native_semantics_by_address[positioned.address] = parent_semantics(parent.address, true)
 handlers["window.open"](positioned)
 assert(positioned.at.x == 440 and positioned.at.y == 210,
-  "PPosition/USPosition must preserve the application's initial placement")
+  "application-specified placement must preserve the initial geometry")
 
 local missing_parent = persisted_window("0x5004", "MissingParentChild", 460, 220, 180, 120)
 native_semantics_by_address[missing_parent.address] = parent_semantics("0xdead", false)
@@ -877,7 +896,9 @@ assert(wechat_image.applied_props and wechat_image.applied_props.min_size == "1 
 assert(wechat_image.at.x == 470 and wechat_image.at.y == 230 and
   wechat_image.size.x == 190 and wechat_image.size.y == 130,
   "a no-parent explicitly positioned image window must remain unchanged without a class hack")
-assert(not has_auxiliary_no_border_tag(wechat_image), "a normal X11 window must retain its compositor border")
+assert(not has_auxiliary_no_border_tag(wechat_image), "a normal window must retain its compositor border")
+assert(not table.concat(wechat_image.tags, "\n"):find("float%-panel%-geometry%-slot%-v1%-"),
+  "application-specified placement must stay outside plugin geometry persistence")
 
 local dialog = persisted_window("0x5010", "DialogApp", 470, 230, 190, 130)
 native_semantics_by_address[dialog.address] = parent_semantics(nil, false)
@@ -982,6 +1003,7 @@ local policy_cases = {
   { "wayland", { found = true, xwayland = false, has_parent = false, transient = false, override_redirect = false, window_type = "wayland" }, "accept" },
   { "normal", { found = true, xwayland = true, has_parent = false, transient = false, override_redirect = false, window_type = "normal" }, "accept" },
   { "dialog", { found = true, xwayland = true, has_parent = false, transient = false, override_redirect = false, window_type = "dialog" }, "accept" },
+  { "app-placement", { found = true, xwayland = true, has_parent = false, transient = false, override_redirect = false, window_type = "normal", position_specified = true }, "reject" },
   { "parent", { found = true, xwayland = true, has_parent = true, transient = false, override_redirect = false, window_type = "normal" }, "reject" },
   { "transient", { found = true, xwayland = true, has_parent = false, transient = true, override_redirect = false, window_type = "normal" }, "reject" },
   { "override", { found = true, xwayland = true, has_parent = false, transient = false, override_redirect = true, window_type = "normal" }, "reject" },

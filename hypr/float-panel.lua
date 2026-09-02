@@ -100,6 +100,7 @@ local geometry_slot_tag_prefix = "float-panel-geometry-slot-v1-"
 local geometry_records = {}
 local geometry_claims = {}
 local geometry_window_claims = {}
+local float_workspace_rules = {}
 local reflow_anchors = {}
 local pending_startup_maximize = {}
 local opened_window_tokens = {}
@@ -214,6 +215,33 @@ local function workspace_float_enabled(workspace)
   return float_workspaces[workspace_key(workspace)] == true
 end
 
+local function workspace_rule_selector(name)
+  name = tostring(name or "")
+  if name:match("^%d+$") then return name end
+  return "name:" .. name
+end
+
+local function ensure_float_workspace_rule(name)
+  name = tostring(name or "")
+  if name == "" then return nil end
+  local rule = float_workspace_rules[name]
+  if rule then return rule end
+
+  rule = hl.window_rule({
+    name = "fatlj-float-workspace-" .. name,
+    enabled = float_workspaces[name] == true,
+    match = { workspace = workspace_rule_selector(name) },
+    float = true,
+  })
+  float_workspace_rules[name] = rule
+  return rule
+end
+
+local function set_float_workspace_rule(name, enabled)
+  local rule = ensure_float_workspace_rule(name)
+  if rule and type(rule.set_enabled) == "function" then rule:set_enabled(enabled == true) end
+end
+
 local function set_window_floating(window, enabled)
   if not window then return end
   hl.dispatch(hl.dsp.window.float({
@@ -278,6 +306,7 @@ local function toggle_workspace_mode(workspace, event)
   debug_window_action(event or "ui.toggle_mode", hl.get_active_window(), workspace, { enabled = enabled })
   if not enabled and persist_workspace_placements then persist_workspace_placements(workspace) end
   float_workspaces[key] = enabled or nil
+  set_float_workspace_rule(key, enabled)
   save_float_workspaces()
   apply_workspace_mode(workspace)
 
@@ -1118,6 +1147,7 @@ local geometry_window_semantics = {}
 -- The native bridge reports compositor facts only. Keep persistence policy in
 -- Lua so policy changes do not require rebuilding an ABI-coupled plugin.
 local function window_persistence_policy(semantics)
+  if semantics.position_specified == true then return false, "application-specified-placement" end
   if semantics.override_redirect == true then return false, "override-redirect" end
   if semantics.transient == true then return false, "transient" end
   if semantics.has_parent == true then return false, "has-parent" end
@@ -1468,6 +1498,9 @@ end
 
 load_float_workspaces()
 load_geometry_records()
+for name, enabled in pairs(float_workspaces) do
+  if enabled then ensure_float_workspace_rule(name) end
+end
 
 -- Process start ticks survive focus/Z-order changes and let the shell reconstruct
 -- launch order after its own restart without a separate ordering database.

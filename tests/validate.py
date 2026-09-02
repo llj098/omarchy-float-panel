@@ -134,6 +134,12 @@ lua = (ROOT / "hypr" / "float-panel.lua").read_text()
 for required in (
     'hl.on("window.open"',
     'hl.on("window.close"',
+    'float_workspace_rules = {}',
+    'name = "fatlj-float-workspace-" .. name',
+    'match = { workspace = workspace_rule_selector(name) }',
+    'float = true',
+    'rule:set_enabled(enabled == true)',
+    'set_float_workspace_rule(key, enabled)',
     'hl.on("hyprland.shutdown"',
     'hl.on("window.move_to_workspace"',
     'hl.on("workspace.move_to_monitor"',
@@ -210,6 +216,7 @@ for required in (
     'local function tag_auxiliary_window_no_border(window, semantics)',
     'window_persistence_semantics(window)',
     'local function window_persistence_policy(semantics)',
+    'if semantics.position_specified == true then return false, "application-specified-placement" end',
     'semantics.xwayland == false',
     'window_type == "normal" or window_type == "dialog"',
     'return false, "transient"',
@@ -386,7 +393,7 @@ native_makefile = (ROOT / "native" / "Makefile").read_text()
 assert "size_hint_rounding" not in native_makefile and "test-size-hint-rounding" not in native_makefile
 policy_tests = (ROOT / "tests" / "test_float_panel.lua").read_text()
 for policy_case in (
-    '"wayland"', '"normal"', '"dialog"', '"parent"', '"transient"',
+    '"wayland"', '"normal"', '"dialog"', '"app-placement"', '"parent"', '"transient"',
     '"override"', '"utility"', '"tooltip"', '"bridge-error"', '"not-found"',
 ):
     assert policy_case in policy_tests, f"Lua persistence policy matrix missing: {policy_case}"
@@ -394,7 +401,7 @@ assert "synthetic native bridge failure" in policy_tests
 assert "must fail closed without stripping an existing tag" in policy_tests
 
 assert 'mode = "maximized"' not in lua, "Float maximize must not use Hyprland's single fullscreen owner"
-assert "monocle" not in lua.lower() and "workspace_rule" not in lua, "geometry maximize must not change tiled layouts"
+assert "monocle" not in lua.lower() and "hl.workspace_rule(" not in lua, "geometry maximize must not change tiled layouts"
 assert 'workspace = next_workspace and "e+1" or "e-1"' not in lua, "cross-monitor workspace cycling must not break same-monitor boundary wrap"
 assert "hl.dsp.window.cycle_next" not in lua and "hl.dsp.window.bring_to_top" not in lua, "Super+Tab must remain workspace navigation in every mode"
 for forbidden in ("callLater", "Timer", "poll", "mouse_button"):
