@@ -21,6 +21,7 @@ debug_marker:close()
 local function window_semantics_bridge(address)
   table.insert(semantics_calls, address)
   local semantics = native_semantics_by_address[address]
+  local window = windows_by_address[address] or {}
   if semantics == "error" then error("synthetic native bridge failure") end
   return semantics or {
     found = true,
@@ -32,6 +33,8 @@ local function window_semantics_bridge(address)
     program_position = false,
     user_position = false,
     position_specified = false,
+    maximize_request_present = window.maximize_request_present == true,
+    maximize_requested = window.maximize_requested == true,
   }
 end
 
@@ -159,6 +162,7 @@ hl = {
   plugin = {
     load = function() end,
     float_panel = {
+      capabilities = function() return { maximize_request_event = true } end,
       window_semantics = window_semantics_bridge,
     },
   },
@@ -217,6 +221,7 @@ assert(#configs == 1 and configs[1].general.float_gaps == -1,
   "native floating work areas must inherit the configured outer gaps")
 assert(type(handlers["window.open"]) == "function")
 assert(type(handlers["window.close"]) == "function")
+assert(type(handlers["float_panel.maximize_request"]) == "function")
 assert(type(handlers["hyprland.shutdown"]) == "function")
 assert(type(handlers["window.move_to_workspace"]) == "function")
 assert(type(handlers["workspace.move_to_monitor"]) == "function")
@@ -814,6 +819,37 @@ local function parent_semantics(parent_address, position_specified)
   }
 end
 
+-- The native bridge forwards only the raw request. Lua owns all workspace,
+-- persistence, and geometry policy.
+local startup_max = persisted_window("0x5040", "StartupMaxApp", 210, 130, 280, 180)
+startup_max.maximize_request_present, startup_max.maximize_requested = true, true
+windows_by_address[startup_max.address] = startup_max
+handlers["window.open"](startup_max)
+assert(startup_max.at.x == 32 and startup_max.at.y == 62 and
+  startup_max.size.x == 946 and startup_max.size.y == 406 and geometric_tag(startup_max),
+  "a first-open Float window requesting maximize must use geometry maximize")
+handlers["window.close"](startup_max)
+
+local startup_false = persisted_window("0x5042", "StartupFalseApp", 215, 135, 285, 185)
+startup_false.maximize_request_present, startup_false.maximize_requested = true, false
+windows_by_address[startup_false.address] = startup_false
+handlers["window.open"](startup_false)
+assert(startup_false.at.x == 215 and startup_false.at.y == 135 and
+  startup_false.size.x == 285 and startup_false.size.y == 185 and not geometric_tag(startup_false),
+  "a false startup maximize fact must retain normal Float placement")
+handlers["window.close"](startup_false)
+
+local tiling_request = persisted_window("0x5041", "TilingMaxApp", 230, 140, 300, 190)
+tiling_request.workspace = ws2
+tiling_request.mapped = false
+handlers["float_panel.maximize_request"](tiling_request, true)
+tiling_request.mapped = true
+handlers["window.open"](tiling_request)
+assert(not tiling_request.floating and tiling_request.at.x == 230 and tiling_request.at.y == 140 and
+  tiling_request.size.x == 300 and tiling_request.size.y == 190 and not geometric_tag(tiling_request),
+  "a Tiling workspace must retain Omarchy maximize suppression")
+handlers["window.close"](tiling_request)
+
 -- A parented window without PPosition/USPosition is centered after its desired size is known.
 local centered = persisted_window("0x5002", "ChildApp", 80, 70, 200, 100)
 native_semantics_by_address[centered.address] = parent_semantics(parent.address, false)
@@ -874,11 +910,13 @@ assert(bridge_ok and bridge_failure.floating and bridge_failure.at.x == 480 and 
   "a native bridge error must fail safely without blocking normal Float placement")
 
 hl.plugin.float_panel.window_semantics = nil
+hl.plugin.float_panel.capabilities = nil
 dofile("hypr/float-panel.lua")
 local bridge_absent = persisted_window("0x5009", "BridgeAbsent", 490, 250, 170, 110)
 assert(pcall(handlers["window.open"], bridge_absent) and bridge_absent.floating,
   "an absent native bridge must fail safely")
 hl.plugin.float_panel.window_semantics = window_semantics_bridge
+hl.plugin.float_panel.capabilities = function() return { maximize_request_event = true } end
 dofile("hypr/float-panel.lua")
 
 -- A first-open record must capture the final post-fit application placement.
@@ -903,9 +941,13 @@ handlers["window.close"](saved)
 -- Reload the Lua module so restoration is proven from disk, not its old in-memory table.
 dofile("hypr/float-panel.lua")
 local reopened = persisted_window("0x1002", "PersistApp", 50, 70, 180, 120)
+reopened.mapped = false
+handlers["float_panel.maximize_request"](reopened, true)
+reopened.mapped = true
 handlers["window.open"](reopened)
-assert(reopened.at.x == 260 and reopened.at.y == 140 and reopened.size.x == 430 and reopened.size.y == 230,
-  "window.close/open must restore the final free geometry")
+assert(reopened.at.x == 260 and reopened.at.y == 140 and reopened.size.x == 430 and reopened.size.y == 230 and
+  not geometric_tag(reopened),
+  "saved geometry must win over an application's repeated startup maximize request")
 
 local edge_saved = persisted_window("0x1101", "EdgeApp", 548, 238, 430, 230)
 handlers["window.open"](edge_saved)

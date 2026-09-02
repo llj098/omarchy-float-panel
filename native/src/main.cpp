@@ -4,11 +4,15 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <src/desktop/state/WindowState.hpp>
 #include <src/desktop/view/Window.hpp>
+#include <src/event/EventBus.hpp>
 #include <src/plugins/PluginAPI.hpp>
+#include <src/protocols/XDGShell.hpp>
 #include <src/version.h>
 #include <src/xwayland/XWayland.hpp>
 
@@ -21,6 +25,14 @@ extern "C" {
 namespace {
 
 HANDLE pluginHandle = nullptr;
+
+using CustomEvent = Event::CEventBus::CCustomEvent;
+
+SP<CustomEvent>                                    maximizeRequestEvent;
+CHyprSignalListener                                windowCreateListener;
+CHyprSignalListener                                windowDestroyListener;
+std::unordered_map<uintptr_t, CHyprSignalListener> maximizeRequestListeners;
+std::unordered_map<uintptr_t, bool>               maximizeRequestFacts;
 
 std::string windowAddress(const PHLWINDOW& window) {
     return std::format("0x{:x}", reinterpret_cast<uintptr_t>(window.get()));
@@ -77,6 +89,40 @@ void setString(lua_State* state, const char* key, std::string_view value) {
     lua_setfield(state, -2, key);
 }
 
+void forwardMaximizeRequest(const PHLWINDOWREF& reference, const bool snapshot = false) {
+    const auto window = reference.lock();
+    if (!window || !maximizeRequestEvent)
+        return;
+
+    const auto request = window->m_isX11 && window->m_xwaylandSurface ? window->m_xwaylandSurface->m_state.requestsMaximize :
+                                                                      window->m_xdgSurface->m_toplevel->m_state.requestsMaximize;
+    if (!request.has_value() && !snapshot)
+        return;
+    if (request.has_value())
+        maximizeRequestFacts[reinterpret_cast<uintptr_t>(window.get())] = *request;
+
+    const auto result = maximizeRequestEvent->emit({PHLWINDOWREF(window), request.value_or(false)});
+    (void)result;
+}
+
+void trackMaximizeRequests(const PHLWINDOW& window) {
+    if (!window)
+        return;
+
+    const auto reference = PHLWINDOWREF(window);
+    const auto listener  = window->m_isX11 && window->m_xwaylandSurface ?
+         window->m_xwaylandSurface->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); }) :
+         window->m_xdgSurface->m_toplevel->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); });
+    maximizeRequestListeners[reinterpret_cast<uintptr_t>(window.get())] = listener;
+    forwardMaximizeRequest(reference, true);
+}
+
+int luaCapabilities(lua_State* state) {
+    lua_newtable(state);
+    setBoolean(state, "maximize_request_event", true);
+    return 1;
+}
+
 int luaWindowSemantics(lua_State* state) {
     const std::string_view address = luaL_checkstring(state, 1);
     const auto             window  = windowFromAddress(address);
@@ -98,8 +144,16 @@ int luaWindowSemantics(lua_State* state) {
 
     // Expose compositor facts only. Persistence and placement policies belong
     // to the Lua consumer so they can change without rebuilding this bridge.
+    const auto currentMaximizeRequest = window->m_isX11 && window->m_xwaylandSurface ? window->m_xwaylandSurface->m_state.requestsMaximize :
+                                                                                        window->m_xdgSurface->m_toplevel->m_state.requestsMaximize;
+    const auto capturedMaximizeRequest = maximizeRequestFacts.find(reinterpret_cast<uintptr_t>(window.get()));
+    const bool maximizeRequestPresent  = capturedMaximizeRequest != maximizeRequestFacts.end() || currentMaximizeRequest.has_value();
+    const bool maximizeRequested       = capturedMaximizeRequest != maximizeRequestFacts.end() ? capturedMaximizeRequest->second :
+                                                                                                  currentMaximizeRequest.value_or(false);
     setBoolean(state, "found", true);
     setBoolean(state, "xwayland", window->m_isX11);
+    setBoolean(state, "maximize_request_present", maximizeRequestPresent);
+    setBoolean(state, "maximize_requested", maximizeRequested);
     setBoolean(state, "has_parent", hasParent);
     if (parent)
         setString(state, "parent_address", windowAddress(parent));
@@ -125,18 +179,46 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "window_semantics", luaWindowSemantics))
         throw std::runtime_error("failed to register hl.plugin.float_panel.window_semantics");
+    if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "capabilities", luaCapabilities)) {
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        throw std::runtime_error("failed to register hl.plugin.float_panel.capabilities");
+    }
+
+    maximizeRequestEvent = makeShared<CustomEvent>(
+        "float_panel.maximize_request", std::vector{CustomEvent::TYPE_WINDOW, CustomEvent::TYPE_BOOL});
+    if (!HyprlandAPI::addEvent(handle, maximizeRequestEvent)) {
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        maximizeRequestEvent.reset();
+        throw std::runtime_error("failed to register float_panel.maximize_request");
+    }
+
+    windowCreateListener = Event::bus()->m_events.window.create.listen([](PHLWINDOW window) { trackMaximizeRequests(window); });
+    windowDestroyListener = Event::bus()->m_events.window.destroy.listen([](PHLWINDOWREF window) {
+        const auto key = reinterpret_cast<uintptr_t>(window.get());
+        maximizeRequestListeners.erase(key);
+        maximizeRequestFacts.erase(key);
+    });
 
     pluginHandle = handle;
     return {
         "float-panel-native",
-        "Read-only parent, transient, type, and position bridge for fatlj.float-panel",
+        "Raw window semantics and request bridge for fatlj.float-panel",
         "fatlj",
-        "0.4.0",
+        "0.5.0",
     };
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    if (pluginHandle)
+    windowCreateListener.reset();
+    windowDestroyListener.reset();
+    maximizeRequestListeners.clear();
+    maximizeRequestFacts.clear();
+    maximizeRequestEvent.reset();
+    if (pluginHandle) {
+        HyprlandAPI::removeEvent(pluginHandle, "float_panel.maximize_request");
+        HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "capabilities");
         HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "window_semantics");
+    }
     pluginHandle = nullptr;
 }

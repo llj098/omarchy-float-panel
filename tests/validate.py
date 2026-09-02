@@ -309,6 +309,11 @@ native_main = (ROOT / "native" / "src" / "main.cpp").read_text()
 for required in (
     "HyprlandAPI::addLuaFunction",
     '"float_panel", "window_semantics"',
+    '"float_panel", "capabilities"',
+    '"float_panel.maximize_request"',
+    "CustomEvent::TYPE_WINDOW",
+    "CustomEvent::TYPE_BOOL",
+    "m_state.requestsMaximize",
     "window->parent()",
     "m_transient",
     "m_atoms",
@@ -324,8 +329,10 @@ for raw_field in (
     '"position_specified"',
 ):
     assert raw_field in native_main, f"native metadata bridge missing raw fact: {raw_field}"
-assert native_main.count('removeLuaFunction(pluginHandle, "float_panel"') == 1, \
-    "the single read-only native binding must be removed on plugin exit"
+assert native_main.count('removeLuaFunction(pluginHandle, "float_panel"') == 2, \
+    "all native bridge bindings must be removed on plugin exit"
+assert 'removeEvent(pluginHandle, "float_panel.maximize_request")' in native_main, \
+    "the raw maximize event must be removed on plugin exit"
 for forbidden_native_effect in (
     "apply_xwayland_size_hints", "minSizeOverride", "maxSizeOverride", "PRIORITY_SET_PROP",
     "xwaylandSizeToReal", "xwayland_min_size", "xwayland_max_size", "size_hints_valid",
@@ -334,6 +341,17 @@ for forbidden_native_effect in (
         f"native bridge must remain read-only: {forbidden_native_effect}"
 assert "persistent_candidate" not in native_main and "persistentCandidate" not in native_main, \
     "native metadata bridge must not own persistence policy"
+for forbidden_native_policy in ("m_workspace", "workspaceFloatEnabled", "maximizeGeometricWindow", "geometryRecords"):
+    assert forbidden_native_policy not in native_main, \
+        f"native maximize bridge must not own Lua business policy: {forbidden_native_policy}"
+for required_lua_policy in (
+    'hl.on("float_panel.maximize_request"',
+    "pending_startup_maximize",
+    "persistence_eligible and not record",
+    "startup_maximize and maximize_geometric_window(window, workspace)",
+    'initial_placement = "app-maximized"',
+):
+    assert required_lua_policy in lua, f"Lua startup-maximize policy missing: {required_lua_policy}"
 assert not (ROOT / "native" / "src" / "window_policy.hpp").exists()
 assert not (ROOT / "native" / "tests" / "test_window_policy.cpp").exists()
 assert "wechat" not in native_main.lower() and "m_title" not in native_main, \

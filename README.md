@@ -61,7 +61,7 @@ Add the Hyprland integration near the end of `~/.config/hypr/hyprland.lua`, afte
 dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/hypr/float-panel.lua")
 ```
 
-`float-panel.lua` loads the bridge with Hyprland's native `hl.plugin.load()` API when the built `.so` exists. Its sole binding, `hl.plugin.float_panel.window_semantics(address)`, is read-only and returns compositor facts: XWayland and parent/transient/override/type state, concrete parent address, and ICCCM `program_position`/`user_position`. Lua owns all placement and persistence policy: it centers an unpositioned child over a resolvable parent and then runs the normal work-area fit. Explicitly positioned or parentless windows keep application placement. Missing or failing native reads degrade safely; persistence fails closed when semantics are unavailable.
+`float-panel.lua` loads the bridge with Hyprland's native `hl.plugin.load()` API when the built `.so` exists. `hl.plugin.float_panel.window_semantics(address)` is read-only and returns compositor facts: XWayland and parent/transient/override/type state, concrete parent address, ICCCM `program_position`/`user_position`, and the raw maximize request captured before Omarchy suppresses it. The bridge also exposes the raw `float_panel.maximize_request(window, bool)` custom event and a capability table. Lua owns all placement and persistence policy: it centers an unpositioned child over a resolvable parent and then runs the normal work-area fit. Explicitly positioned or parentless windows keep application placement. Missing or failing native reads degrade safely; persistence fails closed when semantics are unavailable.
 
 Lua also tags standard X11 auxiliary surfaces (`UTILITY`, tooltip, menu, popup/dropdown menu, or true override-redirect) and one tag-matched Hyprland rule disables their compositor border. This is application-independent and applies to existing and newly opened windows; ordinary `NORMAL` and `DIALOG` windows keep their border. Client-owned transparent shadow margins are not cropped or resized.
 
@@ -90,6 +90,8 @@ The set of floating workspace names is stored at:
 ```
 
 Deleting that file resets the remembered modes at the next Hyprland config reload. Switching to tiling deliberately tiles all normal windows on that workspace; it does not preserve per-window exceptions from before the toggle.
+
+On a Float workspace, a first-open application maximize request becomes the existing non-fullscreen geometry maximize only when that window has no saved placement. A saved free/half/max placement always wins, and Tiling workspaces retain Omarchy's normal maximize suppression.
 
 Float-window placement is stored atomically at:
 
