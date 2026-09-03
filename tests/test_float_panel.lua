@@ -1183,6 +1183,60 @@ assert(anchor_window.at.x == 678 and anchor_window.at.y == 268 and
   anchor_window.size.x == 300 and anchor_window.size.y == 200,
   "large-small-large/source round trips must reproduce the immutable anchor box")
 
+-- Hyprland also translates floating windows when one monitor keeps its name
+-- but its logical coordinates change. That translation must preserve prev;
+-- any extra user/application delta must still rebase prev after translation is
+-- removed from the observed box.
+local staged_monitor = {
+  id = 5, name = "staged", x = 1920, y = 0,
+  width = own_monitor.width, height = own_monitor.height,
+  scale = own_monitor.scale, transform = own_monitor.transform,
+  reserved = { left = 10, right = 20, top = 30, bottom = 40 },
+}
+local same_name_window = persisted_window("0xsamename", "SameNameApp", 300, 200, 400, 200)
+ws1.monitor, ws1.windows = own_monitor, { same_name_window }
+handlers["window.open"](same_name_window)
+-- First migrate from the source monitor to the temporarily right-positioned
+-- monitor. Hyprland has already translated the live box before this event.
+same_name_window.monitor, ws1.monitor = staged_monitor, staged_monitor
+same_name_window.at = { x = 2210, y = 180 }
+handlers["workspace.move_to_monitor"](ws1, staged_monitor)
+assert(same_name_window.at.x == 2210 and same_name_window.at.y == 180 and
+  same_name_window.size.x == 400 and same_name_window.size.y == 200,
+  "initial migration must preserve the source-relative free geometry")
+
+-- The same monitor then moves from x=1920 to x=0 and Hyprland translates the
+-- window by -1920 before monitor.layout_changed.
+staged_monitor.x = 0
+same_name_window.at = { x = 290, y = 180 }
+handlers["monitor.layout_changed"]()
+assert(same_name_window.at.x == 290 and same_name_window.at.y == 180 and
+  same_name_window.size.x == 400 and same_name_window.size.y == 200,
+  "same-name monitor translation must not rebase the immutable prev")
+
+-- Returning the same monitor to x=1920 must reproduce the prior target box.
+staged_monitor.x = 1920
+same_name_window.at = { x = 2210, y = 180 }
+handlers["monitor.layout_changed"]()
+assert(same_name_window.at.x == 2210 and same_name_window.at.y == 180 and
+  same_name_window.size.x == 400 and same_name_window.size.y == 200,
+  "same-name monitor coordinate round trips must not drift")
+
+-- A real +100 edit before the next system translation remains after removing
+-- that translation and becomes the new prev.
+same_name_window.at = { x = 2310, y = 180 }
+staged_monitor.x = 0
+same_name_window.at = { x = 390, y = 180 }
+handlers["monitor.layout_changed"]()
+assert(same_name_window.at.x == 390 and same_name_window.at.y == 180,
+  "same-name translation must retain a genuine pre-translation edit")
+staged_monitor.x = 1920
+same_name_window.at = { x = 2310, y = 180 }
+handlers["monitor.layout_changed"]()
+assert(same_name_window.at.x == 2310 and same_name_window.at.y == 180 and
+  same_name_window.size.x == 400 and same_name_window.size.y == 200,
+  "returning after a genuine edit must restore the rebased prev exactly")
+
 -- The same source anchor follows a window while it is minimized; neither that
 -- special-workspace reflow nor shutdown persistence may rebase it.
 local minimized_anchor = persisted_window("0xanchor2", "MinimizedAnchorApp", 678, 268, 300, 200)

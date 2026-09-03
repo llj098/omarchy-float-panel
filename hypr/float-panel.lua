@@ -726,11 +726,11 @@ local function side_intent_still_managed(window, side)
     ((current_x == side.x and current_y == side.y) or (current_x == translated_x and current_y == translated_y))
 end
 
--- Where a box would be after Hyprland moves a workspace to another monitor:
--- the window is shifted by the monitor origin delta. Same-name monitor (layout
--- change) does not translate windows, so the box is returned unchanged.
+-- Where a box would be after Hyprland moves a monitor or a workspace: the
+-- window is shifted by the monitor coordinate delta, even when the monitor
+-- keeps the same name.
 local function monitor_translated_box(box, from_monitor, to_monitor)
-  if not box or not from_monitor or not to_monitor or not from_monitor.name or from_monitor.name == to_monitor.name then
+  if not box or not from_monitor or not to_monitor then
     return box and { x = box.x, y = box.y, width = box.width, height = box.height } or nil
   end
   local from_x = math.floor(tonumber(from_monitor.x) or 0)
@@ -834,12 +834,9 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
         -- rebuild the anchor in the source-monitor context so the edited
         -- proportions and position become the next reflow source and returning
         -- to the source monitor restores the edited box exactly.
-        local edited_box = before
-        if anchor.last_monitor.name ~= target_monitor.name then
-          local delta_x = math.floor(tonumber(target_monitor.x) or 0) - math.floor(tonumber(anchor.last_monitor.x) or 0)
-          local delta_y = math.floor(tonumber(target_monitor.y) or 0) - math.floor(tonumber(anchor.last_monitor.y) or 0)
-          edited_box = { x = before.x - delta_x, y = before.y - delta_y, width = before.width, height = before.height }
-        end
+        local delta_x = math.floor(tonumber(target_monitor.x) or 0) - math.floor(tonumber(anchor.last_monitor.x) or 0)
+        local delta_y = math.floor(tonumber(target_monitor.y) or 0) - math.floor(tonumber(anchor.last_monitor.y) or 0)
+        local edited_box = { x = before.x - delta_x, y = before.y - delta_y, width = before.width, height = before.height }
         anchor = rebase_reflow_anchor_from(window, edited_box,
           anchor.last_bounds or bounds, anchor.last_monitor, source_workspace)
       end
