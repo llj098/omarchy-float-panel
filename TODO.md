@@ -1,5 +1,27 @@
 # TODO
 
+## Preserve free-window anchors through staged monitor reconfiguration
+
+**Status:** Known bug, blocked by the target Hyprland `0.56.2-1` Lua API. Do not fix this by inferring the source of a geometry change from its final coordinates. The project will not add a native function hook for this case.
+
+### Problem
+
+During monitor disconnect, reconnect, or another staged layout change, a monitor can keep the same name while its logical origin changes. Hyprland's `CMonitor::moveTo()` translates mapped floating windows by that origin delta before emitting `monitor.layout_changed`. Workspace migration similarly translates its floating windows before emitting `workspace.move_to_monitor`.
+
+Float Panel therefore observes only the resulting geometry. Its current reflow logic assumes that a same-name monitor did not translate the window. It can consequently mistake Hyprland's automatic translation for a real user or application move, replace the immutable pre-reflow anchor with a temporary destination-monitor state, and lose the original geometry. When the original work area returns, an ordinary free-floating window can then be restored from the wrong proportions—for example, the observed Alacritty case returned as `1340×1300` instead of its original `853×945`.
+
+Managed left/right and geometric-max placements are recomputed from their explicit intent and are not the affected free-window case.
+
+### Verified blocker
+
+Hyprland `0.56.2` exposes neither a pre-translation monitor/workspace event nor a window move/resize event carrying the change source to Lua. Both available reflow events are post-change. Upstream still tracks the missing Lua move/resize notification as [Hyprland discussion #15519](https://github.com/hyprwm/Hyprland/discussions/15519); the automatic monitor-origin translation was introduced deliberately by [Hyprland PR #14928](https://github.com/hyprwm/Hyprland/pull/14928).
+
+Once the post-change geometry is observed, a compositor translation and a user/application change can produce the same state. Coordinate comparison therefore cannot distinguish them reliably. A correct implementation requires an upstream source-tagged/pre-change event, a Hyprland source change, or native hooks around the exact compositor adjustment paths. Those options are currently unavailable or deliberately out of scope; polling, delays, input interception, and application-specific exceptions remain prohibited.
+
+### Acceptance condition for a future fix
+
+A future implementation must receive an explicit compositor-origin fact before geometry is changed, preserve the old anchor throughout every intermediate layout stage, still invalidate it after a genuine user/application edit, and restore the exact original geometry when the original work area returns. The regression test must include a same-name monitor whose logical origin changes while Hyprland translates the floating window.
+
 ## Keep floating windows inside the workspace work area
 
 **Status:** Blocked by the target Hyprland `0.56.2-1` API. Do not emulate this with polling or global mouse-release interception.
