@@ -171,7 +171,50 @@ function descriptor(values) {
   }))[0]
   const decision = context.actionForGroup(group)
   assert.equal(decision.action, "focus")
-  assert.equal(decision.target.address, "a", "focus outside the group must enter the ring at A")
+  assert.equal(decision.target.address, "a", "without a live snapshot, focus outside the group must enter the ring at A")
+}
+
+{
+  const group = context.groupToplevels([top("old"), top("recent")], [], descriptor({
+    old: { appId: "same.app", order: 10, activated: true },
+    recent: { appId: "same.app", order: 20 }
+  }))[0]
+  const decision = context.actionForGroup(group, [
+    { address: "0xold", focusHistoryID: 5 },
+    { address: "0xrecent", focusHistoryID: 1 },
+    { address: "0xother", focusHistoryID: 0 }
+  ])
+  assert.equal(decision.action, "focus")
+  assert.equal(decision.target.address, "recent",
+    "focus outside the group must enter at its live most-recent window, not stale activation or launch order")
+  assert.equal(decision.cycleStart, "recent")
+
+  const second = context.actionForGroup(group, [
+    { address: "0xold", focusHistoryID: 2 },
+    { address: "0xrecent", focusHistoryID: 0 }
+  ], decision.cycleStart)
+  assert.equal(second.action, "focus")
+  assert.equal(second.target.address, "old", "the second click must visit the other window before NONE")
+
+  const third = context.actionForGroup(group, [
+    { address: "0xold", focusHistoryID: 0 },
+    { address: "0xrecent", focusHistoryID: 1 }
+  ], decision.cycleStart)
+  assert.equal(third.action, "hide-all", "the MRU-rotated ring must reach NONE only after every window")
+  assert.equal(third.cycleComplete, true)
+}
+
+{
+  const group = context.groupToplevels([top("a"), top("b")], [], descriptor({
+    a: { appId: "same.app", order: 10 },
+    b: { appId: "same.app", order: 20 }
+  }))[0]
+  const decision = context.actionForGroup(group, [
+    { address: "0xa", focusHistoryID: 0 },
+    { address: "0xb", focusHistoryID: 2 }
+  ])
+  assert.equal(decision.action, "focus")
+  assert.equal(decision.target.address, "b", "an active group must continue its stable A-to-B ring")
 }
 
 {

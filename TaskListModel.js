@@ -192,33 +192,73 @@ function listSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) {
   return items
 }
 
-function actionForGroup(group) {
+function actionForGroup(group, liveClients, cycleStartAddress) {
   if (!group || !group.windows || group.windows.length === 0) return null
 
   var windows = group.windows
   if (group.allMinimized)
-    return { action: "restore", target: windows[0] }
+    return { action: "restore", target: windows[0], cycleStart: windows[0].address }
+
+  var liveByAddress = {}
+  var clients = liveClients || []
+  for (var i = 0; i < clients.length; i++) {
+    var client = clients[i] || {}
+    var address = stringValue(client.address).replace(/^0x/, "").toLowerCase()
+    if (address) liveByAddress[address] = client
+  }
+
+  function liveClient(item) {
+    return liveByAddress[stringValue(item.address).replace(/^0x/, "").toLowerCase()] || null
+  }
+
+  var cycleStart = stringValue(cycleStartAddress)
+  var cycleStartIndex = -1
+  for (var j = 0; j < windows.length; j++) {
+    if (stringValue(windows[j].address) === cycleStart) {
+      cycleStartIndex = j
+      break
+    }
+  }
+  var ring = cycleStartIndex > 0
+    ? windows.slice(cycleStartIndex).concat(windows.slice(0, cycleStartIndex))
+    : windows
 
   var activeIndex = -1
-  for (var i = 0; i < windows.length; i++) {
-    if (windows[i].activated && !windows[i].minimized) {
-      activeIndex = i
+  for (var k = 0; k < ring.length; k++) {
+    var live = liveClient(ring[k])
+    var activated = clients.length > 0 ? (live && Number(live.focusHistoryID) === 0) : ring[k].activated
+    if (activated && !ring[k].minimized) {
+      activeIndex = k
       break
     }
   }
 
   if (activeIndex >= 0) {
-    if (activeIndex === windows.length - 1)
-      return { action: "hide-all", targets: windows.slice() }
+    if (activeIndex === ring.length - 1)
+      return { action: "hide-all", targets: windows.slice(), cycleComplete: true }
 
-    var next = windows[activeIndex + 1]
+    var next = ring[activeIndex + 1]
     return { action: next.minimized ? "restore" : "focus", target: next }
   }
 
-  for (var j = 0; j < windows.length; j++) {
-    if (!windows[j].minimized)
-      return { action: "focus", target: windows[j] }
+  var mostRecent = null
+  var mostRecentRank = null
+  for (var n = 0; n < windows.length; n++) {
+    if (windows[n].minimized) continue
+    var candidate = liveClient(windows[n])
+    var rank = candidate ? switcherMru(candidate.focusHistoryID) : null
+    if (rank !== null && (mostRecentRank === null || rank < mostRecentRank)) {
+      mostRecent = windows[n]
+      mostRecentRank = rank
+    }
+  }
+  if (mostRecent)
+    return { action: "focus", target: mostRecent, cycleStart: mostRecent.address }
+
+  for (var p = 0; p < windows.length; p++) {
+    if (!windows[p].minimized)
+      return { action: "focus", target: windows[p], cycleStart: windows[p].address }
   }
 
-  return { action: "restore", target: windows[0] }
+  return { action: "restore", target: windows[0], cycleStart: windows[0].address }
 }

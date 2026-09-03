@@ -17,6 +17,10 @@ BarWidget {
     readonly property var minimizedWorkspace: findWorkspaceByName(minimizedWorkspaceName)
     property var floatWorkspaceNames: ({})
     property bool debugEnabled: false
+    property bool clientsRequestPending: false
+    property var pendingActivationGroup: null
+    property string pendingWorkspaceName: ""
+    property var groupCycleStarts: ({})
     readonly property string widgetMode: settings && settings.mode ? String(settings.mode) : "Task List"
     readonly property bool toggleWidget: widgetMode === "Float Toggle"
     readonly property bool regularWorkspace: workspace && workspace.id > 0
@@ -147,12 +151,52 @@ BarWidget {
     }
 
     function activateGroup(group) {
+        if (!workspace || !group || clientsRequestPending)
+            return ;
+
+        pendingActivationGroup = group;
+        pendingWorkspaceName = String(workspace.name || "");
+        clientsRequestPending = true;
+        clientsSocket.connected = true;
+    }
+
+    function acceptClientsResponse(text) {
+        if (!clientsRequestPending)
+            return ;
+
+        var clients;
+        try {
+            clients = JSON.parse(String(text || ""));
+        } catch (error) {
+            return ;
+        }
+        if (!Array.isArray(clients))
+            return ;
+
+        var group = pendingActivationGroup;
+        var sourceName = pendingWorkspaceName;
+        clientsRequestPending = false;
+        pendingActivationGroup = null;
+        pendingWorkspaceName = "";
+        clientsSocket.connected = false;
+        if (!workspace || String(workspace.name || "") !== sourceName)
+            return ;
+
+        activateGroupFromClients(group, clients);
+    }
+
+    function activateGroupFromClients(group, clients) {
         if (!workspace || !group)
             return ;
 
-        var decision = TaskListModel.actionForGroup(group);
+        var groupKey = String(group.key || "");
+        var decision = TaskListModel.actionForGroup(group, clients, groupCycleStarts[groupKey]);
         if (!decision || !decision.action)
             return ;
+        if (decision.cycleComplete)
+            delete groupCycleStarts[groupKey];
+        else if (decision.cycleStart)
+            groupCycleStarts[groupKey] = String(decision.cycleStart);
 
         var sourceName = String(workspace.name || "");
         var destination = workspaceSelector(workspace);
@@ -200,6 +244,28 @@ BarWidget {
         // Reconcile after every click so a dead compositor address cannot
         // remain as an inert TaskList icon.
         Hyprland.refreshToplevels();
+    }
+
+    Socket {
+        id: clientsSocket
+        path: Hyprland.requestSocketPath
+        connected: false
+        onConnectionStateChanged: {
+            if (connected && root.clientsRequestPending) {
+                write("j/clients");
+                flush();
+            }
+        }
+        onError: {
+            root.clientsRequestPending = false;
+            root.pendingActivationGroup = null;
+            root.pendingWorkspaceName = "";
+            connected = false;
+        }
+        parser: StdioCollector {
+            waitForEnd: false
+            onDataChanged: root.acceptClientsResponse(text)
+        }
     }
 
     FileView {
