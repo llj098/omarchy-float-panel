@@ -1628,8 +1628,14 @@ hl.on("window.move_to_workspace", function(window, workspace)
       (anchor and workspace_selector(workspace) == anchor.source_workspace)
     set_window_floating(window, float_enabled)
     release_geometry_slot(window, true)
-    if float_enabled then claim_geometry_slot(window, workspace) end
-    if not returning_to_source then clear_reflow_anchor(window) end
+    if float_enabled then
+      claim_geometry_slot(window, workspace)
+      if not returning_to_source then
+        rebase_reflow_anchor(window, window.monitor, nil, workspace)
+      end
+    elseif not returning_to_source then
+      clear_reflow_anchor(window)
+    end
   elseif metadata or side then
     set_window_floating(window, true)
   end
