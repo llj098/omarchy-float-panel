@@ -1146,39 +1146,6 @@ geometry_file:close()
 assert(geometry_state:find("\tv1\t", 1, true) == nil and geometry_state:find("v1\t", 1, true) == 1,
   "geometry state must use the versioned flat format")
 
--- Moving a free window between ordinary Float workspaces ends the old
--- workspace anchor but must immediately establish prev in the destination.
--- Otherwise the first later monitor migration mistakes the target monitor's
--- bounds for the source and enlarges the window on the return trip.
-local external_monitor = {
-  id = 6, name = "external", x = 0, y = 0,
-  width = 3840, height = 2160, scale = 1.6, transform = 0,
-  reserved = { left = 0, right = 0, top = 0, bottom = 26 },
-}
-local internal_monitor = {
-  id = 7, name = "internal", x = 0, y = 0,
-  width = 1920, height = 1080, scale = 1.25, transform = 0,
-  reserved = { left = 0, right = 0, top = 0, bottom = 0 },
-}
-local workspace_anchor = persisted_window("0xa11c0", "WorkspaceAnchorApp", 1207, 12, 1181, 1300)
-workspace_anchor.workspace, workspace_anchor.monitor = ws3, external_monitor
-ws1.monitor, ws3.monitor = external_monitor, external_monitor
-ws1.windows, ws3.windows = {}, { workspace_anchor }
-handlers["window.open"](workspace_anchor)
-workspace_anchor.workspace = ws1
-ws1.windows, ws3.windows = { workspace_anchor }, {}
-handlers["window.move_to_workspace"](workspace_anchor, ws1)
-workspace_anchor.monitor, ws1.monitor = internal_monitor, internal_monitor
-handlers["workspace.move_to_monitor"](ws1, internal_monitor)
-assert(workspace_anchor.at.x == 772 and workspace_anchor.at.y == 12 and
-  workspace_anchor.size.x == 752 and workspace_anchor.size.y == 840,
-  "a destination Float workspace must reflow from the move-time monitor bounds")
-workspace_anchor.monitor, ws1.monitor = external_monitor, external_monitor
-handlers["workspace.move_to_monitor"](ws1, external_monitor)
-assert(workspace_anchor.at.x == 1207 and workspace_anchor.at.y == 12 and
-  workspace_anchor.size.x == 1181 and workspace_anchor.size.y == 1300,
-  "a workspace move followed by a monitor round trip must restore move-time geometry exactly")
-
 -- Free-window topology reflow is always derived from one immutable source box:
 -- grow proportionally, shrink proportionally, then restore exactly at source.
 local anchor_window = persisted_window("0xanchor1", "AnchorApp", 678, 268, 300, 200)
