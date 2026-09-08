@@ -256,8 +256,10 @@ assert(type(handlers["workspace.move_to_monitor"]) == "function")
 assert(type(handlers["monitor.layout_changed"]) == "function")
 assert(type(handlers["layer.opened"]) == "function")
 assert(handlers["workspace.work_area_changed"] == nil)
-assert(handlers["monitor.removed"] == nil,
-  "monitor removal is too broad; migrated workspace geometry must use the authoritative workspace event")
+local before_removal_observation = #dispatched
+handlers["monitor.removed"](own_monitor)
+assert(#dispatched == before_removal_observation,
+  "monitor removal diagnostics must not apply geometry; workspace event remains authoritative")
 assert(#window_rules == 1, "only the auxiliary no-border rule must be installed")
 local auxiliary_rule = window_rules[1]
 assert(auxiliary_rule and auxiliary_rule.border_size == 0 and
@@ -1430,7 +1432,11 @@ do
   assert(saved_file():find("\t330\t150\t350\t200\t", 1, true), "persistence observes final native geometry")
   local after_file, after_logs = saved_file(), #journal_lines
   handlers["float_panel.drag"](edited, "end", "move", "real")
-  assert(saved_file() == after_file and #journal_lines == after_logs, "duplicate end cannot accept twice")
+  assert(saved_file() == after_file, "duplicate end cannot accept twice")
+  for i = after_logs + 1, #journal_lines do
+    assert(not journal_lines[i]:find("drag.accept", 1, true) and not journal_lines[i]:find("record.write", 1, true),
+      "duplicate raw end may be logged but cannot accept or save twice")
+  end
 
   -- Explicit prev is now the real final box: mapping out and back restores it.
   ws2.monitor, edited.monitor = grow_monitor, grow_monitor
@@ -1473,6 +1479,44 @@ do
   local before_close = saved_file()
   handlers["window.close"](edited)
   assert(not decorations[edited.address] and saved_file() == before_close, "close during input must not accept/persist intermediate edit")
+end
+
+-- Full diagnostics remain observational, stable-identity based and content-safe.
+do
+  local probe = persisted_window("0xdiag", "DiagnosticProbe", 200, 150, 300, 180)
+  probe.visible, probe.stable_id = true, 91001
+  probe.title, probe.initial_title = "DO_NOT_LOG_TITLE_SECRET", "DO_NOT_LOG_INITIAL_TITLE_SECRET"
+  probe.xdg_tag = "DO_NOT_LOG_ROLE_SECRET"
+  handlers["window.open"](probe)
+  handlers["float_panel.drag"](probe, "begin", "move", "diagnostic-sequence")
+  probe.at = { x = 250, y = 200 }
+  handlers["float_panel.drag"](probe, "end", "move", "diagnostic-sequence")
+  handlers["window.close"](probe)
+  local actions = #dispatched
+  handlers["window.destroy"](probe)
+  assert(#dispatched == actions, "destroy diagnostics must not mutate policy")
+  local lines = table.concat(journal_lines, "\n")
+  for _, field in ipairs({ "diagnostics.begin", "stable_id=91001", "reason=window.open", "reason=window.close",
+    "reason=drag.accept", "prev_before=", "prev_after=", "rebases=", "requests=resize:",
+    "record.restore", "record.write", "record.flush", "basis=prev", "basis=current-mismatch",
+    "event.window_destroy", "event.drag_before", "event.drag_after", "drag_sequence=diagnostic-sequence" }) do
+    assert(lines:find(field, 1, true), "missing diagnostic contract: " .. field)
+  end
+  for _, secret in ipairs({ probe.title, probe.initial_title, probe.xdg_tag }) do
+    local encoded = secret:gsub(".", function(c) return string.format("%02x", c:byte()) end)
+    assert(not lines:find(secret, 1, true) and not lines:find(encoded, 1, true), "diagnostics must not expose content/roles")
+  end
+  assert(not lines:find("reason=unspecified", 1, true), "every prev mutation must name its call site")
+  local per_run = {}
+  for _, line in ipairs(journal_lines) do
+    local run, seq = line:match(" run=([^ ]+)"), tonumber(line:match(" seq=(%d+)"))
+    assert(run and seq and seq > (per_run[run] or 0), "diagnostic ordering must survive journal batching")
+    per_run[run] = seq
+  end
+  os.remove((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-debug")
+  local before = #journal_lines
+  dofile("hypr/float-panel.lua")
+  assert(#journal_lines == before, "marker-off must disable all added diagnostic output")
 end
 
 print("LUA_TESTS_OK")

@@ -240,7 +240,7 @@ for required in (
     'window.initial_class',
     'window.xdg_tag',
     'load_geometry_records()',
-    'save_geometry_records()',
+    'save_geometry_records(reason)',
     'claim_geometry_slot(window, workspace)',
     'local debug_sink = rawget(_G, "FLOAT_PANEL_DEBUG_SINK")',
     'local parts = { "[fatlj.float-panel]", tostring(event) }',
@@ -255,8 +255,15 @@ for required in (
     'debug_log("event.work_area_changed"',
     'monitor_bounds_cache = {}',
     'update_monitor_bounds_cache(monitor)',
-    'debug_window_action("reflow.window"',
-    'if not debug_enabled or not trigger or boxes_equal(old_box, new_box) then return end',
+    'debug_window_action(trigger and "reflow.window" or "geometry.fit"',
+    'if boxes_equal(old_box, new_box) and not bounds_changed then',
+    'fields.stable_id = window and window.stable_id',
+    'prev_before = format_anchor(before)',
+    '"reflow.geometry-mismatch"',
+    '"reflow.side-invalid"',
+    '"event.window_destroy"',
+    '"event.drag_before"',
+    '"record.write"',
     'window_side_intent(window)',
     'side_geometry(side.side, window.monitor)',
     'update_side_intent(window, workspace, side, geometry)',
@@ -275,7 +282,8 @@ for required in (
     'config_gap("general.float_gaps")',
     'config_gap("general.gaps_out")',
     "relative = true",
-    "hl.dsp.window.resize",
+    'geometry_dispatch("resize"',
+    'hl.dispatch(hl.dsp.window[kind](params))',
     'semantics.parent_address',
     'semantics.position_specified == true',
     'semantics.program_position == true',
@@ -339,9 +347,12 @@ assert lua.count('hl.on("workspace.move_to_monitor"') == 1
 assert lua.count('hl.on("monitor.layout_changed"') == 1
 assert lua.count('hl.on("layer.opened"') == 1
 assert 'hl.on("workspace.work_area_changed"' not in lua
-assert 'hl.on("monitor.removed"' not in lua
-for forbidden_event in ('layer.closed', 'config.props_refreshed'):
-    assert f'hl.on("{forbidden_event}"' not in lua, "layout repair must not stitch unrelated events"
+assert lua.count('hl.on("monitor.removed"') == 1
+assert 'hl.on("monitor.removed", function(monitor) debug_monitor("event.monitor_removed", monitor) end)' in lua
+assert lua.count('hl.on("layer.closed"') == 1
+assert 'hl.on("layer.closed", function(layer)\n  debug_monitor("event.layer_closed_observation", layer and layer.monitor)\nend)' in lua, \
+    "layer close diagnostics must only observe, never run layout repair"
+assert 'hl.on("config.props_refreshed"' not in lua, "layout repair must not stitch unrelated events"
 assert not (ROOT / "patches" / "hyprland-0.56.2-work-area-event.patch").exists(), \
     "the plugin must not require a custom Hyprland build"
 native_main = (ROOT / "native" / "src" / "main.cpp").read_text()

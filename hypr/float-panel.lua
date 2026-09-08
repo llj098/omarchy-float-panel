@@ -52,9 +52,14 @@ local function debug_flag_enabled()
 end
 
 local debug_enabled = debug_flag_enabled()
+local debug_run = tostring(os.time()) .. "-" .. tostring(math.floor(os.clock() * 1000000))
+local debug_sequence = 0
 
 local function debug_log(event, fields)
   if not debug_enabled then return end
+  debug_sequence = debug_sequence + 1
+  fields = fields or {}
+  fields.run, fields.seq = debug_run, debug_sequence
 
   local parts = { "[fatlj.float-panel]", tostring(event) }
   local keys = {}
@@ -105,6 +110,8 @@ local reflow_anchors = {}
 local monitor_bounds_cache = {}
 local pending_startup_maximize = {}
 local opened_window_tokens = {}
+local debug_window_details
+local geometry_dispatch
 local drag_strip
 local function reconcile_drag_strip(window)
   if drag_strip then drag_strip.reconcile(window) end
@@ -249,10 +256,10 @@ end
 
 local function set_window_floating(window, enabled)
   if not window then return end
-  hl.dispatch(hl.dsp.window.float({
+  geometry_dispatch("float", {
     action = enabled and "on" or "off",
     window = window,
-  }))
+  }, "set-floating")
 end
 
 local apply_workspace_mode
@@ -280,6 +287,9 @@ local function debug_window_action(event, window, workspace, fields)
   local focused_monitor = hl.get_active_monitor()
   fields = fields or {}
   fields.window = window and window.address or "nil"
+  fields.stable_id = window and window.stable_id or "nil"
+  fields.pid = window and window.pid or "nil"
+  if debug_window_details then debug_window_details(window, fields) end
   fields.window_workspace = workspace and workspace.name or "nil"
   fields.window_monitor = window and window.monitor and window.monitor.name or "nil"
   fields.focused_workspace = focused_workspace and focused_workspace.name or "nil"
@@ -299,6 +309,10 @@ local function debug_window_geometry(event, window, workspace, fields)
   fields.width = size and size.x or "nil"
   fields.height = size and size.y or "nil"
   fields.floating = window and window.floating == true or false
+  fields.mapped = window and window.mapped == true or false
+  fields.hidden = window and window.hidden == true or false
+  fields.visible = window and window.visible == true or false
+  fields.fullscreen = window and window.fullscreen or "nil"
   fields.xwayland = window and window.xwayland == true or false
   debug_window_action(event, window, workspace, fields)
 end
@@ -338,11 +352,11 @@ local function minimize_active_window()
   if not workspace_is_regular(workspace) then return end
 
   local minimized_workspace = "special:omarchy-minimized-" .. tostring(workspace.id)
-  hl.dispatch(hl.dsp.window.move({
+  geometry_dispatch("move", {
     workspace = minimized_workspace,
     follow = false,
     window = window,
-  }))
+  }, "minimize")
 end
 
 local function monitor_work_area(monitor)
@@ -596,7 +610,7 @@ if native_maximize_request_event then
     if not token then return end
     if opened_window_tokens[token] then return end
     pending_startup_maximize[token] = requested == true
-    debug_log("event.maximize_request", { window = token, requested = requested == true })
+    debug_window_action("event.maximize_request", window, window.workspace, { requested = requested == true })
   end)
 end
 
@@ -632,9 +646,36 @@ local function monitor_snapshot(monitor)
   } or nil
 end
 
+local function format_bounds(bounds)
+  if not bounds then return "nil" end
+  return table.concat({ bounds.left, bounds.top, bounds.width, bounds.height }, ",")
+end
+
+local function format_box(box)
+  if not box then return "nil" end
+  return table.concat({ box.x, box.y, box.width, box.height }, ",")
+end
+
+local function format_anchor(anchor)
+  if not anchor then return "nil" end
+  local monitor = anchor.source_monitor or {}
+  return format_box(anchor.original_box) .. "@" .. format_bounds(anchor.source_bounds) .. "@" ..
+    tostring(monitor.name) .. ":" .. tostring(monitor.x) .. "," .. tostring(monitor.y) .. "@" .. tostring(anchor.source_workspace)
+end
+
+local function debug_anchor_change(window, before, after, reason, trace)
+  if not debug_enabled or format_anchor(before) == format_anchor(after) then return end
+  local fields = { reason = reason or "unspecified", prev_before = format_anchor(before), prev_after = format_anchor(after) }
+  if trace then
+    table.insert(trace.rebases, fields.reason .. ":" .. fields.prev_before .. ">" .. fields.prev_after)
+  else
+    debug_window_action(after and "anchor.write" or "anchor.clear", window, window and window.workspace, fields)
+  end
+end
+
 -- Original/source/placement fields stay immutable between explicit rebases;
 -- topology reflow updates only the observed last-applied state.
-local function rebase_reflow_anchor_from(window, box, bounds, monitor, source_workspace)
+local function rebase_reflow_anchor_from(window, box, bounds, monitor, source_workspace, reason, trace)
   local token = geometry_window_token(window)
   bounds = bounds or floating_window_bounds(monitor or (window and window.monitor or nil))
   monitor = monitor or (window and window.monitor or nil)
@@ -662,17 +703,21 @@ local function rebase_reflow_anchor_from(window, box, bounds, monitor, source_wo
     last_bounds = copy_bounds(bounds),
     last_monitor = monitor_snapshot(monitor),
   }
+  local previous = reflow_anchors[token]
   reflow_anchors[token] = anchor
+  debug_anchor_change(window, previous, anchor, reason, trace)
   return anchor
 end
 
-local function rebase_reflow_anchor(window, monitor, bounds, source_workspace)
-  return rebase_reflow_anchor_from(window, window_box(window), bounds, monitor, source_workspace)
+local function rebase_reflow_anchor(window, monitor, bounds, source_workspace, reason, trace)
+  return rebase_reflow_anchor_from(window, window_box(window), bounds, monitor, source_workspace, reason, trace)
 end
 
-local function clear_reflow_anchor(window)
+local function clear_reflow_anchor(window, reason)
   local token = geometry_window_token(window)
+  local previous = token and reflow_anchors[token] or nil
   if token then reflow_anchors[token] = nil end
+  debug_anchor_change(window, previous, nil, reason)
 end
 
 local function reflow_anchor(window)
@@ -680,25 +725,61 @@ local function reflow_anchor(window)
   return token and reflow_anchors[token] or nil
 end
 
-local function format_bounds(bounds)
-  if not bounds then return "nil" end
-  return table.concat({ bounds.left, bounds.top, bounds.width, bounds.height }, ",")
+debug_window_details = function(window, fields)
+  local anchor = reflow_anchor(window)
+  fields.current_goal = format_box(window_box(window))
+  fields.current_bounds = format_bounds(floating_window_bounds(window and window.monitor))
+  fields.prev = format_anchor(anchor)
+  fields.last_applied = format_box(anchor and anchor.last_applied)
+  fields.last_bounds = format_bounds(anchor and anchor.last_bounds)
+  fields.managed = window_geometric_max_metadata(window) and "max" or
+    (window_side_intent(window) or {}).side or "free"
 end
 
-local function format_box(box)
-  if not box then return "nil" end
-  return table.concat({ box.x, box.y, box.width, box.height }, ",")
+-- Diagnostic wrapper only: pass the original arguments/results/errors through.
+-- During reflow, collect into its single per-window line instead of extra logs.
+geometry_dispatch = function(kind, params, reason, trace)
+  if not debug_enabled then return hl.dispatch(hl.dsp.window[kind](params)) end
+  local before = format_box(window_box(params.window))
+  local request = tostring(params.x) .. "," .. tostring(params.y)
+  local results = table.pack(pcall(hl.dispatch, hl.dsp.window[kind](params)))
+  local after = format_box(window_box(params.window))
+  if trace then
+    table.insert(trace.requests, kind .. ":" .. request .. ":" .. before .. ">" .. after)
+  else
+    debug_window_action("geometry.dispatch", params.window, params.window and params.window.workspace, {
+      operation = kind, reason = reason, requested = request, relative = params.relative == true,
+      destination_workspace = params.workspace or "none", float_action = params.action or "none",
+      before_goal = before, after_goal = after, ok = results[1],
+    })
+  end
+  if not results[1] then error(results[2], 0) end
+  return table.unpack(results, 2, results.n)
 end
 
-local function debug_reflow(trigger, window, workspace, bounds, anchor, old_box, new_box, fields)
-  if not debug_enabled or not trigger or boxes_equal(old_box, new_box) then return end
+local function debug_reflow(trigger, window, workspace, bounds, anchor, old_box, new_box, fields, trace)
+  if not debug_enabled then return end
+  local bounds_changed = trace and trace.previous_bounds ~= format_bounds(bounds)
+  if boxes_equal(old_box, new_box) and not bounds_changed then
+    -- An actual prev mutation is not a no-op, even when no reflow was applied.
+    if trace and #trace.rebases > 0 then debug_window_action("anchor.write", window, workspace, {
+      reason = trigger or "initial-fit", prev_before = trace.prev_before, prev_after = format_anchor(anchor),
+      rebases = table.concat(trace.rebases, ";"), requests = table.concat(trace.requests, ";"),
+    }) end
+    return
+  end
   fields = fields or {}
-  fields.trigger = trigger
+  fields.trigger = trigger or "initial-fit"
   fields.source_bounds = format_bounds(anchor and anchor.source_bounds or bounds)
   fields.target_bounds = format_bounds(bounds)
   fields.old_geometry = format_box(old_box)
   fields.new_geometry = format_box(new_box)
-  debug_window_action("reflow.window", window, workspace, fields)
+  fields.prev_before = trace and trace.prev_before or "nil"
+  fields.previous_applied = trace and trace.previous_applied or "nil"
+  fields.previous_bounds = trace and trace.previous_bounds or "nil"
+  fields.rebases = trace and table.concat(trace.rebases, ";") or "none"
+  fields.requests = trace and table.concat(trace.requests, ";") or "none"
+  debug_window_action(trigger and "reflow.window" or "geometry.fit", window, workspace, fields)
 end
 
 local function monitor_cache_key(monitor)
@@ -763,6 +844,9 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
 
   local anchor = reflow_anchor(window)
   local reflow_start_box = window_box(window)
+  local trace = debug_enabled and { prev_before = format_anchor(anchor),
+    previous_applied = format_box(anchor and anchor.last_applied), previous_bounds = format_bounds(anchor and anchor.last_bounds),
+    rebases = {}, requests = {} } or nil
 
   local function finish(decision, requested_resize, requested_move)
     anchor = reflow_anchor(window)
@@ -776,7 +860,7 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
       decision = decision,
       requested_resize = requested_resize or "none",
       requested_move = requested_move or "none",
-    })
+    }, trace)
   end
 
   local metadata = window_geometric_max_metadata(window)
@@ -784,12 +868,12 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
     local resize_request, move_request
     if tonumber(size.x) ~= bounds.width or tonumber(size.y) ~= bounds.height then
       resize_request = tostring(bounds.width) .. "," .. tostring(bounds.height)
-      hl.dispatch(hl.dsp.window.resize({ x = bounds.width, y = bounds.height, window = window }))
+      geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "reflow.managed-max", trace)
     end
     local current_at = window.at or at
     if tonumber(current_at.x) ~= bounds.left or tonumber(current_at.y) ~= bounds.top then
       move_request = tostring(bounds.left) .. "," .. tostring(bounds.top)
-      hl.dispatch(hl.dsp.window.move({ x = bounds.left, y = bounds.top, window = window }))
+      geometry_dispatch("move", { x = bounds.left, y = bounds.top, window = window }, "reflow.managed-max", trace)
     end
     finish("managed-max", resize_request, move_request)
     return
@@ -799,19 +883,19 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
   if side then
     if not trust_intent and not side_intent_still_managed(window, side) then
       remove_window_tag(window, side.raw)
-      anchor = rebase_reflow_anchor(window, target_monitor, bounds, source_workspace)
+      anchor = rebase_reflow_anchor(window, target_monitor, bounds, source_workspace, "reflow.side-invalid", trace)
     else
       local geometry = side_geometry(side.side, target_monitor)
       if not geometry then return end
       local resize_request, move_request
       if tonumber(size.x) ~= geometry.width or tonumber(size.y) ~= geometry.height then
         resize_request = tostring(geometry.width) .. "," .. tostring(geometry.height)
-        hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
+        geometry_dispatch("resize", { x = geometry.width, y = geometry.height, window = window }, "reflow.managed-side", trace)
       end
       local current_at = window.at or at
       if tonumber(current_at.x) ~= geometry.x or tonumber(current_at.y) ~= geometry.y then
         move_request = tostring(geometry.x) .. "," .. tostring(geometry.y)
-        hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
+        geometry_dispatch("move", { x = geometry.x, y = geometry.y, window = window }, "reflow.managed-side", trace)
       end
       update_side_intent(window, source_workspace, side.side, geometry, target_monitor)
       finish("managed-" .. side.side, resize_request, move_request)
@@ -820,7 +904,7 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
   end
 
   local before = window_box(window)
-  anchor = anchor or rebase_reflow_anchor(window, target_monitor, bounds, source_workspace)
+  anchor = anchor or rebase_reflow_anchor(window, target_monitor, bounds, source_workspace, "reflow.missing-anchor", trace)
   if trigger and anchor and not preserve_anchor then
     -- workspace.move_to_monitor fires after Hyprland translated member windows;
     -- compare the live box against the last plugin-applied box translated to the
@@ -843,13 +927,13 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
         local delta_y = math.floor(tonumber(target_monitor.y) or 0) - math.floor(tonumber(anchor.last_monitor.y) or 0)
         local edited_box = { x = before.x - delta_x, y = before.y - delta_y, width = before.width, height = before.height }
         anchor = rebase_reflow_anchor_from(window, edited_box,
-          anchor.last_bounds or bounds, anchor.last_monitor, source_workspace)
+          anchor.last_bounds or bounds, anchor.last_monitor, source_workspace, "reflow.geometry-mismatch", trace)
       end
     elseif not boxes_equal(before, anchor.last_applied) and
         (bounds_equal(bounds, anchor.last_bounds) or
          before.width ~= anchor.last_applied.width or before.height ~= anchor.last_applied.height) then
       -- No monitor snapshot: fall back to the previous heuristic.
-      anchor = rebase_reflow_anchor(window, target_monitor, bounds, source_workspace)
+      anchor = rebase_reflow_anchor(window, target_monitor, bounds, source_workspace, "reflow.no-monitor-mismatch", trace)
     end
   end
   if not anchor then return end
@@ -875,7 +959,7 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
   local resize_request, move_request
   if width ~= before.width or height ~= before.height then
     resize_request = tostring(width) .. "," .. tostring(height)
-    hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
+    geometry_dispatch("resize", { x = width, y = height, window = window }, "reflow.free", trace)
     local resized = window.size or {}
     width = math.max(1, math.min(tonumber(resized.x) or width, bounds.width))
     height = math.max(1, math.min(tonumber(resized.y) or height, bounds.height))
@@ -889,7 +973,7 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
   local current_at = window.at or at
   if x ~= tonumber(current_at.x) or y ~= tonumber(current_at.y) then
     move_request = tostring(x) .. "," .. tostring(y)
-    hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
+    geometry_dispatch("move", { x = x, y = y, window = window }, "reflow.free", trace)
   end
   finish(trigger and "free-anchor" or "free-fit", resize_request, move_request)
 end
@@ -901,11 +985,11 @@ local function restore_geometric_max(window)
   local side = window_side_intent(window)
   local geometry = side and side_geometry(side.side, window.monitor) or geometry_clamped_to_bounds(metadata, bounds)
   if not geometry then return false end
-  hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
-  hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
+  geometry_dispatch("resize", { x = geometry.width, y = geometry.height, window = window }, "restore-geometric-max")
+  geometry_dispatch("move", { x = geometry.x, y = geometry.y, window = window }, "restore-geometric-max")
   remove_window_tag(window, metadata.raw)
   if side then update_side_intent(window, window.workspace, side.side, geometry) end
-  rebase_reflow_anchor(window)
+  rebase_reflow_anchor(window, nil, nil, nil, "restore-geometric-max")
   return true
 end
 
@@ -915,10 +999,10 @@ local function maximize_geometric_window(window, workspace)
   local tag = make_geometric_max_tag(window, workspace)
   if not bounds or not tag then return false end
   add_window_tag(window, tag)
-  hl.dispatch(hl.dsp.window.resize({ x = bounds.width, y = bounds.height, window = window }))
-  hl.dispatch(hl.dsp.window.move({ x = bounds.left, y = bounds.top, window = window }))
+  geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "maximize-geometric")
+  geometry_dispatch("move", { x = bounds.left, y = bounds.top, window = window }, "maximize-geometric")
   hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
-  rebase_reflow_anchor(window)
+  rebase_reflow_anchor(window, nil, nil, nil, "maximize-geometric")
   return true
 end
 
@@ -938,13 +1022,14 @@ apply_workspace_mode = function(workspace)
   if not enabled then clear_geometric_max_metadata_for_workspace(workspace) end
   for _, window in safe_ipairs(workspace:get_windows()) do
     set_window_floating(window, enabled)
-    if enabled then rebase_reflow_anchor(window) else clear_reflow_anchor(window) end
+    if enabled then rebase_reflow_anchor(window, nil, nil, nil, "apply-workspace-mode")
+    else clear_reflow_anchor(window, "apply-workspace-mode") end
     reconcile_drag_strip(window)
   end
   if not enabled then
     local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
     for _, window in safe_ipairs(hl.get_windows()) do
-      if window.workspace and window.workspace.name == minimized_name then clear_reflow_anchor(window) end
+      if window.workspace and window.workspace.name == minimized_name then clear_reflow_anchor(window, "mode-disabled-minimized") end
     end
   end
 end
@@ -990,11 +1075,11 @@ end
 
 local function rebase_workspace_reflow_anchors(workspace)
   if not (workspace_is_regular(workspace) and workspace_float_enabled(workspace)) then return end
-  for _, window in safe_ipairs(workspace:get_windows()) do rebase_reflow_anchor(window) end
+  for _, window in safe_ipairs(workspace:get_windows()) do rebase_reflow_anchor(window, nil, nil, nil, "startup.workspace-rebase") end
   local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
   for _, window in safe_ipairs(hl.get_windows()) do
     if window.workspace and window.workspace.special == true and window.workspace.name == minimized_name then
-      rebase_reflow_anchor(window, workspace.monitor, nil, workspace)
+      rebase_reflow_anchor(window, workspace.monitor, nil, workspace, "startup.minimized-rebase")
     end
   end
 end
@@ -1005,7 +1090,7 @@ local function mode_aware_resize(dx, dy)
   local float_mode = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
   debug_window_action("bind.resize", window, workspace, { dx = dx, dy = dy, float = float_mode })
   if not float_mode then
-    hl.dispatch(hl.dsp.window.resize({ x = dx, y = dy, relative = true, window = window }))
+    geometry_dispatch("resize", { x = dx, y = dy, relative = true, window = window }, "keyboard.resize-tiling")
     return
   end
 
@@ -1023,9 +1108,9 @@ local function mode_aware_resize(dx, dy)
   local x = math.max(bounds.left, math.min(bounds.right - width, (tonumber(at.x) or bounds.left) - (width - old_width) / 2))
   local y = math.max(bounds.top, math.min(bounds.bottom - height, (tonumber(at.y) or bounds.top) - (height - old_height) / 2))
 
-  hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
-  hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
-  rebase_reflow_anchor(window)
+  geometry_dispatch("resize", { x = width, y = height, window = window }, "keyboard.resize-float")
+  geometry_dispatch("move", { x = x, y = y, window = window }, "keyboard.resize-float")
+  rebase_reflow_anchor(window, nil, nil, nil, "keyboard.resize")
 end
 
 local function snap_active_window(window, workspace, side)
@@ -1036,10 +1121,10 @@ local function snap_active_window(window, workspace, side)
 
   set_window_floating(window, true)
   -- Resize first so Hyprland does not clamp the old, wider window before placing it.
-  hl.dispatch(hl.dsp.window.resize({ x = geometry.width, y = geometry.height, window = window }))
-  hl.dispatch(hl.dsp.window.move({ x = geometry.x, y = geometry.y, window = window }))
+  geometry_dispatch("resize", { x = geometry.width, y = geometry.height, window = window }, "snap." .. side)
+  geometry_dispatch("move", { x = geometry.x, y = geometry.y, window = window }, "snap." .. side)
   update_side_intent(window, workspace, side, geometry)
-  rebase_reflow_anchor(window)
+  rebase_reflow_anchor(window, nil, nil, nil, "snap." .. side)
 end
 
 local function mode_aware_direction(direction)
@@ -1067,7 +1152,7 @@ local function mode_aware_fullscreen()
   local float_mode = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
   debug_window_action("bind.fullscreen", window, workspace, { float = float_mode })
   if float_mode then
-    if persist_window_placement then persist_window_placement(window, workspace) end
+    if persist_window_placement then persist_window_placement(window, workspace, "bind.fullscreen") end
     hl.dispatch(hl.dsp.window.fullscreen_state({
       internal = 2,
       client = 0,
@@ -1219,6 +1304,7 @@ local function claim_geometry_slot(window, workspace)
     if reason ~= "native-bridge-unavailable" and reason ~= "native-bridge-error" and reason ~= "native-window-not-found" then
       release_geometry_slot(window, true)
     end
+    debug_window_action("record.claim_skip", window, workspace, { reason = reason })
     return nil, nil
   end
   local identity = placement_identity(window, workspace)
@@ -1284,6 +1370,23 @@ local function parse_state_integer(value)
   return tonumber(value)
 end
 
+-- Opaque per-run identifiers correlate records without exposing application roles.
+local debug_record_keys, debug_record_count = {}, 0
+local function debug_record_key(key)
+  if not debug_enabled then return nil end
+  if not debug_record_keys[key] then
+    debug_record_count = debug_record_count + 1
+    debug_record_keys[key] = debug_record_count
+  end
+  return debug_record_keys[key]
+end
+
+local function format_record(record)
+  if not record then return "nil" end
+  return tostring(record.intent) .. ":" .. format_box(record) .. "@" ..
+    table.concat({ record.bounds_left, record.bounds_top, record.bounds_width, record.bounds_height }, ",")
+end
+
 local function load_geometry_records()
   local file = io.open(geometry_state_path, "r")
   if not file then return end
@@ -1310,13 +1413,15 @@ local function load_geometry_records()
           bounds_left = bounds_left, bounds_top = bounds_top,
           bounds_width = bounds_width, bounds_height = bounds_height,
         }
+        if debug_enabled then debug_log("record.load", { record = debug_record_key(key), slot = slot,
+          workspace = workspace_name, class = class, value = format_record(geometry_records[key][slot]) }) end
       end
     end
   end
   file:close()
 end
 
-local function save_geometry_records()
+local function save_geometry_records(reason)
   local records = {}
   for _, bucket in pairs(geometry_records) do
     for _, record in pairs(bucket) do table.insert(records, record) end
@@ -1330,7 +1435,7 @@ local function save_geometry_records()
 
   local temporary_path = geometry_state_path .. ".tmp"
   local file = io.open(temporary_path, "w")
-  if not file then return false end
+  if not file then debug_log("record.flush", { reason = reason, ok = false, failure = "open" }); return false end
   for _, record in ipairs(records) do
     file:write(table.concat({
       "v1", encode_hex(record.workspace), encode_hex(record.class), encode_hex(record.role),
@@ -1344,8 +1449,10 @@ local function save_geometry_records()
   file:close()
   if not os.rename(temporary_path, geometry_state_path) then
     os.remove(temporary_path)
+    debug_log("record.flush", { reason = reason, ok = false, failure = "rename" })
     return false
   end
+  debug_log("record.flush", { reason = reason, ok = true, records = #records })
   return true
 end
 
@@ -1365,19 +1472,19 @@ local function source_float_workspace(window)
 end
 
 local function geometry_record_from_window(window)
-  if not window or window.mapped ~= true or window.floating ~= true then return nil end
+  if not window or window.mapped ~= true or window.floating ~= true then return nil, "not-recordable" end
   local at, size = window.at, window.size
   local bounds = floating_window_bounds(window.monitor)
-  if not at or not size or not bounds then return nil end
+  if not at or not size or not bounds then return nil, "missing-geometry-or-bounds" end
 
   local maximum = window_geometric_max_metadata(window)
   local side = window_side_intent(window)
   local anchor = reflow_anchor(window)
   local fullscreen = (tonumber(window.fullscreen) or 0) ~= 0
-  local intent, geometry
+  local intent, geometry, basis
   if maximum then
     intent = side and ("max-" .. side.side) or "max-free"
-    geometry = maximum
+    geometry, basis = maximum, "managed-max"
   elseif side then
     if not fullscreen and not side_intent_still_managed(window, side) then
       remove_window_tag(window, side.raw)
@@ -1385,11 +1492,11 @@ local function geometry_record_from_window(window)
     end
     if side then
       intent = side.side
-      geometry = side
+      geometry, basis = side, "managed-side"
     end
   end
   if not intent then
-    if fullscreen then return nil end
+    if fullscreen then return nil, "native-fullscreen" end
     intent = "free"
     -- A plugin reflow must not replace the durable placement with its fitted
     -- small-screen result. Native/user edits still win when actual geometry no
@@ -1397,35 +1504,46 @@ local function geometry_record_from_window(window)
     if anchor and boxes_equal(window_box(window), anchor.last_applied) then
       geometry = anchor.original_box
       bounds = anchor.source_bounds
+      basis = "prev"
     else
       geometry = { x = at.x, y = at.y, width = size.x, height = size.y }
+      basis = anchor and "current-mismatch" or "current-no-anchor"
     end
   end
 
   local width, height = nearest_integer(geometry.width), nearest_integer(geometry.height)
-  if width < 1 or height < 1 then return nil end
+  if width < 1 or height < 1 then return nil, "invalid-size" end
   return {
     intent = intent,
     x = nearest_integer(geometry.x), y = nearest_integer(geometry.y),
     width = width, height = height,
     bounds_left = nearest_integer(bounds.left), bounds_top = nearest_integer(bounds.top),
     bounds_width = nearest_integer(bounds.width), bounds_height = nearest_integer(bounds.height),
-  }
+  }, basis
 end
 
-local function capture_window_placement(window, workspace)
+local function capture_window_placement(window, workspace, reason)
   local identity, slot = claim_geometry_slot(window, workspace)
-  local record = geometry_record_from_window(window)
-  if not identity or not slot or not record then return false end
+  local record, basis = geometry_record_from_window(window)
+  if not identity or not slot or not record then
+    debug_window_action("record.capture_skip", window, workspace, { reason = reason, basis = basis,
+      identity_found = identity ~= nil, slot = slot or "none" })
+    return false
+  end
   record.workspace, record.class, record.role, record.slot = identity.workspace, identity.class, identity.role, slot
   geometry_records[identity.key] = geometry_records[identity.key] or {}
+  local previous = geometry_records[identity.key][slot]
   geometry_records[identity.key][slot] = record
+  if debug_enabled then debug_window_action("record.write", window, workspace, { reason = reason,
+    record = debug_record_key(identity.key), slot = slot, basis = basis,
+    record_before = format_record(previous), record_after = format_record(record) }) end
   return true
 end
 
-persist_window_placement = function(window, workspace)
-  if capture_window_placement(window, workspace or source_float_workspace(window)) then
-    return save_geometry_records()
+persist_window_placement = function(window, workspace, reason)
+  reason = reason or "persist-window"
+  if capture_window_placement(window, workspace or source_float_workspace(window), reason) then
+    return save_geometry_records(reason)
   end
   return false
 end
@@ -1434,10 +1552,10 @@ persist_workspace_placements = function(workspace)
   local changed = false
   if workspace_is_regular(workspace) then
     for _, window in safe_ipairs(workspace:get_windows()) do
-      if capture_window_placement(window, workspace) then changed = true end
+      if capture_window_placement(window, workspace, "workspace-mode") then changed = true end
     end
   end
-  if changed then save_geometry_records() end
+  if changed then save_geometry_records("workspace-mode") end
 end
 
 local function scaled_placement_offset(offset, old_travel, new_travel)
@@ -1453,7 +1571,7 @@ local function restore_free_record(window, record)
   local height = nearest_integer(record.height * bounds.height / record.bounds_height)
   width = math.max(1, math.min(width, bounds.width))
   height = math.max(1, math.min(height, bounds.height))
-  hl.dispatch(hl.dsp.window.resize({ x = width, y = height, window = window }))
+  geometry_dispatch("resize", { x = width, y = height, window = window }, "record.restore-free")
 
   local actual = window.size or {}
   width = math.max(1, math.min(tonumber(actual.x) or width, bounds.width))
@@ -1464,12 +1582,15 @@ local function restore_free_record(window, record)
   local new_travel_y = math.max(0, bounds.height - height)
   local x = bounds.left + scaled_placement_offset(record.x - record.bounds_left, old_travel_x, new_travel_x)
   local y = bounds.top + scaled_placement_offset(record.y - record.bounds_top, old_travel_y, new_travel_y)
-  hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
+  geometry_dispatch("move", { x = x, y = y, window = window }, "record.restore-free")
   return true
 end
 
 local function restore_window_placement(window, workspace, record)
   if not record or (tonumber(window and window.fullscreen) or 0) ~= 0 then return false end
+  if debug_enabled then debug_window_action("record.restore", window, workspace, {
+    slot = record.slot or "none", record = debug_record_key(placement_record_key(record.workspace, record.class, record.role)),
+    value = format_record(record) }) end
   if record.intent == "free" then
     return restore_free_record(window, record)
   elseif record.intent == "left" or record.intent == "right" then
@@ -1500,7 +1621,7 @@ local function place_window_over_parent(window, semantics)
     ((tonumber(parent_size.x) or 0) - (tonumber(child_size.x) or 0)) / 2)
   local y = nearest_integer((tonumber(parent_at.y) or 0) +
     ((tonumber(parent_size.y) or 0) - (tonumber(child_size.y) or 0)) / 2)
-  hl.dispatch(hl.dsp.window.move({ x = x, y = y, window = window }))
+  geometry_dispatch("move", { x = x, y = y, window = window }, "parent-placement")
   return true
 end
 
@@ -1546,40 +1667,70 @@ if native_float_panel then
         end,
         equal = boxes_equal,
         destination_valid = function(window) return floating_window_bounds(window.monitor) ~= nil end,
-        accept = function(window)
+        accept = function(window, final, before)
           local metadata = window_geometric_max_metadata(window)
           if metadata then remove_window_tag(window, metadata.raw) end
           clear_side_intent(window)
           release_geometry_slot(window, true)
-          rebase_reflow_anchor(window, window.monitor, nil, window.workspace)
-          persist_window_placement(window, window.workspace)
-          debug_window_action("drag.accept", window, window.workspace, {})
+          rebase_reflow_anchor(window, window.monitor, nil, window.workspace, "drag.accept")
+          persist_window_placement(window, window.workspace, "drag.accept")
+          debug_window_action("drag.accept", window, window.workspace, {
+            before_goal = format_box(before), after_goal = format_box(final),
+          })
         end,
       })
       hl.on("float_panel.decoration_pointer", function(window, phase, button)
+        debug_window_geometry("event.decoration_pointer", window, window and window.workspace, { phase = phase, button = button })
         drag_strip.pointer(window, phase, button)
       end)
       hl.on("float_panel.drag", function(window, phase, mode, sequence)
+        debug_window_geometry("event.drag_before", window, window and window.workspace, {
+          phase = phase, mode = mode, drag_sequence = sequence, pending = drag_strip.active(window),
+        })
         if phase == "begin" then reconcile_drag_strip(window) end
         drag_strip.drag(window, phase, mode, sequence)
         if phase ~= "begin" then reconcile_drag_strip(window) end
+        debug_window_geometry("event.drag_after", window, window and window.workspace, {
+          phase = phase, mode = mode, drag_sequence = sequence, pending = drag_strip.active(window),
+        })
       end)
       -- Raw floating/rules/openLate facts; public window.open precedes final visibility.
-      hl.on("float_panel.window_changed", reconcile_drag_strip)
-      hl.on("window.fullscreen", reconcile_drag_strip)
+      hl.on("float_panel.window_changed", function(window)
+        debug_window_geometry("event.window_changed", window, window and window.workspace, {})
+        reconcile_drag_strip(window)
+      end)
+      hl.on("window.fullscreen", function(window)
+        debug_window_geometry("event.fullscreen", window, window and window.workspace, {})
+        reconcile_drag_strip(window)
+      end)
       local function reconcile_all()
         for _, window in safe_ipairs(hl.get_windows()) do reconcile_drag_strip(window) end
       end
       hl.on("workspace.active", reconcile_all)
       hl.on("workspace.special_active", reconcile_all)
-      hl.on("config.reloaded", reconcile_all)
+      hl.on("config.reloaded", function()
+        debug_log("event.config_reloaded", {})
+        reconcile_all()
+      end)
     end
   end
 end
 
+debug_log("diagnostics.begin", { schema = 2, geometry_reads = "compositor-goal", anchor_cache = "new-lua-instance" })
 load_float_workspaces()
 load_geometry_records()
-for _, monitor in safe_ipairs(hl.get_monitors()) do update_monitor_bounds_cache(monitor) end
+local function debug_monitor(event, monitor)
+  if not debug_enabled then return end
+  local reserved = monitor and monitor.reserved or {}
+  debug_log(event, { monitor = monitor and monitor.name or "nil", x = monitor and monitor.x, y = monitor and monitor.y,
+    width = monitor and monitor.width, height = monitor and monitor.height, scale = monitor and monitor.scale,
+    bounds = format_bounds(floating_window_bounds(monitor)), reserved_left = reserved.left or 0,
+    reserved_right = reserved.right or 0, reserved_top = reserved.top or 0, reserved_bottom = reserved.bottom or 0 })
+end
+for _, monitor in safe_ipairs(hl.get_monitors()) do
+  debug_monitor("event.monitor_snapshot", monitor)
+  update_monitor_bounds_cache(monitor)
+end
 for name, enabled in pairs(float_workspaces) do
   if enabled then ensure_float_workspace_rule(name) end
 end
@@ -1587,6 +1738,7 @@ end
 -- Process start ticks survive focus/Z-order changes and let the shell reconstruct
 -- launch order after its own restart without a separate ordering database.
 for _, window in safe_ipairs(hl.get_windows()) do
+  debug_window_geometry("event.startup_window_before", window, window.workspace, {})
   local token = geometry_window_token(window)
   if token then opened_window_tokens[token] = true end
   ignore_window_minimum_size(window)
@@ -1606,6 +1758,10 @@ for _, workspace in safe_ipairs(hl.get_workspaces()) do
     defensively_fit_float_workspace(workspace)
     rebase_workspace_reflow_anchors(workspace)
   end
+end
+
+for _, window in safe_ipairs(hl.get_windows()) do
+  debug_window_geometry("event.startup_window_after", window, window.workspace, {})
 end
 
 hl.on("window.open", function(window)
@@ -1639,12 +1795,12 @@ hl.on("window.open", function(window)
       initial_placement = "app"
     end
     fit_window_to_floating_bounds(window)
-    rebase_reflow_anchor(window)
+    rebase_reflow_anchor(window, nil, nil, nil, "window.open")
     if persistence_eligible and not record then
       if startup_maximize and maximize_geometric_window(window, workspace) then
         initial_placement = "app-maximized"
       end
-      persist_window_placement(window, workspace)
+      persist_window_placement(window, workspace, "window.open")
     end
   end
   reconcile_drag_strip(window)
@@ -1660,6 +1816,7 @@ end)
 
 hl.on("window.close", function(window)
   local interrupted = drag_strip and drag_strip.active(window)
+  debug_window_geometry("event.window_close_before", window, window and window.workspace, { interrupted = interrupted == true })
   if drag_strip then drag_strip.forget(window) end
   local token = geometry_window_token(window)
   if token then
@@ -1667,29 +1824,42 @@ hl.on("window.close", function(window)
     opened_window_tokens[token] = nil
   end
   local workspace = source_float_workspace(window)
-  if workspace and not interrupted then persist_window_placement(window, workspace) end
+  if workspace and not interrupted then persist_window_placement(window, workspace, "window.close") end
   release_geometry_slot(window, false)
   forget_window_persistence_semantics(window)
-  clear_reflow_anchor(window)
+  clear_reflow_anchor(window, "window.close")
+  debug_window_geometry("event.window_close_after", window, window and window.workspace, {})
+end)
+
+hl.on("window.destroy", function(window)
+  debug_window_geometry("event.window_destroy", window, window and window.workspace, {})
+end)
+hl.on("monitor.added", function(monitor) debug_monitor("event.monitor_added", monitor) end)
+hl.on("monitor.removed", function(monitor) debug_monitor("event.monitor_removed", monitor) end)
+hl.on("layer.closed", function(layer)
+  debug_monitor("event.layer_closed_observation", layer and layer.monitor)
 end)
 
 hl.on("hyprland.shutdown", function()
+  debug_log("event.shutdown", {})
   if drag_strip then drag_strip.shutdown() end
   local changed = false
   for _, window in safe_ipairs(hl.get_windows()) do
     local workspace = source_float_workspace(window)
-    if workspace and capture_window_placement(window, workspace) then changed = true end
+    if workspace and capture_window_placement(window, workspace, "shutdown") then changed = true end
   end
-  if changed then save_geometry_records() end
+  if changed then save_geometry_records("shutdown") end
 end)
 
 hl.on("window.move_to_workspace", function(window, workspace)
+  debug_window_geometry("event.window_move_workspace_before", window, workspace, { layout_phase = "pre-final-placement" })
   if drag_strip and drag_strip.active(window) then
     -- Native transfer is early: its later post-drag callback owns acceptance.
     if not workspace_is_regular(workspace) or not workspace_float_enabled(workspace) then
       drag_strip.interrupt(window)
       reconcile_drag_strip(window)
     end
+    debug_window_geometry("event.window_move_workspace_deferred", window, workspace, { reason = "native-drag" })
     return
   end
   local metadata = window_geometric_max_metadata(window)
@@ -1720,23 +1890,29 @@ hl.on("window.move_to_workspace", function(window, workspace)
     set_window_floating(window, float_enabled)
     release_geometry_slot(window, true)
     if float_enabled then claim_geometry_slot(window, workspace) end
-    if not returning_to_source then clear_reflow_anchor(window) end
+    if not returning_to_source then clear_reflow_anchor(window, "window.move-to-workspace") end
   elseif metadata or side then
     set_window_floating(window, true)
   end
   reconcile_drag_strip(window)
+  debug_window_geometry("event.window_move_workspace_after", window, workspace, { layout_phase = "pre-final-placement" })
 end)
 
 -- Hyprland emits this only after the workspace monitor, every member window's
 -- monitor, floating position translation, and native fullscreen reflow finish.
 hl.on("workspace.move_to_monitor", function(workspace, monitor)
-  if drag_strip then
-    for _, window in safe_ipairs(workspace:get_windows()) do drag_strip.interrupt(window) end
-  end
   debug_log("event.workspace_move_to_monitor", {
     workspace = workspace and workspace.name or "nil",
     monitor = monitor and monitor.name or "nil",
+    bounds = format_bounds(floating_window_bounds(monitor)), x = monitor and monitor.x, y = monitor and monitor.y,
+    scale = monitor and monitor.scale,
   })
+  if drag_strip then
+    for _, window in safe_ipairs(workspace:get_windows()) do
+      if drag_strip.active(window) then debug_window_geometry("event.drag_interrupt", window, workspace, { reason = "workspace.move-to-monitor" }) end
+      drag_strip.interrupt(window)
+    end
+  end
   defensively_fit_float_workspace(workspace, "workspace.move_to_monitor")
 end)
 
@@ -1744,14 +1920,18 @@ end)
 -- inspect every plugin-enabled Float workspace.
 hl.on("monitor.layout_changed", function()
   if drag_strip then
-    for _, window in safe_ipairs(hl.get_windows()) do drag_strip.interrupt(window) end
+    for _, window in safe_ipairs(hl.get_windows()) do
+      if drag_strip.active(window) then debug_window_geometry("event.drag_interrupt", window, window.workspace, { reason = "monitor.layout-changed" }) end
+      drag_strip.interrupt(window)
+    end
   end
   local changed = {}
   for _, monitor in safe_ipairs(hl.get_monitors()) do
     if update_monitor_bounds_cache(monitor) then changed[monitor_cache_key(monitor)] = true end
   end
   if not next(changed) then return end
-  debug_log("event.monitor_layout_changed")
+  debug_log("event.monitor_layout_changed", {})
+  for _, monitor in safe_ipairs(hl.get_monitors()) do debug_monitor("event.monitor_layout_snapshot", monitor) end
   for _, workspace in safe_ipairs(hl.get_workspaces()) do
     if workspace.monitor and changed[monitor_cache_key(workspace.monitor)] then
       defensively_fit_float_workspace(workspace, "monitor.layout_changed")
@@ -1762,10 +1942,13 @@ end)
 -- LayerSurface::onMap arranges exclusive reservations before this event.
 hl.on("layer.opened", function(layer)
   local monitor = layer and layer.monitor or nil
+  local previous_bounds = monitor and copy_bounds(monitor_bounds_cache[monitor_cache_key(monitor)]) or nil
   if not monitor or not update_monitor_bounds_cache(monitor) then return end
   local reserved = monitor.reserved or {}
   debug_log("event.work_area_changed", {
     monitor = monitor.name or "nil",
+    previous_bounds = format_bounds(previous_bounds), bounds = format_bounds(floating_window_bounds(monitor)),
+    scale = monitor.scale, x = monitor.x, y = monitor.y,
     reserved_bottom = tonumber(reserved.bottom) or 0,
     reserved_left = tonumber(reserved.left) or 0,
     reserved_right = tonumber(reserved.right) or 0,
