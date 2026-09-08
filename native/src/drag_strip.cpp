@@ -39,7 +39,7 @@ uint64_t serial = 0;
 std::vector<SP<Event>> events;
 std::vector<CHyprSignalListener> listeners;
 std::vector<std::string> functions;
-CFunctionHook *beginHook = nullptr, *endHook = nullptr;
+CFunctionHook *beginHook = nullptr, *endHook = nullptr, *boxHook = nullptr;
 wl_event_source* idle = nullptr;
 struct Primitive {
     PHLWINDOWREF window;
@@ -99,7 +99,7 @@ bool blocked() {
         g_pSeatManager->m_seatGrab || g_pInputManager->isConstrained() ||
         g_pInputManager->getClickMode() != CLICKMODE_DEFAULT;
 }
-CBox primitiveBox(const PrimitivePtr& p, bool hit) {
+CBox primitiveBox(const PrimitivePtr& p) {
     const auto w = p->window.lock();
     if (!validMapped(w)) return {};
     auto b = w->getWindowMainSurfaceBox();
@@ -108,8 +108,17 @@ CBox primitiveBox(const PrimitivePtr& p, bool hit) {
     b.translate(w->m_floatingOffset);
     b.y -= p->height;
     b.h = p->height;
-    if (hit) { b.x += p->inset; b.w = std::max(0.0, b.w - 2 * p->inset); }
+    b.x += std::min(p->inset, b.w / 2);
+    b.w = std::max(0.0, b.w - 2 * p->inset);
     return b;
+}
+using BoxFn = CBox (*)(CDecorationPositioner*, IHyprWindowDecoration*);
+CBox decorationBox(CDecorationPositioner* self, IHyprWindowDecoration* deco) {
+    // Core cursor/input routing must see the same logical rectangle as our hit
+    // test and paint. Never modify the positioner's cached layout geometry.
+    for (const auto& [_, p] : primitives)
+        if (p->deco == deco) return primitiveBox(p);
+    return reinterpret_cast<BoxFn>(boxHook->m_original)(self, deco);
 }
 void schedule();
 class Decoration : public IHyprWindowDecoration {
@@ -129,9 +138,9 @@ class Decoration : public IHyprWindowDecoration {
     }
     void onPositioningReply(const SDecorationPositioningReply&) override { schedule(); }
     void draw(PHLMONITOR monitor, float const& alpha) override {
-        const auto b = primitiveBox(p, false);
+        const auto b = primitiveBox(p);
         if (b != p->lastBox) { p->lastBox = b; schedule(); }
-        if (!p->visible) return;
+        if (!p->visible || b.w <= 0) return;
         auto box = b;
         box.translate(-monitor->m_position).scale(monitor->m_scale).round();
         auto color = CHyprColor(p->color);
@@ -145,7 +154,7 @@ class Decoration : public IHyprWindowDecoration {
     uint64_t getDecorationFlags() override { return DECORATION_ALLOWS_MOUSE_INPUT | DECORATION_NON_SOLID; }
     std::string getDisplayName() override { return "float-panel drag strip"; }
     void updateWindow(PHLWINDOW) override { damageEntire(); schedule(); }
-    void damageEntire() override { g_pHyprRenderer->damageBox(primitiveBox(p, false)); }
+    void damageEntire() override { g_pHyprRenderer->damageBox(primitiveBox(p)); }
 };
 
 PrimitivePtr hit(const Vector2D& pos) {
@@ -163,7 +172,8 @@ PrimitivePtr hit(const Vector2D& pos) {
     auto it = primitives.find(address(w));
     if (it == primitives.end() || !it->second->deco || it->second->window.lock() != w) return {};
     auto p = it->second;
-    return primitiveBox(p, true).containsPoint(pos) ? p : PrimitivePtr{};
+    const auto b = primitiveBox(p);
+    return b.w > 0 && b.containsPoint(pos) ? p : PrimitivePtr{};
 }
 void refresh() {
     if (!running || resetting) return;
@@ -278,10 +288,8 @@ int set(lua_State* L) {
     auto w = resolve(lua_tostring(L, 1));
     if (resetting || !validMapped(w) || !lua_istable(L, 2)) return result(L, false);
     const double height = number(L, "height", 6), inset = number(L, "hit_inset", 0);
-    // Stock sticky positioning owns the whole top edge. Reject inset requests
-    // rather than promise corner cursor behavior that would need a third hook.
     const double color = number(L, "color", 0xff89b4fa);
-    if (!std::isfinite(height) || height < 1 || height > 64 || inset != 0 ||
+    if (!std::isfinite(height) || height < 1 || height > 64 || !std::isfinite(inset) || inset < 0 ||
         !std::isfinite(color) || color < 0 || color > 4294967295.0) return result(L, false);
     auto key = address(w);
     auto p = argument(L);
@@ -382,8 +390,8 @@ void reset() {
 void stop() {
     reset(); running = false;
     listeners.clear();
-    for (auto* h : {endHook, beginHook}) if (h) HyprlandAPI::removeFunctionHook(handle, h);
-    endHook = beginHook = nullptr;
+    for (auto* h : {boxHook, endHook, beginHook}) if (h) HyprlandAPI::removeFunctionHook(handle, h);
+    boxHook = endHook = beginHook = nullptr;
     for (const auto& name : functions) HyprlandAPI::removeLuaFunction(handle, "float_panel", name);
     functions.clear();
     for (const auto& e : events) HyprlandAPI::removeEvent(handle, e->m_name);
@@ -408,6 +416,7 @@ void init(HANDLE h) {
         }
         installHook(beginHook, "CDragStateController::dragBegin", reinterpret_cast<void*>(onBegin));
         installHook(endHook, "CDragStateController::dragEnd", reinterpret_cast<void*>(onEnd));
+        installHook(boxHook, "CDecorationPositioner::getWindowDecorationBox", reinterpret_cast<void*>(decorationBox));
         running = true;
         auto& bus = ::Event::bus()->m_events;
         listeners.push_back(bus.input.mouse.move.listen([](Vector2D, ::Event::SCallbackInfo&) { schedule(); }));

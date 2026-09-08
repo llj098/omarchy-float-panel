@@ -1389,7 +1389,26 @@ do
   active_window, active_workspace, active_monitor = edited, ws1, own_monitor
   dofile("hypr/float-panel.lua")
   assert(decorations[edited.address] and decorations[other.address], "eligible startup windows get strips")
-  assert(decorations[edited.address].height == 6 and decorations[edited.address].visible == false)
+  assert(decorations[edited.address].height == 10 and decorations[edited.address].visible == false)
+
+  assert(decorations[edited.address].hit_inset == 24, "Lua chooses the fixed logical inset")
+  -- Style remains Lua-owned. This checks policy side effects, NOT native
+  -- corner routing/cursors (which require VM tests).
+  local hover_box = { edited.at.x, edited.at.y, edited.size.x, edited.size.y }
+  local hover_reserved = { own_monitor.reserved.left, own_monitor.reserved.right,
+    own_monitor.reserved.top, own_monitor.reserved.bottom }
+  local hover_dispatches = #dispatched
+  handlers["float_panel.decoration_pointer"](edited, "enter", 0)
+  assert(decorations[edited.address].height == 10 and decorations[edited.address].visible == true)
+  assert(decorations[edited.address].cursor == "grab" and decorations[edited.address].hit_inset == 24)
+  handlers["float_panel.decoration_pointer"](edited, "leave", 0)
+  assert(decorations[edited.address].height == 10 and decorations[edited.address].visible == false)
+  assert(#dispatched == hover_dispatches, "hover must not dispatch geometry changes")
+  assert(edited.at.x == hover_box[1] and edited.at.y == hover_box[2] and
+    edited.size.x == hover_box[3] and edited.size.y == hover_box[4], "hover preserves window geometry")
+  assert(own_monitor.reserved.left == hover_reserved[1] and own_monitor.reserved.right == hover_reserved[2] and
+    own_monitor.reserved.top == hover_reserved[3] and own_monitor.reserved.bottom == hover_reserved[4],
+    "hover preserves work-area reservations")
 
   local function saved_file()
     local f = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-geometries", "r"))

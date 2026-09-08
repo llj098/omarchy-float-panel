@@ -1631,7 +1631,7 @@ local function drag_strip_style()
   local ok, gradient = pcall(hl.get_config, "general:col.active_border")
   local color = ok and type(gradient) == "table" and type(gradient.colors) == "table" and
     tonumber(gradient.colors[1]) or nil
-  return { height = 6, hit_inset = 0, color = color or 0xff89b4fa, cursor = "grab" }
+  return { height = 10, hit_inset = 24, color = color or 0xff89b4fa, cursor = "grab" }
 end
 
 local function drag_strip_eligible(window)

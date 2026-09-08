@@ -285,10 +285,11 @@ do
   eq(attempts, 2, "a failed paint must not populate cache")
   f.pointer(w, "enter")
   eq(attempts, 2)
-  f.style = { height = 8, color = 0xff112233, cursor = "grab" }
+  f.style = { height = 10, hit_inset = 24, color = 0xff112233, cursor = "grab" }
   f.api.reconcile(w)
   eq(attempts, 3, "existing state receives style changes")
-  eq(f.calls[#f.calls][3].height, 8)
+  eq(f.calls[#f.calls][3].height, 10)
+  eq(f.calls[#f.calls][3].hit_inset, 24, "forward Lua inset without native corner policy")
   eq(f.style.visible, nil, "do not mutate policy-owned style tables")
   f.api.reconcile(w)
   eq(attempts, 3)
