@@ -105,6 +105,10 @@ local reflow_anchors = {}
 local monitor_bounds_cache = {}
 local pending_startup_maximize = {}
 local opened_window_tokens = {}
+local drag_strip
+local function reconcile_drag_strip(window)
+  if drag_strip then drag_strip.reconcile(window) end
+end
 
 local function process_start_ticks(pid)
   pid = tonumber(pid)
@@ -746,6 +750,7 @@ local function monitor_translated_box(box, from_monitor, to_monitor)
 end
 
 local function fit_window_to_floating_bounds(window, target_monitor, source_workspace, trust_intent, trigger, preserve_anchor)
+  if drag_strip and drag_strip.active(window) then return end
   if not window or window.mapped ~= true or window.hidden == true or window.floating ~= true then return end
   if (tonumber(window.fullscreen) or 0) ~= 0 then return end
 
@@ -934,6 +939,7 @@ apply_workspace_mode = function(workspace)
   for _, window in safe_ipairs(workspace:get_windows()) do
     set_window_floating(window, enabled)
     if enabled then rebase_reflow_anchor(window) else clear_reflow_anchor(window) end
+    reconcile_drag_strip(window)
   end
   if not enabled then
     local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
@@ -1498,6 +1504,79 @@ local function place_window_over_parent(window, semantics)
   return true
 end
 
+-- Public theme gradients push an ARGB hex colors array in 0.56.2. A solid strip
+-- deliberately uses the first stop, without introducing a theme watcher.
+local function drag_strip_style()
+  local ok, gradient = pcall(hl.get_config, "general:col.active_border")
+  local color = ok and type(gradient) == "table" and type(gradient.colors) == "table" and
+    tonumber(gradient.colors[1]) or nil
+  return { height = 6, hit_inset = 0, color = color or 0xff89b4fa, cursor = "grab" }
+end
+
+local function drag_strip_eligible(window)
+  if not window or window.mapped ~= true or window.hidden == true or window.visible ~= true or
+      window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
+  if not workspace_is_regular(window.workspace) or not workspace_float_enabled(window.workspace) then return false end
+  for _, tag in safe_ipairs(window.tags) do if tag == auxiliary_no_border_tag then return false end end
+  local semantics = read_native_window_semantics(window)
+  return semantics ~= nil and tonumber(semantics.border_size) ~= 0 and not auxiliary_window_needs_no_border(semantics)
+end
+
+if native_float_panel then
+  local ok, caps = pcall(native_float_panel.capabilities)
+  if ok and type(caps) == "table" and caps.decoration_input_v1 == true and caps.drag_lifecycle_v1 == true then
+    local source = debug.getinfo(1, "S").source
+    local directory = source:sub(1, 1) == "@" and source:sub(2):match("^(.*[/])") or nil
+    if directory then
+      local module = dofile(directory .. "drag-strip.lua")
+      drag_strip = module.new(native_float_panel, {
+        identity = function(window)
+          return window and (window.stable_id ~= nil and ("stable:" .. tostring(window.stable_id)) or geometry_window_token(window))
+        end,
+        address = function(window) return window and tostring(window.address) end,
+        eligible = drag_strip_eligible,
+        style = drag_strip_style,
+        snapshot = function(window)
+          local box = window_box(window)
+          if not box then return nil end
+          return { x = box.x, y = box.y, width = box.width, height = box.height,
+            workspace = window.workspace, monitor = window.monitor,
+            bounds = copy_bounds(floating_window_bounds(window.monitor)),
+            maximum = window_geometric_max_metadata(window), side = window_side_intent(window) }
+        end,
+        equal = boxes_equal,
+        destination_valid = function(window) return floating_window_bounds(window.monitor) ~= nil end,
+        accept = function(window)
+          local metadata = window_geometric_max_metadata(window)
+          if metadata then remove_window_tag(window, metadata.raw) end
+          clear_side_intent(window)
+          release_geometry_slot(window, true)
+          rebase_reflow_anchor(window, window.monitor, nil, window.workspace)
+          persist_window_placement(window, window.workspace)
+          debug_window_action("drag.accept", window, window.workspace, {})
+        end,
+      })
+      hl.on("float_panel.decoration_pointer", function(window, phase, button)
+        drag_strip.pointer(window, phase, button)
+      end)
+      hl.on("float_panel.drag", function(window, phase, mode, sequence)
+        if phase == "begin" then reconcile_drag_strip(window) end
+        drag_strip.drag(window, phase, mode, sequence)
+        if phase ~= "begin" then reconcile_drag_strip(window) end
+      end)
+      -- Raw floating/rules/openLate facts; public window.open precedes final visibility.
+      hl.on("float_panel.window_changed", reconcile_drag_strip)
+      hl.on("window.fullscreen", reconcile_drag_strip)
+      local function reconcile_all()
+        for _, window in safe_ipairs(hl.get_windows()) do reconcile_drag_strip(window) end
+      end
+      hl.on("workspace.active", reconcile_all)
+      hl.on("workspace.special_active", reconcile_all)
+      hl.on("config.reloaded", reconcile_all)
+    end
+  end
+end
+
 load_float_workspaces()
 load_geometry_records()
 for _, monitor in safe_ipairs(hl.get_monitors()) do update_monitor_bounds_cache(monitor) end
@@ -1568,6 +1647,7 @@ hl.on("window.open", function(window)
       persist_window_placement(window, workspace)
     end
   end
+  reconcile_drag_strip(window)
   debug_window_geometry("event.window_open_after", window, workspace, {
     float_workspace = float_enabled,
     geometry_slot = slot or "none",
@@ -1579,19 +1659,22 @@ hl.on("window.open", function(window)
 end)
 
 hl.on("window.close", function(window)
+  local interrupted = drag_strip and drag_strip.active(window)
+  if drag_strip then drag_strip.forget(window) end
   local token = geometry_window_token(window)
   if token then
     pending_startup_maximize[token] = nil
     opened_window_tokens[token] = nil
   end
   local workspace = source_float_workspace(window)
-  if workspace then persist_window_placement(window, workspace) end
+  if workspace and not interrupted then persist_window_placement(window, workspace) end
   release_geometry_slot(window, false)
   forget_window_persistence_semantics(window)
   clear_reflow_anchor(window)
 end)
 
 hl.on("hyprland.shutdown", function()
+  if drag_strip then drag_strip.shutdown() end
   local changed = false
   for _, window in safe_ipairs(hl.get_windows()) do
     local workspace = source_float_workspace(window)
@@ -1601,6 +1684,14 @@ hl.on("hyprland.shutdown", function()
 end)
 
 hl.on("window.move_to_workspace", function(window, workspace)
+  if drag_strip and drag_strip.active(window) then
+    -- Native transfer is early: its later post-drag callback owns acceptance.
+    if not workspace_is_regular(workspace) or not workspace_float_enabled(workspace) then
+      drag_strip.interrupt(window)
+      reconcile_drag_strip(window)
+    end
+    return
+  end
   local metadata = window_geometric_max_metadata(window)
   local side = window_side_intent(window)
   local placements = {}
@@ -1633,11 +1724,15 @@ hl.on("window.move_to_workspace", function(window, workspace)
   elseif metadata or side then
     set_window_floating(window, true)
   end
+  reconcile_drag_strip(window)
 end)
 
 -- Hyprland emits this only after the workspace monitor, every member window's
 -- monitor, floating position translation, and native fullscreen reflow finish.
 hl.on("workspace.move_to_monitor", function(workspace, monitor)
+  if drag_strip then
+    for _, window in safe_ipairs(workspace:get_windows()) do drag_strip.interrupt(window) end
+  end
   debug_log("event.workspace_move_to_monitor", {
     workspace = workspace and workspace.name or "nil",
     monitor = monitor and monitor.name or "nil",
@@ -1648,6 +1743,9 @@ end)
 -- Hyprland emits this after monitor layout changes. It carries no monitor, so
 -- inspect every plugin-enabled Float workspace.
 hl.on("monitor.layout_changed", function()
+  if drag_strip then
+    for _, window in safe_ipairs(hl.get_windows()) do drag_strip.interrupt(window) end
+  end
   local changed = {}
   for _, monitor in safe_ipairs(hl.get_monitors()) do
     if update_monitor_bounds_cache(monitor) then changed[monitor_cache_key(monitor)] = true end

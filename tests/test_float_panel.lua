@@ -1361,4 +1361,118 @@ assert(not joined_anchor_log:find("DO_NOT_LOG_REFLOW_SECRET", 1, true) and
 assert(joined_anchor_log:find("[fatlj.float-panel]", 1, true),
   "Lua debug records must use the shared journal prefix")
 
+-- Integration: use the real policy/module, replacing only native mechanisms.
+-- Existing regression coverage above still runs against missing new capabilities.
+do
+  local bridge = hl.plugin.float_panel
+  local decorations, captures = {}, {}
+  bridge.capabilities = function()
+    return { maximize_request_event = true, decoration_input_v1 = true, drag_lifecycle_v1 = true }
+  end
+  bridge.decoration_set = function(address, options) decorations[address] = options; return true end
+  bridge.decoration_remove = function(address) decorations[address] = nil; return true end
+  bridge.decoration_capture = function(address) captures[address] = true; return true end
+  bridge.decoration_release = function(address) captures[address] = nil; return true end
+  bridge.drag_begin = function() return true end
+  bridge.drag_finish = function() return true end
+  local mode_file = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-workspaces", "w"))
+  mode_file:write("1\n2\n"); mode_file:close()
+  ws1.monitor, ws2.monitor = own_monitor, own_monitor
+  own_monitor.reserved = { left = 10, right = 20, top = 30, bottom = 40 }
+  local edited = persisted_window("0xdrag1", "DragIntegration", 200, 150, 400, 200)
+  local other = persisted_window("0xdrag2", "OtherIntegration", 500, 200, 300, 200)
+  edited.visible, edited.stable_id, other.visible, other.stable_id = true, 90001, true, 90002
+  ws1.windows, ws2.windows, ws3.windows = { edited, other }, {}, {}
+  hl.get_windows = function() return { edited, other } end
+  active_window, active_workspace, active_monitor = edited, ws1, own_monitor
+  dofile("hypr/float-panel.lua")
+  assert(decorations[edited.address] and decorations[other.address], "eligible startup windows get strips")
+  assert(decorations[edited.address].height == 6 and decorations[edited.address].visible == false)
+
+  local function saved_file()
+    local f = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-geometries", "r"))
+    local text = f:read("*a"); f:close(); return text
+  end
+  binds["SUPER + LEFT"]()
+  local managed = side_tag(edited)
+  assert(managed)
+  local no_op_file = saved_file()
+  handlers["float_panel.drag"](edited, "begin", "move", "no-op")
+  handlers["float_panel.drag"](edited, "end", "move", "no-op")
+  assert(side_tag(edited) == managed and saved_file() == no_op_file, "no-op retains managed intent and durable file")
+
+  -- Work-area change skips only the active target. Geometry mutation of the
+  -- other window proves this is not a global topology debounce.
+  handlers["float_panel.drag"](edited, "begin", "move", "real")
+  local old_box = { edited.at.x, edited.at.y, edited.size.x, edited.size.y }
+  own_monitor.reserved.bottom = 100
+  local start_dispatches = #dispatched
+  handlers["layer.opened"]({ monitor = own_monitor })
+  local other_changed = false
+  for i = start_dispatches + 1, #dispatched do
+    local action = dispatched[i]
+    if action.kind == "move" or action.kind == "resize" then
+      assert(action.params.window ~= edited, "reflow must not fight active target")
+      if action.params.window == other then other_changed = true end
+    end
+  end
+  assert(other_changed, "other windows must still process work-area changes")
+  assert(edited.at.x == old_box[1] and edited.at.y == old_box[2] and edited.size.x == old_box[3])
+
+  -- Early native workspace notification precedes its final synchronous move.
+  ws1.windows, ws2.windows, edited.workspace = { other }, { edited }, ws2
+  edited.at = { x = 250, y = 180 }
+  handlers["window.move_to_workspace"](edited, ws2)
+  assert(side_tag(edited) == managed, "early transfer cannot clear intent or accept intermediate geometry")
+  edited.at, edited.size = { x = 330, y = 150 }, { x = 350, y = 200 }
+  handlers["float_panel.drag"](edited, "end", "move", "real")
+  assert(not side_tag(edited), "post-end releases superseded intent")
+  assert(saved_file():find("\t330\t150\t350\t200\t", 1, true), "persistence observes final native geometry")
+  local after_file, after_logs = saved_file(), #journal_lines
+  handlers["float_panel.drag"](edited, "end", "move", "real")
+  assert(saved_file() == after_file and #journal_lines == after_logs, "duplicate end cannot accept twice")
+
+  -- Explicit prev is now the real final box: mapping out and back restores it.
+  ws2.monitor, edited.monitor = grow_monitor, grow_monitor
+  edited.at = { x = 330 + grow_monitor.x - own_monitor.x, y = 150 + grow_monitor.y - own_monitor.y }
+  handlers["workspace.move_to_monitor"](ws2, grow_monitor)
+  ws2.monitor, edited.monitor = own_monitor, own_monitor
+  edited.at = { x = edited.at.x + own_monitor.x - grow_monitor.x, y = edited.at.y + own_monitor.y - grow_monitor.y }
+  handlers["workspace.move_to_monitor"](ws2, own_monitor)
+  assert(edited.at.x == 330 and edited.at.y == 150 and edited.size.x == 350 and edited.size.y == 200,
+    "later work-area mapping must start from explicit post-drag prev")
+
+  -- Application-specified placement still gets an ordinary dialog strip, but
+  -- never bypasses the existing persistence exclusion.
+  local positioned = persisted_window("0xdrag3", "PositionedDrag", 250, 180, 200, 100)
+  positioned.visible, positioned.stable_id = true, 90003
+  native_semantics_by_address[positioned.address] = parent_semantics(nil, true)
+  handlers["window.open"](positioned)
+  assert(decorations[positioned.address], "placement exclusion is not drag eligibility")
+  local before_positioned = saved_file()
+  handlers["float_panel.drag"](positioned, "begin", "resize", "positioned")
+  positioned.size = { x = 240, y = 140 }
+  handlers["float_panel.drag"](positioned, "end", "resize", "positioned")
+  assert(saved_file() == before_positioned, "drag cannot persist application-specified placement")
+
+  -- Stable identity, native fullscreen, mode loss, close, and raw ownership loss.
+  edited.fullscreen = 2; handlers["window.fullscreen"](edited)
+  assert(not decorations[edited.address])
+  edited.fullscreen = 0; handlers["window.fullscreen"](edited)
+  assert(decorations[edited.address])
+  handlers["float_panel.drag"](edited, "begin", "move", "lost")
+  edited.at = { x = 430, y = 250 }
+  local before_lost = saved_file()
+  handlers["float_panel.decoration_pointer"](edited, "lost", 0)
+  handlers["float_panel.drag"](edited, "end", "move", "lost")
+  assert(saved_file() == before_lost, "ownership loss must discard pending acceptance")
+  edited.floating = false; handlers["float_panel.window_changed"](edited)
+  assert(not decorations[edited.address])
+  edited.floating = true; handlers["float_panel.window_changed"](edited)
+  handlers["float_panel.drag"](edited, "begin", "move", "close")
+  local before_close = saved_file()
+  handlers["window.close"](edited)
+  assert(not decorations[edited.address] and saved_file() == before_close, "close during input must not accept/persist intermediate edit")
+end
+
 print("LUA_TESTS_OK")

@@ -1,3 +1,4 @@
+#include "drag_strip.hpp"
 #include <array>
 #include <cstdint>
 #include <format>
@@ -120,6 +121,8 @@ void trackMaximizeRequests(const PHLWINDOW& window) {
 int luaCapabilities(lua_State* state) {
     lua_newtable(state);
     setBoolean(state, "maximize_request_event", true);
+    setBoolean(state, "decoration_input_v1", DragStrip::ready());
+    setBoolean(state, "drag_lifecycle_v1", DragStrip::ready());
     return 1;
 }
 
@@ -145,6 +148,8 @@ int luaWindowSemantics(lua_State* state) {
     // Expose compositor facts only. Persistence and placement policies belong
     // to the Lua consumer so they can change without rebuilding this bridge.
     setBoolean(state, "found", true);
+    lua_pushinteger(state, window->getRealBorderSize());
+    lua_setfield(state, -2, "border_size");
     setBoolean(state, "xwayland", window->m_isX11);
     setBoolean(state, "has_parent", hasParent);
     if (parent)
@@ -185,11 +190,23 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("failed to register float_panel.maximize_request");
     }
 
+    try {
+        DragStrip::init(handle);
+    } catch (...) {
+        HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        maximizeRequestEvent.reset();
+        throw;
+    }
+
     // Lua rebuilds its event handler on every config reload, after this plugin
     // event already exists. Re-announce it once per reload so the new handler
     // attaches to the standard custom event before clients can issue requests.
     configPreReloadListener = Event::bus()->m_events.config.preReload.listen([] {
         ++configReloadGeneration;
+        DragStrip::reset();
+        DragStrip::announce(false);
         Event::bus()->m_events.pluginEventRemoved.emit("float_panel.maximize_request");
     });
     configReloadedListener  = Event::bus()->m_events.config.reloaded.listen([] {
@@ -197,6 +214,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             return;
         announcedReloadGeneration = configReloadGeneration;
         Event::bus()->m_events.pluginEventAdded.emit(maximizeRequestEvent);
+        DragStrip::announce(true);
     });
 
     windowCreateListener = Event::bus()->m_events.window.create.listen([](PHLWINDOW window) { trackMaximizeRequests(window); });
@@ -209,11 +227,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         "float-panel-native",
         "Raw window semantics and request bridge for fatlj.float-panel",
         "fatlj",
-        "0.5.1",
+        "0.6.0",
     };
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    DragStrip::stop();
     configPreReloadListener.reset();
     configReloadedListener.reset();
     windowCreateListener.reset();
