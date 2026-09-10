@@ -25,9 +25,19 @@ BarWidget {
     readonly property bool toggleWidget: widgetMode === "Float Toggle"
     readonly property bool regularWorkspace: workspace && workspace.id > 0
     readonly property bool workspaceFloatEnabled: regularWorkspace && floatWorkspaceNames[String(workspace.name || "")] === true
-    readonly property var taskGroups: TaskListModel.groupToplevels(workspace ? workspace.toplevels.values : [], minimizedWorkspace ? minimizedWorkspace.toplevels.values : [], function(toplevel) {
+    // The window caches publish a move as remove-from-old then insert-into-new,
+    // so one notification can expose a window that is in neither list. Group on
+    // the settled state of the current event turn instead of per notification.
+    readonly property var observedTaskGroups: TaskListModel.groupToplevels(workspace ? workspace.toplevels.values : [], minimizedWorkspace ? minimizedWorkspace.toplevels.values : [], function(toplevel) {
         return root.describeToplevel(toplevel);
     })
+    property var taskGroups: []
+
+    function commitTaskGroups() {
+        taskGroups = observedTaskGroups;
+    }
+
+    onObservedTaskGroupsChanged: Qt.callLater(root.commitTaskGroups)
 
     function debugLog(event, fields) {
         if (!debugEnabled)
@@ -286,7 +296,10 @@ BarWidget {
         onFileChanged: reload()
     }
 
-    Component.onCompleted: Hyprland.refreshToplevels()
+    Component.onCompleted: {
+        root.commitTaskGroups();
+        Hyprland.refreshToplevels();
+    }
 
     Connections {
         target: Hyprland
@@ -333,24 +346,29 @@ BarWidget {
         rowSpacing: 0
 
         Repeater {
-            model: root.taskGroups
+            // Key the repeater on the application group keys instead of the
+            // whole recomputed group array. Focus, minimize/restore, and title
+            // changes then only update the affected buttons, and the buttons
+            // and their pointer areas stay alive.
+            model: root.taskGroups.map(function(group) { return group.key })
 
             WidgetButton {
                 id: appButton
 
-                required property var modelData
+                required property int index
+                readonly property var group: root.taskGroups[index] || ({ key: "", appId: "", name: "", iconSource: "", active: false, allMinimized: false, count: 0 })
 
                 bar: root.bar
                 labelVisible: false
                 hasVisualContent: true
-                active: modelData.active
-                dimmed: modelData.allMinimized
+                active: group.active
+                dimmed: group.allMinimized
                 fixedWidth: root.barSize
                 fixedHeight: root.barSize
-                tooltipText: modelData.name + (modelData.count > 1 ? " (" + modelData.count + ")" : "")
+                tooltipText: group.name + (group.count > 1 ? " (" + group.count + ")" : "")
                 onPressed: function(button) {
                     if (button === Qt.LeftButton)
-                        root.activateGroup(modelData);
+                        root.activateGroup(group);
 
                 }
 
@@ -358,7 +376,7 @@ BarWidget {
                     anchors.centerIn: parent
                     width: Math.round(Math.min(parent.width, parent.height) * 0.64)
                     height: width
-                    source: appButton.modelData.iconSource
+                    source: appButton.group.iconSource
                     sourceSize.width: width * Screen.devicePixelRatio
                     sourceSize.height: height * Screen.devicePixelRatio
                     fillMode: Image.PreserveAspectFit
@@ -367,7 +385,7 @@ BarWidget {
                 }
 
                 Rectangle {
-                    visible: appButton.modelData.active
+                    visible: appButton.group.active
                     color: root.bar ? root.bar.urgent : Color.urgent
                     radius: 1
                     width: root.vertical ? 2 : Math.round(parent.width * 0.45)
