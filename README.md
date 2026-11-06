@@ -127,6 +127,8 @@ special:omarchy-minimized-N
 
 The TaskList combines the active workspace with that matching special workspace. It watches the existing Float workspace state file, so switching workspaces or toggling Float/Tiling updates its visibility without restarting the Shell. Because the source workspace is encoded in the special workspace name, no per-window origin database is needed.
 
+Alt-Tab lists non-minimized windows first and minimized windows at the end, preserving MRU order within each section across all displayed workspaces. This also applies to TaskList minimization. Restoring a window returns it to normal MRU ordering on the next Alt-Tab snapshot; TaskList icon ordering is unchanged.
+
 Before disabling/removing the plugin, restore minimized windows through their TaskList icons. For manual recovery, reveal a workspace's hidden windows with:
 
 ```bash

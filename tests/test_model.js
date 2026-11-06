@@ -117,12 +117,13 @@ function descriptor(values) {
     })
   )
 
-  assert.deepEqual(Array.from(items, item => item.representative.address), ["active", "hidden", "new-visible", "old-visible"])
+  assert.deepEqual(Array.from(items, item => item.representative.address), ["active", "new-visible", "old-visible", "hidden"],
+    "a recently minimized window must follow every visible window, regardless of focus history")
   assert.equal(items.length, 4, "every window must remain a separate Alt-Tab item")
-  assert.equal(items[2].appId, items[3].appId, "same-app windows must keep their common application identity")
-  assert.notEqual(items[2].key, items[3].key, "same-app windows must have distinct list identities")
-  assert.equal(items[1].representative.minimized, true)
-  assert.equal(items[2].title, "Newer window")
+  assert.equal(items[1].appId, items[2].appId, "same-app windows must keep their common application identity")
+  assert.notEqual(items[1].key, items[2].key, "same-app windows must have distinct list identities")
+  assert.equal(items[3].representative.minimized, true)
+  assert.equal(items[1].title, "Newer window")
 }
 
 {
@@ -130,8 +131,32 @@ function descriptor(values) {
     visible: { appId: "same.app", mru: 4 },
     hidden: { appId: "same.app", mru: 1 }
   }))
-  assert.deepEqual(Array.from(items, item => item.representative.address), ["hidden", "visible"],
-    "visible and minimized windows from one app must both remain selectable")
+  assert.deepEqual(Array.from(items, item => item.representative.address), ["visible", "hidden"],
+    "visible and minimized windows from one app must both remain selectable, with minimized last")
+}
+
+{
+  const describe = descriptor({
+    recent: { mru: 2, order: 50 },
+    older: { mru: 7, order: 10 },
+    unranked: { mru: -1 },
+    "hidden-recent": { mru: 0, order: 20 },
+    "hidden-older": { mru: 1, order: 5 },
+    "hidden-unranked": { mru: -1, order: 1 }
+  })
+  const visible = [top("unranked"), top("older"), top("recent")]
+  const minimized = [top("hidden-unranked"), top("hidden-older"), top("hidden-recent")]
+  const addresses = items => Array.from(items, item => item.representative.address)
+  assert.deepEqual(addresses(context.listSwitcherToplevels(visible, minimized, describe)),
+    ["recent", "older", "unranked", "hidden-recent", "hidden-older", "hidden-unranked"],
+    "minimized-last takes precedence over MRU and launch order, including missing focus history")
+  assert.deepEqual(addresses(context.listSwitcherToplevels([], minimized, describe)),
+    ["hidden-recent", "hidden-older", "hidden-unranked"],
+    "all-minimized windows remain selectable in MRU order")
+  assert.deepEqual(addresses(context.listSwitcherToplevels(
+    visible.concat(top("hidden-recent")), minimized.slice(0, 2), describe)),
+    ["hidden-recent", "recent", "older", "unranked", "hidden-older", "hidden-unranked"],
+    "a restored window must immediately rejoin visible MRU order without a stale demotion")
 }
 
 {
@@ -261,17 +286,17 @@ function descriptor(values) {
   const rows = outputs => context.listSwitcherClients(clients, outputs, describe)
   const addresses = items => Array.from(items, item => item.representative.address)
   const items = rows(monitors)
-  assert.deepEqual(addresses(items), ["left", "right-hidden", "right", "left-hidden"])
+  assert.deepEqual(addresses(items), ["left", "right", "right-hidden", "left-hidden"])
   assert.equal(items.length, 4, "same-app windows on both monitors remain individual items")
-  assert.deepEqual(JSON.parse(JSON.stringify(items[1].representative.route)), {
+  assert.deepEqual(JSON.parse(JSON.stringify(items[2].representative.route)), {
     workspaceId: 11, workspaceName: "11", minimizedWorkspaceName: "special:omarchy-minimized-11"
   }, "a minimized window must retain its own workspace as the restore destination")
-  assert.equal(items[1].representative.minimized, true)
-  assert.equal(items[2].representative.minimized, false)
+  assert.equal(items[2].representative.minimized, true)
+  assert.equal(items[1].representative.minimized, false)
   assert.equal(items[3].representative.route.workspaceId, 1)
 
   const otherSlot = [monitors[0], { id: 7, activeWorkspace: { id: 12, name: "12" } }]
-  assert.deepEqual(addresses(rows(otherSlot)), ["left", "left-hidden", "other-right", "other-hidden"],
+  assert.deepEqual(addresses(rows(otherSlot)), ["left", "other-right", "left-hidden", "other-hidden"],
     "different local workspace numbers still join the all-visible-workspaces scope")
   assert.deepEqual(addresses(rows([monitors[0]])), ["left", "left-hidden"],
     "unplugged monitors and non-visible workspaces must not leak into the next snapshot")

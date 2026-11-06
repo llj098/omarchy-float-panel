@@ -221,6 +221,40 @@ peers = {
   activate(dispatches[0], "", "top:11,focus:11") // already restored since the snapshot
 }
 
+// Super+M leaves recent focus history on the minimized window. The next
+// Alt+Tab must prefer another visible window, including on a different monitor.
+{
+  const { root, dispatches } = harness()
+  const hidden = client("c", -91, 1, { workspace: { id: -91, name: "special:omarchy-minimized-11" } })
+  const afterMinimize = [clients[0], hidden, client("b", 11, 2)]
+  root.step(1)
+  root.commit() // Also cover a quick Alt release before the snapshots arrive.
+  root.acceptClientsResponse(JSON.stringify(afterMinimize))
+  root.acceptMonitorsResponse(JSON.stringify(monitors))
+  assert.equal(dispatches.length, 1)
+  activate(dispatches[0]) // Must select visible b, not recently minimized c.
+
+  root.beginFromSnapshot(afterMinimize, monitors, 1)
+  assert.deepEqual(Array.from(root.snapshot, item => item.representative.address), ["a", "b", "c"])
+  assert.equal(root.snapshot[root.selectedIndex].representative.address, "b")
+  root.step(1)
+  assert.equal(root.snapshot[root.selectedIndex].representative.address, "c",
+    "minimized windows remain reachable at the end of forward cycling")
+  root.step(1)
+  assert.equal(root.snapshot[root.selectedIndex].representative.address, "a")
+  root.step(-1)
+  assert.equal(root.snapshot[root.selectedIndex].representative.address, "c",
+    "reverse cycling wraps to the minimized tail")
+  assert.equal(dispatches.length, 1, "cycling only changes the highlight")
+  mapped(root)
+  root.cancel()
+  closed(root)
+
+  root.beginFromSnapshot([client("a", 1, 1), client("b", 11, 2), client("c", 11, 0)], monitors, 1)
+  assert.deepEqual(Array.from(root.snapshot, item => item.representative.address), ["c", "a", "b"],
+    "after restore, the next snapshot must use normal visible-window MRU order")
+}
+
 // A map request can still be in flight when Alt is released. Keep the layer
 // alive until its map is acknowledged, then hide; never dispatch before close.
 {

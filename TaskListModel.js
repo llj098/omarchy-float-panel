@@ -177,6 +177,10 @@ function listSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) {
   for (var j = 0; j < minimized.length; j++) add(minimized[j], true)
 
   items.sort(function(a, b) {
+    // Minimizing preserves recent focus history; keep hidden windows at the
+    // tail instead of making the next Alt-Tab immediately restore them.
+    if (a.representative.minimized !== b.representative.minimized)
+      return a.representative.minimized ? 1 : -1
     if (a.mru !== null || b.mru !== null) {
       if (a.mru === null) return 1
       if (b.mru === null) return -1
