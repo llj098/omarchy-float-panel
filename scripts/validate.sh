@@ -7,6 +7,7 @@ python -m json.tool manifest.json >/dev/null
 python tests/validate.py
 node --check TaskListModel.js
 node tests/test_model.js
+node tests/test_switcher.js
 luac -p hypr/float-panel.lua
 luac -p hypr/drag-strip.lua
 lua tests/test_drag_strip.lua

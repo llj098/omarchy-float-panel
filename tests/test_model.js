@@ -228,6 +228,67 @@ function descriptor(values) {
   assert.equal(context.actionForGroup(hidden).action, "restore")
 }
 
+// The switcher follows every monitor's actual active workspace, not its
+// display label, monitor ID arithmetic, or the focused window's workspace.
+{
+  const monitors = [
+    { id: 0, activeWorkspace: { id: 1, name: "1" } },
+    { id: 7, activeWorkspace: { id: 11, name: "11" } }
+  ]
+  function client(address, id, name, mru, extra = {}) {
+    return { address, workspace: { id, name }, mapped: true, class: "same.app", focusHistoryID: mru, ...extra }
+  }
+  const clients = [
+    client("left", 1, "1", 0),
+    client("right", 11, "11", 2),
+    client("left-hidden", -91, "special:omarchy-minimized-1", 3),
+    client("right-hidden", -92, "special:omarchy-minimized-11", 1),
+    client("other-left", 2, "2", 4),
+    client("other-right", 12, "12", 5),
+    client("other-hidden", -93, "special:omarchy-minimized-12", 6),
+    client("scratchpad", -94, "special:scratchpad", 7),
+    client("unmapped", 11, "11", 8, { mapped: false }),
+    client("no-mapping", 11, "11", 9, { mapped: undefined }),
+    client("malformed", 11, "11", 10, { class: "bad\u0000app" }),
+    client("renamed", 11, "stale-name", 11),
+    client("right", 11, "11", 2), // duplicate entries must not create duplicate rows
+    null
+  ]
+  const describe = value => ({
+    address: value.address, appId: value.class, mru: value.focusHistoryID,
+    activated: value.focusHistoryID === 0
+  })
+  const rows = outputs => context.listSwitcherClients(clients, outputs, describe)
+  const addresses = items => Array.from(items, item => item.representative.address)
+  const items = rows(monitors)
+  assert.deepEqual(addresses(items), ["left", "right-hidden", "right", "left-hidden"])
+  assert.equal(items.length, 4, "same-app windows on both monitors remain individual items")
+  assert.deepEqual(JSON.parse(JSON.stringify(items[1].representative.route)), {
+    workspaceId: 11, workspaceName: "11", minimizedWorkspaceName: "special:omarchy-minimized-11"
+  }, "a minimized window must retain its own workspace as the restore destination")
+  assert.equal(items[1].representative.minimized, true)
+  assert.equal(items[2].representative.minimized, false)
+  assert.equal(items[3].representative.route.workspaceId, 1)
+
+  const otherSlot = [monitors[0], { id: 7, activeWorkspace: { id: 12, name: "12" } }]
+  assert.deepEqual(addresses(rows(otherSlot)), ["left", "left-hidden", "other-right", "other-hidden"],
+    "different local workspace numbers still join the all-visible-workspaces scope")
+  assert.deepEqual(addresses(rows([monitors[0]])), ["left", "left-hidden"],
+    "unplugged monitors and non-visible workspaces must not leak into the next snapshot")
+  assert.deepEqual(addresses(rows([monitors[0], { ...monitors[1], disabled: true }])), ["left", "left-hidden"])
+  assert.deepEqual(addresses(rows([monitors[0], { ...monitors[1], mirrorOf: "eDP-1" }])), ["left", "left-hidden"])
+  assert.deepEqual(addresses(rows([...monitors, monitors[0]])), addresses(items), "duplicate monitor scope is harmless")
+  assert.equal(rows([null, { activeWorkspace: { id: -1, name: "special:x" } },
+    { activeWorkspace: { id: 1.5, name: "invalid" } }, {}]).length, 0)
+
+  const named = context.listSwitcherClients([client("named", 37, "work", 1)], [
+    { id: 42, activeWorkspace: { id: 37, name: "work" } }
+  ], describe)
+  assert.equal(named[0].representative.route.workspaceId, 37)
+  assert.equal(named[0].representative.route.workspaceName, "work")
+  assert.equal(named[0].representative.route.minimizedWorkspaceName, "special:omarchy-minimized-37")
+}
+
 assert.equal(context.actionForGroup(null), null)
 assert.equal(context.normalizeAppId(" Org.Example.App.desktop "), "org.example.app")
 assert.equal(context.launchOrderFromTags(["default-opacity*", "float-panel-order-42"]), 42)

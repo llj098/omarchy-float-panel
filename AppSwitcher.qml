@@ -15,14 +15,17 @@ Item {
   property bool opened: false
   property var snapshot: []
   property int selectedIndex: -1
-  property string capturedWorkspaceName: ""
-  property string capturedWorkspaceSelector: ""
-  property string minimizedWorkspaceName: ""
   property var targetScreen: null
-  property bool clientsRequestPending: false
+  property bool snapshotRequestPending: false
+  property var pendingClients: null
+  property var pendingMonitors: null
   property bool commitWhenReady: false
   property int pendingDirection: 0
   property bool debugEnabled: false
+  property string layerState: "hidden"
+  property bool hideWhenMapped: false
+  property var pendingActivation: null
+  readonly property string switcherNamespace: "fatlj-app-switcher"
 
   readonly property string luaLogWirePrefix: "custom>>fatlj.float-panel:log:"
   readonly property color background: Color.menu.background
@@ -44,6 +47,58 @@ Item {
     var value = String(line || "")
     if (value.indexOf(luaLogWirePrefix) === 0)
       console.info(value.slice(luaLogWirePrefix.length))
+  }
+
+  function acceptCompositorEvent(line) {
+    acceptLuaLogLine(line)
+    var value = String(line || "")
+    if (value === "openlayer>>" + switcherNamespace && layerState === "mapping") {
+      layerState = "mapped"
+      if (hideWhenMapped) hideSwitcherLayer()
+    } else if (value === "closelayer>>" + switcherNamespace && layerState !== "hidden") {
+      // The compositor emits this while unmapping, before its own refocus.
+      // Our new IPC request is serviced only after that callback has finished.
+      var activation = layerState === "closing" ? pendingActivation : null
+      abortPresentation()
+      if (activation) activateSelection(activation)
+    }
+  }
+
+  function abortPresentation() {
+    pendingActivation = null
+    hideWhenMapped = false
+    layerState = "hidden"
+    opened = false
+    snapshot = []
+    selectedIndex = -1
+    resetRequest()
+  }
+
+  function activateSelection(selection) {
+    dispatchActivation(selection.target, selection.destination, selection.sourceName, selection.minimizedName)
+  }
+
+  function hideSwitcherLayer() {
+    if (layerState === "mapped") layerState = "closing"
+    opened = false
+    snapshot = []
+    selectedIndex = -1
+    if (layerState === "hidden") {
+      // A quick Alt release can finish before any overlay was ever requested.
+      var activation = pendingActivation
+      pendingActivation = null
+      hideWhenMapped = false
+      if (activation) activateSelection(activation)
+    }
+  }
+
+  function closeSwitcher(selection) {
+    resetRequest()
+    pendingActivation = selection
+    hideWhenMapped = true
+    // Do not guess whether a map is still in flight on the Wayland connection.
+    // Wait for its open event, then unmap and wait for the matching close.
+    if (layerState !== "mapping") hideSwitcherLayer()
   }
 
   function screenForMonitorId(monitorId) {
@@ -94,18 +149,33 @@ Item {
   }
 
   function requestBegin(direction) {
-    if (clientsRequestPending) {
+    if (hideWhenMapped || layerState === "closing") return
+    if (snapshotRequestPending) {
       pendingDirection += direction
       return
     }
     pendingDirection = direction
-    clientsRequestPending = true
+    pendingClients = null
+    pendingMonitors = null
+    snapshotRequestPending = true
     commitWhenReady = false
+    luaLogSocket.connected = true
     clientsSocket.connected = true
+    monitorsSocket.connected = true
+  }
+
+  function resetRequest() {
+    snapshotRequestPending = false
+    clientsSocket.connected = false
+    monitorsSocket.connected = false
+    pendingClients = null
+    pendingMonitors = null
+    pendingDirection = 0
+    commitWhenReady = false
   }
 
   function acceptClientsResponse(text) {
-    if (!clientsRequestPending) return
+    if (!snapshotRequestPending || pendingClients !== null) return
     var clients
     try {
       clients = JSON.parse(String(text || ""))
@@ -113,69 +183,77 @@ Item {
       return
     }
     if (!Array.isArray(clients)) return
-
-    clientsRequestPending = false
+    pendingClients = clients
     clientsSocket.connected = false
+    completeBegin()
+  }
+
+  function acceptMonitorsResponse(text) {
+    if (!snapshotRequestPending || pendingMonitors !== null) return
+    var monitors
+    try {
+      monitors = JSON.parse(String(text || ""))
+    } catch (error) {
+      return
+    }
+    if (!Array.isArray(monitors)) return
+    pendingMonitors = monitors
+    monitorsSocket.connected = false
+    completeBegin()
+  }
+
+  function completeBegin() {
+    // Responses may arrive in either order. Alt release must wait for both,
+    // including when the focused monitor has no active window at all.
+    if (!snapshotRequestPending || pendingClients === null || pendingMonitors === null) return
+    var clients = pendingClients
+    var monitors = pendingMonitors
     var direction = pendingDirection
     var shouldCommit = commitWhenReady
-    pendingDirection = 0
-    commitWhenReady = false
-    beginFromClients(clients, direction)
+    resetRequest()
+    beginFromSnapshot(clients, monitors, direction, !shouldCommit)
     if (shouldCommit) commit()
   }
 
-  function beginFromClients(clients, direction) {
-    var active = null
-    for (var i = 0; i < clients.length; i++) {
-      var client = clients[i]
-      var workspaceName = client && client.workspace ? String(client.workspace.name || "") : ""
-      if (client && client.mapped === true && Number(client.focusHistoryID) === 0 && workspaceName.indexOf("special:") !== 0) {
-        active = client
+  function beginFromSnapshot(clients, monitors, direction, showPanel) {
+    var items = TaskListModel.listSwitcherClients(clients, monitors, function(client) {
+      return root.describeClient(client)
+    })
+    if (items.length === 0) return
+
+    var monitorId = null
+    for (var j = 0; j < monitors.length; j++) {
+      if (monitors[j] && monitors[j].focused === true) { monitorId = monitors[j].id; break }
+    }
+    var activeIndex = -1
+    for (var i = 0; i < items.length; i++) {
+      var window = items[i].representative
+      if (items[i].active && !window.minimized &&
+          (monitorId === null || Number(window.toplevel.monitor) === Number(monitorId))) {
+        activeIndex = i
         break
       }
     }
-    if (!active || !active.workspace) return
-
-    var sourceName = String(active.workspace.name || "")
-    var workspaceId = Number(active.workspace.id)
-    if (!sourceName || !isFinite(workspaceId) || workspaceId <= 0) return
-
-    var minimizedName = "special:omarchy-minimized-" + String(workspaceId)
-    var visible = []
-    var minimized = []
-    for (var j = 0; j < clients.length; j++) {
-      var candidate = clients[j]
-      var candidateWorkspace = candidate && candidate.workspace ? String(candidate.workspace.name || "") : ""
-      if (candidateWorkspace === sourceName) visible.push(candidate)
-      else if (candidateWorkspace === minimizedName) minimized.push(candidate)
-    }
-
-    var items = TaskListModel.listSwitcherToplevels(
-      visible,
-      minimized,
-      function(client) { return root.describeClient(client) }
-    )
-    if (items.length < 2) return
-
+    if (items.length === 1 && activeIndex === 0) return
     snapshot = items
-    capturedWorkspaceName = sourceName
-    capturedWorkspaceSelector = String(workspaceId)
-    minimizedWorkspaceName = minimizedName
-    targetScreen = screenForMonitorId(active.monitor)
-
-    var activeIndex = -1
-    for (var k = 0; k < items.length; k++) {
-      if (items[k].active) { activeIndex = k; break }
+    targetScreen = screenForMonitorId(monitorId)
+    // Several repeated Shift+Tabs can arrive while the requests are pending.
+    var start = activeIndex >= 0 ? activeIndex : (direction > 0 ? -1 : 0)
+    selectedIndex = ((start + direction) % items.length + items.length) % items.length
+    if (showPanel !== false) {
+      if (!luaLogSocket.connected) {
+        abortPresentation()
+        return
+      }
+      layerState = "mapping"
+      opened = true
     }
-    selectedIndex = activeIndex >= 0
-      ? (activeIndex + direction + items.length) % items.length
-      : (direction > 0 ? 0 : items.length - 1)
-    opened = true
-    debugLog("switcher.begin", { workspace: capturedWorkspaceName, candidates: items.length, selected: selectedIndex })
+    debugLog("switcher.begin", { monitor: monitorId, candidates: items.length, selected: selectedIndex })
     Qt.callLater(function() { list.positionViewAtIndex(root.selectedIndex, ListView.Contain) })
   }
 
   function step(direction) {
+    if (hideWhenMapped || layerState === "closing") return
     if (!opened) {
       requestBegin(direction)
       return
@@ -187,10 +265,7 @@ Item {
   }
 
   function cancel() {
-    opened = false
-    snapshot = []
-    selectedIndex = -1
-    commitWhenReady = false
+    closeSwitcher(null)
   }
 
   function windowSelector(address) {
@@ -202,51 +277,60 @@ Item {
     return JSON.stringify(String(value || ""))
   }
 
-  function dispatchActivation(target, restore, destination, sourceName, minimizedName) {
+  function dispatchActivation(target, destination, sourceName, minimizedName) {
     var actions = [
       "local selected = hl.get_window(" + luaString(target) + ")",
       "if not selected or not selected.workspace then return end",
+      "local destination_workspace = hl.get_workspace(" + destination + ")",
+      "if not destination_workspace or destination_workspace.name ~= " + luaString(sourceName) + " or not destination_workspace.monitor or destination_workspace.monitor.active_workspace ~= destination_workspace then return end",
       "local selected_workspace = selected.workspace.name",
       "if selected_workspace ~= " + luaString(sourceName) + " and selected_workspace ~= " + luaString(minimizedName) + " then return end"
     ]
-    if (restore)
-      actions.push("hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = selected }))")
+    // Re-check the live location: a window can be minimized/restored while the
+    // list is open. Never move an already-visible window or steal a moved one.
+    actions.push("if selected_workspace == " + luaString(minimizedName) + " then hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = selected })) end")
     actions.push("if tonumber(selected.fullscreen) ~= 0 then local workspace = selected.workspace; local windows = hl.get_windows(); for i = #windows, 1, -1 do local window = windows[i]; if window.workspace == workspace and window.floating and not window.pinned and tonumber(window.fullscreen) == 0 and window.allowed_over_fullscreen then hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"bottom\", window = window })) end end end")
-    actions.push("hl.dispatch(hl.dsp.focus({ window = selected }))")
+    // alter_zorder itself simulates pointer movement in Hyprland 0.56.2.
+    // Finish with explicit focus so follow_mouse cannot undo this handoff.
     actions.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = selected }))")
-    debugLog("switcher.activate", { target: target, restore: restore, destination: destination })
+    actions.push("hl.dispatch(hl.dsp.focus({ window = selected }))")
+    debugLog("switcher.activate", { target: target, destination: destination })
     Hyprland.dispatch("(function() return function() " + actions.join("; ") + " end end)()")
   }
 
   function commit() {
-    if (clientsRequestPending) {
+    if (hideWhenMapped || layerState === "closing") return "pending-close"
+    if (snapshotRequestPending) {
       commitWhenReady = true
       return "pending-commit"
     }
-    if (!opened || selectedIndex < 0 || selectedIndex >= snapshot.length) return "inactive"
+    if (selectedIndex < 0 || selectedIndex >= snapshot.length) return "inactive"
 
     var group = snapshot[selectedIndex]
     var selected = group && group.representative ? group.representative : null
     var address = selected ? String(selected.address || "") : ""
     var target = windowSelector(address)
-    var destination = capturedWorkspaceSelector
-    var sourceName = capturedWorkspaceName
-    var minimizedName = minimizedWorkspaceName
-    var restore = selected ? selected.minimized === true : false
-    cancel()
-    if (!target || !destination) return "invalid-selection"
-
-    dispatchActivation(target, restore, destination, sourceName, minimizedName)
-    return "activated:" + address
+    var route = selected ? selected.route : null
+    var destination = route ? String(route.workspaceId) : ""
+    var sourceName = route ? route.workspaceName : ""
+    var minimizedName = route ? route.minimizedWorkspaceName : ""
+    if (!target || !destination) {
+      cancel()
+      return "invalid-selection"
+    }
+    closeSwitcher({ target: target, destination: destination, sourceName: sourceName, minimizedName: minimizedName })
+    return layerState === "hidden" ? "activated:" + address : "pending-close"
   }
 
   Socket {
     id: luaLogSocket
     path: Hyprland.eventSocketPath
     connected: true
+    onConnectionStateChanged: if (!connected) root.abortPresentation()
+    onError: root.abortPresentation()
     parser: SplitParser {
       splitMarker: "\n"
-      onRead: function(data) { root.acceptLuaLogLine(data) }
+      onRead: function(data) { root.acceptCompositorEvent(data) }
     }
   }
 
@@ -255,20 +339,32 @@ Item {
     path: Hyprland.requestSocketPath
     connected: false
     onConnectionStateChanged: {
-      if (connected && root.clientsRequestPending) {
+      if (connected && root.snapshotRequestPending) {
         write("j/clients")
         flush()
       }
     }
-    onError: {
-      root.clientsRequestPending = false
-      root.commitWhenReady = false
-      root.pendingDirection = 0
-      connected = false
-    }
+    onError: root.resetRequest()
     parser: StdioCollector {
       waitForEnd: false
       onDataChanged: root.acceptClientsResponse(text)
+    }
+  }
+
+  Socket {
+    id: monitorsSocket
+    path: Hyprland.requestSocketPath
+    connected: false
+    onConnectionStateChanged: {
+      if (connected && root.snapshotRequestPending) {
+        write("j/monitors")
+        flush()
+      }
+    }
+    onError: root.resetRequest()
+    parser: StdioCollector {
+      waitForEnd: false
+      onDataChanged: root.acceptMonitorsResponse(text)
     }
   }
 
@@ -309,7 +405,7 @@ Item {
     anchors { top: true; right: true; bottom: true; left: true }
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
-    WlrLayershell.namespace: "fatlj-app-switcher"
+    WlrLayershell.namespace: root.switcherNamespace
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
 

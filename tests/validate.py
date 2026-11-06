@@ -79,14 +79,14 @@ for required in (
     'name: "alt-tab-previous"',
     'name: "alt-release"',
     "onReleased: root.commit()",
-    "TaskListModel.listSwitcherToplevels",
+    "TaskListModel.listSwitcherClients",
     "Socket {",
     "path: Hyprland.requestSocketPath",
     'write("j/clients")',
+    'write("j/monitors")',
     "JSON.parse",
     "client.focusHistoryID",
     "client.mapped !== true",
-    "special:omarchy-minimized-",
     "TaskListModel.hasEmbeddedNul(client.class)",
     "Color.menu.background",
     "Color.menu.selectedBackground",
@@ -113,6 +113,7 @@ for required in (
 for forbidden_cache_source in (
     "Hyprland.activeToplevel",
     "Hyprland.focusedWorkspace",
+    "Hyprland.monitors",
     "workspace.toplevels.values",
     "Hyprland.toplevels.values",
 ):
@@ -131,18 +132,40 @@ assert existence_guard in activation
 assert fullscreen_guard in activation
 assert "window.workspace == workspace" in activation
 assert "window.allowed_over_fullscreen" in activation
-assert activation.index(live_target) < activation.index(existence_guard) < activation.index(fullscreen_guard) < activation.index(lower) < activation.index(focus) < activation.index(raise_top)
+assert activation.index(live_target) < activation.index(existence_guard) < activation.index(fullscreen_guard) < activation.index(lower) < activation.index(raise_top) < activation.index(focus)
 assert activation.count(lower) == 1, "fullscreen cleanup must remain conditional and normal activation unchanged"
 assert "Number(ipc.fullscreen)" not in switcher, "mutable fullscreen state must not come from stale lastIpcObject"
-assert "dispatchActivation(target, restore, destination, sourceName, minimizedName)" in switcher
+assert "activateSelection(activation)" in switcher
+assert 'value === "closelayer>>" + switcherNamespace' in switcher
+assert 'value === "openlayer>>" + switcherNamespace' in switcher
+assert 'if (layerState !== "mapping") hideSwitcherLayer()' in switcher
+assert 'var activation = layerState === "closing" ? pendingActivation : null' in switcher
+assert 'onError: root.abortPresentation()' in switcher
+assert 'Timer {' not in switcher, "focus handoff must wait for lifecycle events, never a guessed delay"
+assert activation.index(raise_top) < activation.index(focus), \
+    "alter_zorder may refocus under the stationary pointer; explicit focus must be last"
+assert "selected.route" in switcher and "route.workspaceId" in switcher
+assert "capturedWorkspaceSelector" not in switcher and "capturedWorkspaceName" not in switcher, \
+    "activation must use each selected window's route, not the initiating workspace"
+assert "destination_workspace.monitor.active_workspace ~= destination_workspace" in activation, \
+    "a stale snapshot must not activate a now-hidden workspace"
+assert 'if selected_workspace == ' in activation and 'if (restore)' not in activation, \
+    "restore must follow the live minimized state rather than the captured state"
+assert switcher.count('onError: root.resetRequest()') == 2, \
+    "failure of either snapshot request must reset both sockets"
+model = (ROOT / "TaskListModel.js").read_text()
+assert "monitor.activeWorkspace" in model and "special:omarchy-minimized-" in model
+assert "workspaceId: id" in model and "description.route" in model
 assert "groupSwitcherToplevels" not in switcher
 assert "floatWorkspaceNames" not in switcher and "workspaceFloatEnabled" not in switcher, \
     "Alt-Tab must remain available on regular Tiling workspaces"
 assert 'return "pending-cancelled"' not in switcher, \
     "releasing Alt during a live-client request must commit after the response, not cancel"
-request_accept = switcher[switcher.index("  function acceptClientsResponse("):switcher.index("  function beginFromClients(")]
-assert request_accept.index("var shouldCommit = commitWhenReady") < request_accept.index("beginFromClients(clients, direction)") < request_accept.index("if (shouldCommit) commit()"), \
+request_accept = switcher[switcher.index("  function completeBegin("):switcher.index("  function beginFromSnapshot(")]
+assert request_accept.index("var shouldCommit = commitWhenReady") < request_accept.index("beginFromSnapshot(clients, monitors, direction, !shouldCommit)") < request_accept.index("if (shouldCommit) commit()"), \
     "a quick Alt release must commit exactly after building the live snapshot"
+assert "pendingClients === null || pendingMonitors === null" in request_accept, \
+    "both live snapshots must arrive before selection or a pending Alt release commits"
 
 lua = (ROOT / "hypr" / "float-panel.lua").read_text()
 for required in (

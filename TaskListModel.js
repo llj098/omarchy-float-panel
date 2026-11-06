@@ -152,6 +152,7 @@ function listSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) {
       title: stringValue(description.title),
       activated: description.activated === true,
       minimized: minimized === true,
+      route: description.route || null,
       mru: mru,
       order: launchOrder
     }
@@ -190,6 +191,58 @@ function listSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) {
   })
 
   return items
+}
+
+// Scope by the compositor's actual active workspace IDs, never by the bar's
+// per-monitor labels (two displayed "1" labels may mean IDs 1 and 11).
+function listSwitcherClients(clients, monitors, describe) {
+  var byId = Object.create(null)
+  var byMinimizedName = Object.create(null)
+  var outputs = monitors || []
+  for (var i = 0; i < outputs.length; i++) {
+    var monitor = outputs[i]
+    if (!monitor || monitor.disabled === true || (monitor.mirrorOf && monitor.mirrorOf !== "none")) continue
+    var workspace = monitor.activeWorkspace
+    var id = workspace ? Number(workspace.id) : 0
+    var name = workspace ? stringValue(workspace.name) : ""
+    if (!isFinite(id) || id <= 0 || Math.floor(id) !== id || !name || name.indexOf("special:") === 0) continue
+    var route = {
+      workspaceId: id,
+      workspaceName: name,
+      minimizedWorkspaceName: "special:omarchy-minimized-" + id
+    }
+    byId[id] = route
+    byMinimizedName[route.minimizedWorkspaceName] = route
+  }
+
+  var visible = []
+  var minimized = []
+  var routes = Object.create(null)
+  var values = clients || []
+  for (var j = 0; j < values.length; j++) {
+    var client = values[j]
+    if (!client || client.mapped !== true || hasEmbeddedNul(client.class) || hasEmbeddedNul(client.initialClass)) continue
+    var address = stringValue(client.address)
+    if (!address || routes[address]) continue
+    var clientWorkspace = client.workspace
+    if (!clientWorkspace) continue
+    var clientName = stringValue(clientWorkspace.name)
+    var destination = byId[Number(clientWorkspace.id)]
+    if (destination && destination.workspaceName === clientName) {
+      visible.push(client)
+    } else {
+      destination = byMinimizedName[clientName]
+      if (!destination) continue
+      minimized.push(client)
+    }
+    routes[address] = destination
+  }
+
+  return listSwitcherToplevels(visible, minimized, function(client) {
+    var description = describe(client) || {}
+    description.route = routes[stringValue(client.address)]
+    return description
+  })
 }
 
 function actionForGroup(group, liveClients, cycleStartAddress) {
