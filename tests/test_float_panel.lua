@@ -201,6 +201,11 @@ o = {
   shell_quote = function(value) return "'" .. value:gsub("'", "'\\''") .. "'" end,
 }
 
+-- The legacy geometry/binding scenarios below start explicitly in Tiling;
+-- default-Float and migration are exercised separately later in this file.
+local mode_fixture = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-workspaces", "w"))
+mode_fixture:write("# float-panel-workspaces-v2\ntile\t1\ntile\t2\ntile\t3\n")
+mode_fixture:close()
 dofile("hypr/float-panel.lua")
 
 assert(type(binds["SUPER + LEFT"]) == "function")
@@ -260,7 +265,7 @@ local before_removal_observation = #dispatched
 handlers["monitor.removed"](own_monitor)
 assert(#dispatched == before_removal_observation,
   "monitor removal diagnostics must not apply geometry; workspace event remains authoritative")
-assert(#window_rules == 1, "only the auxiliary no-border rule must be installed")
+assert(#window_rules == 4, "the auxiliary and each regular workspace rule must be installed")
 local auxiliary_rule = window_rules[1]
 assert(auxiliary_rule and auxiliary_rule.border_size == 0 and
   auxiliary_rule.match.tag == "float-panel-auxiliary-no-border",
@@ -273,7 +278,7 @@ assert(w2.order_tag and w2.order_tag:match("^%+float%-panel%-order%-%d+$"), "all
 
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "toggle on must float every current window")
-assert(#window_rules == 2 and window_rules[2].match.workspace == "1" and window_rules[2].float == true and
+assert(#window_rules == 4 and window_rules[2].match.workspace == "1" and window_rules[2].float == true and
   window_rules_by_name["fatlj-float-workspace-1"].enabled,
   "toggle on must install a standard pre-layout Float rule for future windows")
 assert(#commands == 1 and commands[1]:find("floating", 1, true), "toggle must notify its mode")
@@ -831,7 +836,7 @@ assert(not opened.floating, "toggle off must tile every current window")
 local state_file = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-workspaces", "r"))
 local persisted = state_file:read("*a")
 state_file:close()
-assert(persisted == "1\n3\n", "workspace modes must be persisted independently and atomically")
+assert(persisted == "# float-panel-workspaces-v2\ntile\t2\n", "workspace modes must be persisted independently and atomically")
 
 local function persisted_window(address, class, x, y, width, height)
   return {

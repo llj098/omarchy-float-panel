@@ -43,6 +43,14 @@ Item {
     if (debugEnabled) console.info("[fatlj.float-panel] " + event + " " + JSON.stringify(fields || {}))
   }
 
+  function status() {
+    return JSON.stringify({ eventConnected: luaLogSocket.connected, layer: layerState,
+      opened: opened, snapshotPending: snapshotRequestPending })
+  }
+
+  Component.onCompleted: root.debugLog("switcher.loaded", {})
+  Component.onDestruction: root.debugLog("switcher.unloaded", {})
+
   function acceptLuaLogLine(line) {
     var value = String(line || "")
     if (value.indexOf(luaLogWirePrefix) === 0)
@@ -206,6 +214,9 @@ Item {
     // Responses may arrive in either order. Alt release must wait for both,
     // including when the focused monitor has no active window at all.
     if (!snapshotRequestPending || pendingClients === null || pendingMonitors === null) return
+    // A request socket can win the race against event-socket reconnection.
+    // Keep the snapshot until the lifecycle stream is ready; no focus timer.
+    if (!luaLogSocket.connected) return
     var clients = pendingClients
     var monitors = pendingMonitors
     var direction = pendingDirection
@@ -322,12 +333,18 @@ Item {
     return layerState === "hidden" ? "activated:" + address : "pending-close"
   }
 
-  Socket {
+  ReconnectingEventSocket {
     id: luaLogSocket
     path: Hyprland.eventSocketPath
-    connected: true
-    onConnectionStateChanged: if (!connected) root.abortPresentation()
-    onError: root.abortPresentation()
+    onInterrupted: {
+      root.debugLog("switcher.event_socket_lost", {})
+      // Never replay a selection after losing its layer lifecycle events.
+      root.abortPresentation()
+    }
+    onRestored: {
+      root.debugLog("switcher.event_socket_ready", {})
+      root.completeBegin()
+    }
     parser: SplitParser {
       splitMarker: "\n"
       onRead: function(data) { root.acceptCompositorEvent(data) }
@@ -344,7 +361,7 @@ Item {
         flush()
       }
     }
-    onError: root.resetRequest()
+    onError: Qt.callLater(root.resetRequest)
     parser: StdioCollector {
       waitForEnd: false
       onDataChanged: root.acceptClientsResponse(text)
@@ -361,7 +378,7 @@ Item {
         flush()
       }
     }
-    onError: root.resetRequest()
+    onError: Qt.callLater(root.resetRequest)
     parser: StdioCollector {
       waitForEnd: false
       onDataChanged: root.acceptMonitorsResponse(text)

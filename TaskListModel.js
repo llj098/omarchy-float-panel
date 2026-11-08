@@ -319,3 +319,22 @@ function actionForGroup(group, liveClients, cycleStartAddress) {
 
   return { action: "restore", target: windows[0], cycleStart: windows[0].address }
 }
+
+// Shared state format with Lua: old positive-only lists had no explicit Tiling
+// overrides. Missing state and new workspace names therefore inherit Float.
+function parseWorkspaceModes(contents) {
+    var modes = Object.create(null);
+    var lines = String(contents || "").split("\n");
+    var versioned = false;
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].replace(/\r$/, "");
+        if (line === "# float-panel-workspaces-v2") versioned = true;
+        else if (versioned && line.slice(0, 5) === "tile\t" && line.length > 5)
+            modes[line.slice(5)] = false;
+    }
+    return modes;
+}
+
+function workspaceFloatEnabled(modes, name) {
+    return String(name || "") !== "" && modes[String(name)] !== false;
+}

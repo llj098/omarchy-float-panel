@@ -28,7 +28,7 @@ for required in (
     'float-panel-workspaces',
     "watchChanges: true",
     "onFileChanged: reload()",
-    "workspace.id > 0",
+    'String(workspace.name || "").indexOf("special:") !== 0',
     'widgetMode === "Float Toggle"',
     "toggleWidget || (workspaceFloatEnabled && taskGroups.length > 0)",
     "BarIconButton",
@@ -140,7 +140,7 @@ assert 'value === "closelayer>>" + switcherNamespace' in switcher
 assert 'value === "openlayer>>" + switcherNamespace' in switcher
 assert 'if (layerState !== "mapping") hideSwitcherLayer()' in switcher
 assert 'var activation = layerState === "closing" ? pendingActivation : null' in switcher
-assert 'onError: root.abortPresentation()' in switcher
+assert 'onInterrupted: {' in switcher and 'root.abortPresentation()' in switcher
 assert 'Timer {' not in switcher, "focus handoff must wait for lifecycle events, never a guessed delay"
 assert activation.index(raise_top) < activation.index(focus), \
     "alter_zorder may refocus under the stationary pointer; explicit focus must be last"
@@ -151,7 +151,7 @@ assert "destination_workspace.monitor.active_workspace ~= destination_workspace"
     "a stale snapshot must not activate a now-hidden workspace"
 assert 'if selected_workspace == ' in activation and 'if (restore)' not in activation, \
     "restore must follow the live minimized state rather than the captured state"
-assert switcher.count('onError: root.resetRequest()') == 2, \
+assert switcher.count('onError: Qt.callLater(root.resetRequest)') == 2, \
     "failure of either snapshot request must reset both sockets"
 model = (ROOT / "TaskListModel.js").read_text()
 assert "monitor.activeWorkspace" in model and "special:omarchy-minimized-" in model
@@ -459,5 +459,11 @@ assert 'workspace = next_workspace and "e+1" or "e-1"' not in lua, "cross-monito
 assert "hl.dsp.window.cycle_next" not in lua and "hl.dsp.window.bring_to_top" not in lua, "Super+Tab must remain workspace navigation in every mode"
 for forbidden in ("callLater", "Timer", "poll", "mouse_button"):
     assert forbidden not in lua, f"migration repair must not use delayed/blanket workaround: {forbidden}"
+
+
+assert "onError: Qt.callLater(root.resetClientsRequest)" in qml
+recovery = (ROOT / "ReconnectingEventSocket.qml").read_text()
+assert "onError: Qt.callLater(root.handleError)" in recovery
+assert "Math.min(root.retryDelay * 2, 4000)" in recovery
 
 print("STATIC_VALIDATION_OK")

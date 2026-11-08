@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "fatlj.float-panel",
   "name": "Float Panel Task List",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "fatlj",
   "description": "A per-workspace application task list and themed Alt-Tab switcher for Omarchy.",
   "kinds": [

@@ -1,6 +1,6 @@
 # Omarchy Float Panel
 
-An Omarchy 4 bar widget that shows one icon per application on each monitor's active workspace. It also includes native Hyprland Lua bindings for per-workspace floating mode and keyboard-driven minimize/restore behavior.
+An Omarchy 4 / 4.5 bar widget that shows one icon per application on each monitor's active workspace. It also includes native Hyprland Lua bindings for per-workspace floating mode and keyboard-driven minimize/restore behavior.
 
 ## Behavior
 
@@ -20,13 +20,26 @@ An Omarchy 4 bar widget that shows one icon per application on each monitor's ac
 - `Super+F` keeps Omarchy's true synchronized fullscreen in Tiling mode; in Float mode it toggles compositor-only fullscreen, hiding the bar and margins without telling the client to hide browser tabs or other chrome.
 - `Super+Tab`/`Super+Shift+Tab` keep Omarchy's next/previous-workspace behavior in both modes. App switching remains exclusively on `Alt+Tab`.
 - `Alt+Tab` opens a centered, launcher-themed MRU window list covering the currently displayed regular workspace on **every monitor**, in both Tiling and Float modes. Different workspace numbers on different monitors are included too; non-visible workspaces and unrelated special workspaces are excluded. The first chord snapshots live `j/monitors` and `j/clients` data from Hyprland's request socket rather than trusting Quickshell's event cache, so a dropped event socket cannot leave ghost applications in the list. Every window is a separate item even when several belong to the same application; each displayed workspace's minimized windows are included. The overlay stays on the initiating monitor. Selecting a window focuses it on its own monitor without moving it; a minimized window restores to its own source workspace, not the initiating workspace. Tab/Shift+Tab uses Hyprland's native keyboard repeat to move only the highlight. Releasing either Alt key commits even when Shift remains held; if either live snapshot is still loading, the selection is committed once both responses arrive instead of cancelling the switch. Activation rechecks the live window and destination workspace: closed/moved windows and workspaces no longer displayed are skipped. When the overlay has been requested, activation waits for its compositor `closelayer` event, then raises the target and focuses it last. This keeps overlay teardown and z-order pointer re-evaluation from stealing the selected focus, even with `follow_mouse = 1` and `no_warps = true`. No timer, forced pointer movement, or global input-setting override is used.
-- Floating mode is independent per workspace and persists across Hyprland config reloads and logins.
+- Floating mode is the default on every regular workspace, including newly created per-monitor workspaces. Explicit Tiling choices remain independent per workspace and persist across Hyprland config reloads and logins.
 - Float windows without application-specified placement remember their last closed free, half-screen, or geometric-max placement per workspace and restore it when reopened.
 - New parented windows without application-specified placement are initially centered over their concrete parent, then fitted to the monitor work area; application-specified placement remains application-owned.
 - Application minimum-size hints are ignored globally without application-class rules; maximum-size hints retain Hyprland's native behavior.
 - No daemon, polling loop, fixed workspace ID, or hyprbars plugin is used.
 
-Hyprland supports tiled and floating windows concurrently. The Lua integration keeps only a set of workspace names whose normal windows should be floating. For each enabled workspace it enables a standard workspace-matched `float` window rule, so new windows are Float before layout placement; current and moved windows are reconciled separately.
+Hyprland supports tiled and floating windows concurrently. The Lua integration defaults regular workspaces to Float and keeps explicit Tiling overrides. For each enabled workspace it enables a standard workspace-matched `float` window rule, so new windows are Float before layout placement; current and moved windows are reconciled separately.
+
+## Omarchy 4.5 compatibility
+
+See [the compatibility and crash investigation](docs/omarchy-4.5-compatibility.md) for the verified versions, test evidence, and limitations. Use this plugin's Float Toggle / `Super+Shift+T`, **not** Omarchy's separate official floating workspace mode; both controllers must not own the same workspace. Official dwindle/scrolling layouts remain available under Tiling.
+
+Socket error handlers defer cleanup out of Quickshell's native error callback to avoid a reproducible reentrant socket-destruction crash. The independent AppSwitcher event stream automatically reconnects with capped backoff; a dropped stream cancels the old selection and never replays it. This timer is transport recovery only, not a focus/placement delay.
+
+Read-only health checks:
+
+```bash
+omarchy-shell shell debugBarGeometry
+omarchy-shell shell call fatlj.float-panel status '{}'
+```
 
 ## Requirements
 
@@ -83,13 +96,13 @@ In every mode, `Super+Tab` and `Super+Shift+Tab` cycle the existing regular work
 
 The plugin supports multiple bar-widget instances. Existing/default instances use `Task List`; configure an additional instance as `Float Toggle` and place it beside `omarchy.indicators`. It remains visible and clickable in both modes and calls the same in-process Lua mode function as the keyboard binding. Omarchy's first-party Indicators loader has no third-party indicator registration point, so no system plugin files are modified.
 
-The set of floating workspace names is stored at:
+Explicit Tiling workspace overrides are stored at:
 
 ```text
 ~/.local/state/omarchy/float-panel-workspaces
 ```
 
-Deleting that file resets the remembered modes at the next Hyprland config reload. Switching to tiling deliberately tiles all normal windows on that workspace; it does not preserve per-window exceptions from before the toggle.
+The v2 file starts with `# float-panel-workspaces-v2` and records each opt-out as `tile<TAB>workspace-name`. Legacy positive-only Float lists, an empty file, and a missing file all inherit the new Float default. Deleting that file resets every regular workspace to Float at the next Hyprland config reload. Switching to tiling deliberately tiles all normal windows on that workspace; it does not preserve per-window exceptions from before the toggle.
 
 On a Float workspace, a first-open application maximize request becomes the existing non-fullscreen geometry maximize only when that window has no saved placement. A saved free/half/max placement always wins, and Tiling workspaces retain Omarchy's normal maximize suppression.
 
@@ -190,6 +203,6 @@ Lua, TaskList, and AppSwitcher records all use the `[fatlj.float-panel]` prefix.
 ./scripts/validate.sh
 ```
 
-The validation suite checks the manifest, QML/JavaScript/Lua syntax, grouping behavior, cross-monitor Alt-Tab scope and per-window restore routing, asynchronous snapshot/Alt-release handling, active-window workspace routing, fractional-scale geometry, pinned-window fitting, workspace-mode events, minimize routing, and the absence of fixed workspace/hyprbars dependencies.
+The validation suite also runs an isolated offscreen Quickshell socket-recovery test, and checks default-Float/explicit-Tiling migration, new workspace rules, the manifest, QML/JavaScript/Lua syntax, grouping behavior, cross-monitor Alt-Tab scope and per-window restore routing, asynchronous snapshot/Alt-release handling, active-window workspace routing, fractional-scale geometry, pinned-window fitting, workspace-mode events, minimize routing, and the absence of fixed workspace/hyprbars dependencies.
 
 A real Omarchy/Hyprland session is still required for final visual and interaction testing.

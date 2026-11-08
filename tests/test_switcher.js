@@ -301,4 +301,38 @@ for (const abort of [root => root.cancel(), root => root.abortPresentation()]) {
   assert.equal(root.opened, false)
 }
 
+// Request responses can arrive before the event socket finishes reconnecting.
+{
+  const { root, dispatches } = harness()
+  root.step(1)
+  root.luaLogSocket.connected = false
+  root.acceptClientsResponse(JSON.stringify(clients))
+  root.acceptMonitorsResponse(JSON.stringify(monitors))
+  assert.equal(root.snapshotRequestPending, true)
+  assert.equal(root.opened, false)
+  root.luaLogSocket.connected = true
+  root.completeBegin() // onRestored
+  assert.equal(root.opened, true)
+  mapped(root)
+  root.commit()
+  closed(root)
+  assert.equal(dispatches.length, 1)
+}
+
+// A lost stream cancels the old intent. Recovery cannot replay an old selection.
+{
+  const { root, dispatches } = harness()
+  root.step(1)
+  root.luaLogSocket.connected = false
+  root.acceptClientsResponse(JSON.stringify(clients))
+  root.acceptMonitorsResponse(JSON.stringify(monitors))
+  root.commit()
+  root.abortPresentation() // onInterrupted
+  root.luaLogSocket.connected = true
+  root.completeBegin() // onRestored
+  assert.equal(root.opened, false)
+  assert.equal(dispatches.length, 0)
+  assert.equal(JSON.parse(root.status()).eventConnected, true)
+}
+
 console.log("SWITCHER_TESTS_OK")

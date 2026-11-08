@@ -318,4 +318,18 @@ assert.equal(context.actionForGroup(null), null)
 assert.equal(context.normalizeAppId(" Org.Example.App.desktop "), "org.example.app")
 assert.equal(context.launchOrderFromTags(["default-opacity*", "float-panel-order-42"]), 42)
 assert.equal(context.launchOrderFromTags(["float-panel-order-invalid"]), null)
+
+
+// Default Float, legacy migration, explicit Tiling, CRLF and hostile map keys.
+for (const state of ["", "1\n11\n", "# float-panel-workspaces-v2\n"]) {
+  const modes = context.parseWorkspaceModes(state);
+  for (const name of ["1", "11", "21", "dev", "constructor", "__proto__"])
+    assert.equal(context.workspaceFloatEnabled(modes, name), true);
+}
+const explicitModes = context.parseWorkspaceModes("# float-panel-workspaces-v2\r\ntile\t11\r\ntile\t__proto__\r\n");
+assert.equal(context.workspaceFloatEnabled(explicitModes, "11"), false);
+assert.equal(context.workspaceFloatEnabled(explicitModes, "__proto__"), false);
+assert.equal(context.workspaceFloatEnabled(explicitModes, "21"), true);
+assert.equal(context.workspaceFloatEnabled(explicitModes, ""), false);
+
 console.log("MODEL_TESTS_OK")

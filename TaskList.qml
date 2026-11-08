@@ -23,8 +23,8 @@ BarWidget {
     property var groupCycleStarts: ({})
     readonly property string widgetMode: settings && settings.mode ? String(settings.mode) : "Task List"
     readonly property bool toggleWidget: widgetMode === "Float Toggle"
-    readonly property bool regularWorkspace: workspace && workspace.id > 0
-    readonly property bool workspaceFloatEnabled: regularWorkspace && floatWorkspaceNames[String(workspace.name || "")] === true
+    readonly property bool regularWorkspace: workspace && workspace.id !== 0 && String(workspace.name || "").indexOf("special:") !== 0
+    readonly property bool workspaceFloatEnabled: regularWorkspace && TaskListModel.workspaceFloatEnabled(floatWorkspaceNames, workspace.name)
     // The window caches publish a move as remove-from-old then insert-into-new,
     // so one notification can expose a window that is in neither list. Group on
     // the settled state of the current event turn instead of per notification.
@@ -47,15 +47,7 @@ BarWidget {
     }
 
     function setFloatWorkspaceState(contents) {
-        var names = {};
-        var lines = String(contents || "").split("\n");
-        for (var i = 0; i < lines.length; i++) {
-            var name = lines[i].replace(/\r$/, "");
-            if (name)
-                names[name] = true;
-
-        }
-        floatWorkspaceNames = names;
+        floatWorkspaceNames = TaskListModel.parseWorkspaceModes(contents);
     }
 
     function findWorkspaceByName(name) {
@@ -149,15 +141,15 @@ BarWidget {
     }
 
     function toggleWorkspaceMode() {
-        var workspaceId = workspace ? Number(workspace.id) : 0;
-        if (workspaceId <= 0)
+        var selector = workspaceSelector(workspace);
+        if (!regularWorkspace || !selector)
             return ;
 
         debugLog("toggle.click", {
-            "workspace": String(workspace.name || workspaceId),
+            "workspace": String(workspace.name || selector),
             "enabled": !workspaceFloatEnabled
         });
-        Hyprland.dispatch("(function() return function() if fatlj_float_panel and type(fatlj_float_panel.toggle_workspace_mode) == \"function\" then fatlj_float_panel.toggle_workspace_mode(" + workspaceId + ") end end end)()");
+        Hyprland.dispatch("(function() return function() if fatlj_float_panel and type(fatlj_float_panel.toggle_workspace_mode) == \"function\" then fatlj_float_panel.toggle_workspace_mode(" + luaString(selector) + ") end end end)()");
     }
 
     function activateGroup(group) {
@@ -256,6 +248,13 @@ BarWidget {
         Hyprland.refreshToplevels();
     }
 
+    function resetClientsRequest() {
+        clientsRequestPending = false;
+        pendingActivationGroup = null;
+        pendingWorkspaceName = "";
+        clientsSocket.connected = false;
+    }
+
     Socket {
         id: clientsSocket
         path: Hyprland.requestSocketPath
@@ -266,12 +265,8 @@ BarWidget {
                 flush();
             }
         }
-        onError: {
-            root.clientsRequestPending = false;
-            root.pendingActivationGroup = null;
-            root.pendingWorkspaceName = "";
-            connected = false;
-        }
+        // Do not disconnect inside Quickshell's native error signal delivery.
+        onError: Qt.callLater(root.resetClientsRequest)
         parser: StdioCollector {
             waitForEnd: false
             onDataChanged: root.acceptClientsResponse(text)
@@ -283,7 +278,10 @@ BarWidget {
         watchChanges: true
         printErrors: false
         onLoaded: root.setFloatWorkspaceState(text())
-        onLoadFailed: root.setFloatWorkspaceState("")
+        onLoadFailed: function(error) {
+            if (error === FileViewError.FileNotFound) root.setFloatWorkspaceState("");
+            else root.debugLog("tasklist.state_read_failed", { error: error });
+        }
         onFileChanged: reload()
     }
 
@@ -296,7 +294,19 @@ BarWidget {
         onFileChanged: reload()
     }
 
+    function logVisibility() {
+        debugLog("tasklist.state", { mode: widgetMode, monitor: monitor ? monitor.name : "",
+            workspace: workspace ? workspace.name : "", floating: workspaceFloatEnabled,
+            groups: taskGroups.length, visible: root.visible });
+    }
+
+    onVisibleChanged: Qt.callLater(root.logVisibility)
+    onWorkspaceFloatEnabledChanged: Qt.callLater(root.logVisibility)
+    onDebugEnabledChanged: if (debugEnabled) Qt.callLater(root.logVisibility)
+
+    Component.onDestruction: root.debugLog("tasklist.unloaded", { mode: widgetMode })
     Component.onCompleted: {
+        root.debugLog("tasklist.loaded", { mode: widgetMode });
         root.commitTaskGroups();
         Hyprland.refreshToplevels();
     }

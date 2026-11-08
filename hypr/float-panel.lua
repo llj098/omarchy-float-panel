@@ -7,7 +7,9 @@ local geometry_state_path = home .. "/.local/state/omarchy/float-panel-geometrie
 local debug_flag_path = home .. "/.local/state/omarchy/float-panel-debug"
 local debug_sink = rawget(_G, "FLOAT_PANEL_DEBUG_SINK")
 local native_bridge_path = home .. "/.config/omarchy/plugins/fatlj.float-panel/native/build/float-panel-native.so"
+-- Absence means Float. Only explicit Tiling overrides need persistence.
 local float_workspaces = {}
+local mode_state_header = "# float-panel-workspaces-v2"
 
 -- The read-only native bridge exposes compositor-owned relationships, window
 -- types, and placement flags without patching Hyprland or launching an external
@@ -195,9 +197,17 @@ end
 local function load_float_workspaces()
   local file = io.open(state_path, "r")
   if not file then return end
-
-  for line in file:lines() do
-    if line ~= "" then float_workspaces[line] = true end
+  local versioned = false
+  for raw_line in file:lines() do
+    local line = raw_line:gsub("\r$", "")
+    if line == mode_state_header then
+      versioned = true
+    elseif versioned then
+      local name = line:match("^tile\t(.+)$")
+      if name then float_workspaces[name] = false end
+    end
+    -- Legacy files listed only Float names: an absent name was never an
+    -- explicit opt-out. All of them now inherit the requested Float default.
   end
   file:close()
 end
@@ -205,7 +215,7 @@ end
 local function save_float_workspaces()
   local names = {}
   for name, enabled in pairs(float_workspaces) do
-    if enabled then table.insert(names, name) end
+    if enabled == false then table.insert(names, name) end
   end
   table.sort(names)
 
@@ -213,10 +223,11 @@ local function save_float_workspaces()
   local file = io.open(temporary_path, "w")
   if not file then return false end
 
-  for _, name in ipairs(names) do file:write(name, "\n") end
-  file:close()
+  local ok = file:write(mode_state_header, "\n")
+  for _, name in ipairs(names) do ok = file:write("tile\t", name, "\n") and ok end
+  local closed = file:close()
 
-  if not os.rename(temporary_path, state_path) then
+  if not ok or not closed or not os.rename(temporary_path, state_path) then
     os.remove(temporary_path)
     return false
   end
@@ -224,7 +235,8 @@ local function save_float_workspaces()
 end
 
 local function workspace_float_enabled(workspace)
-  return float_workspaces[workspace_key(workspace)] == true
+  local name = workspace_key(workspace)
+  return workspace_is_regular(workspace) and name ~= "" and float_workspaces[name] ~= false
 end
 
 local function workspace_rule_selector(name)
@@ -241,7 +253,7 @@ local function ensure_float_workspace_rule(name)
 
   rule = hl.window_rule({
     name = "fatlj-float-workspace-" .. name,
-    enabled = float_workspaces[name] == true,
+    enabled = float_workspaces[name] ~= false,
     match = { workspace = workspace_rule_selector(name) },
     float = true,
   })
@@ -324,7 +336,7 @@ local function toggle_workspace_mode(workspace, event)
   local enabled = not workspace_float_enabled(workspace)
   debug_window_action(event or "ui.toggle_mode", hl.get_active_window(), workspace, { enabled = enabled })
   if not enabled and persist_workspace_placements then persist_workspace_placements(workspace) end
-  float_workspaces[key] = enabled or nil
+  float_workspaces[key] = enabled
   set_float_workspace_rule(key, enabled)
   save_float_workspaces()
   apply_workspace_mode(workspace)
@@ -1731,9 +1743,14 @@ for _, monitor in safe_ipairs(hl.get_monitors()) do
   debug_monitor("event.monitor_snapshot", monitor)
   update_monitor_bounds_cache(monitor)
 end
-for name, enabled in pairs(float_workspaces) do
-  if enabled then ensure_float_workspace_rule(name) end
+local function ensure_workspace_mode_rule(workspace)
+  if workspace_is_regular(workspace) then ensure_float_workspace_rule(workspace_key(workspace)) end
 end
+for _, workspace in safe_ipairs(hl.get_workspaces()) do ensure_workspace_mode_rule(workspace) end
+-- Omarchy 4.5 creates per-monitor workspace blocks on demand. Install the
+-- native Float rule when the workspace is created, before a window maps there.
+hl.on("workspace.created", ensure_workspace_mode_rule)
+hl.on("workspace.active", ensure_workspace_mode_rule)
 
 -- Process start ticks survive focus/Z-order changes and let the shell reconstruct
 -- launch order after its own restart without a separate ordering database.
