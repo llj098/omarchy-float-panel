@@ -288,15 +288,15 @@ Item {
     return JSON.stringify(String(value || ""))
   }
 
-  // Hyprland 0.56.2 decides visibility over a covering fullscreen window per window: the
-  // "windows over fullscreen" render pass only contains floating windows that are allowed
-  // over it, and focusing a floating window re-allows it. So after Alt-Tab the peers that
-  // rose above a fullscreen window keep covering it. Whenever the destination workspace has
-  // a covering fullscreen window, lower every peer that is currently allowed over it so the
-  // activated window is the top-most visible one, then raise and focus the target.
-  // Pinned peers are reported only: Hyprland always draws them over a fullscreen window.
+  // Hyprland draws a workspace's covering fullscreen window first and then only the floating
+  // windows currently allowed over it, and focusing a floating window re-allows it, so a peer
+  // that Alt-Tab raised above a fullscreen window keeps covering it. Activation therefore
+  // lowers every other peer on the destination workspace that is currently allowed over that
+  // fullscreen window before raising the target, which makes the activated window the top-most
+  // visible window on that workspace. Peers Hyprland always draws there (pinned windows) are
+  // counted but never unpinned, and a target that cannot be drawn over a covering fullscreen
+  // window never lowers peers.
   function dispatchActivation(target, destination, sourceName, minimizedName, address) {
-    var debug = root.debugEnabled
     var actions = [
       "local selected = hl.get_window(" + luaString(target) + ")",
       "if not selected or not selected.workspace then return end",
@@ -317,16 +317,17 @@ Item {
     // Only a floating window (or the fullscreen window itself) can be drawn above a
     // covering fullscreen window, so never hide peers for a target that cannot be raised.
     actions.push("local raiseable = fullscreen ~= 0 or selected.floating == true")
-    if (debug)
-      actions.push("local lowered = 0; local pinned_above = 0")
+    // A peer only covers the covering fullscreen window while it is floating and currently
+    // allowed over it. A pinned peer is always drawn there by Hyprland, so it is counted but
+    // never lowered or unpinned. Both counters exist in every run; only the report is gated.
     var lowerPeer = "hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"bottom\", window = peer }))"
-    var peerBranch = debug ? lowerPeer + "; lowered = lowered + 1 elseif above then pinned_above = pinned_above + 1" : lowerPeer
-    actions.push("if covering and raiseable then for i = #windows, 1, -1 do local peer = windows[i]; local above = peer.address ~= address and peer.workspace == workspace and peer.floating and (tonumber(peer.fullscreen) or 0) == 0 and peer.allowed_over_fullscreen; if above and not peer.pinned then " + peerBranch + " end end end")
+    actions.push("local lowered = 0; local pinned_above = 0")
+    actions.push("if covering and raiseable then for i = #windows, 1, -1 do local peer = windows[i]; if peer.address ~= address and peer.workspace == workspace and peer.floating and (tonumber(peer.fullscreen) or 0) == 0 then if peer.pinned then pinned_above = pinned_above + 1 elseif peer.allowed_over_fullscreen then lowered = lowered + 1; " + lowerPeer + " end end end end")
     // alter_zorder itself simulates pointer movement in Hyprland 0.56.2.
     // Finish with explicit focus so follow_mouse cannot undo this handoff.
     actions.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = selected }))")
     actions.push("hl.dispatch(hl.dsp.focus({ window = selected }))")
-    if (debug)
+    if (root.debugEnabled)
       actions.push("hl.dispatch(hl.dsp.event(\"fatlj.float-panel:log:[fatlj.float-panel] switcher.activation covering=\" .. tostring(covering) .. \" fullscreen=\" .. tostring(fullscreen) .. \" lowered=\" .. tostring(lowered) .. \" pinned_above=\" .. tostring(pinned_above)))")
     debugLog("switcher.activate", { target: target, destination: destination })
     Hyprland.dispatch("(function() return function() " + actions.join("; ") + " end end)()")

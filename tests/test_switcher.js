@@ -230,7 +230,9 @@ peers = {
   { address = "0xc", workspace = destination, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
   { address = "0xf", workspace = destination, floating = false, fullscreen = 2, allowed_over_fullscreen = true },
 }`)
-  // Debug mode adds counters and one journal line without changing the dispatch order.
+  // Debug mode adds one journal line without changing the dispatch order. A pinned peer is
+  // counted whether or not it is currently flagged as allowed over the fullscreen window,
+  // because Hyprland always draws pinned windows there.
   {
     const { root, dispatches } = harness()
     root.debugEnabled = true
@@ -243,8 +245,9 @@ selected.fullscreen = 2
 peers = {
   { address = "0xc", workspace = destination, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
   { address = "0xe", workspace = destination, floating = true, pinned = true, fullscreen = 0, allowed_over_fullscreen = true },
+  { address = "0xa", workspace = destination, floating = true, pinned = true, fullscreen = 0 },
 }`, "bottom:11,top:11,focus:11",
-      'assert(#events == 1 and events[1]:find("lowered=1", 1, true) and events[1]:find("pinned_above=1", 1, true), table.concat(events, "|"))')
+      'assert(#events == 1 and events[1]:find("lowered=1", 1, true) and events[1]:find("pinned_above=2", 1, true), table.concat(events, "|"))')
   }
 }
 

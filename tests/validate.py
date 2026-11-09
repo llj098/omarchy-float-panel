@@ -136,13 +136,15 @@ assert "if not covering then for i = #windows, 1, -1 do local peer = windows[i];
     "a covering fullscreen window must be detected on the destination workspace, not only on the target itself"
 assert "local raiseable = fullscreen ~= 0 or selected.floating == true" in activation, \
     "a tiled target cannot be drawn above a fullscreen window, so its peers must not be hidden"
-assert "peer.address ~= address" in activation, "the activated window must never lower itself"
+assert 'actions.push("local lowered = 0; local pinned_above = 0")' in activation, \
+    "the activation report must not depend on a debug-only code shape"
+assert ("if peer.address ~= address and peer.workspace == workspace and peer.floating and (tonumber(peer.fullscreen) or 0) == 0 then "
+        "if peer.pinned then pinned_above = pinned_above + 1 elseif peer.allowed_over_fullscreen then lowered = lowered + 1; ") in activation, \
+    "the activated window must never lower itself, and a pinned peer must be counted instead of lowered"
 assert "peer.workspace == workspace" in activation
 assert "peer.floating" in activation
-assert "not peer.pinned" in activation, "pinned windows are always drawn over a fullscreen window and must not be reported as lowered"
+assert "peer.pinned" in activation
 assert "peer.allowed_over_fullscreen" in activation
-assert activation.index(live_target) < activation.index(existence_guard) < activation.index(covering_guard), \
-    "activation must resolve and validate the live window before touching any z-order"
 assert activation.index(live_target) < activation.index(existence_guard) < activation.index(covering_guard), \
     "activation must resolve and validate the live window before touching any z-order"
 assert activation.index(lower) < activation.index(covering_guard) < activation.index(raise_top) < activation.index(focus), \
