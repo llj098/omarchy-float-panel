@@ -83,7 +83,7 @@ Item {
   }
 
   function activateSelection(selection) {
-    dispatchActivation(selection.target, selection.destination, selection.sourceName, selection.minimizedName)
+    dispatchActivation(selection.target, selection.destination, selection.sourceName, selection.minimizedName, selection.address)
   }
 
   function hideSwitcherLayer() {
@@ -288,7 +288,15 @@ Item {
     return JSON.stringify(String(value || ""))
   }
 
-  function dispatchActivation(target, destination, sourceName, minimizedName) {
+  // Hyprland 0.56.2 decides visibility over a covering fullscreen window per window: the
+  // "windows over fullscreen" render pass only contains floating windows that are allowed
+  // over it, and focusing a floating window re-allows it. So after Alt-Tab the peers that
+  // rose above a fullscreen window keep covering it. Whenever the destination workspace has
+  // a covering fullscreen window, lower every peer that is currently allowed over it so the
+  // activated window is the top-most visible one, then raise and focus the target.
+  // Pinned peers are reported only: Hyprland always draws them over a fullscreen window.
+  function dispatchActivation(target, destination, sourceName, minimizedName, address) {
+    var debug = root.debugEnabled
     var actions = [
       "local selected = hl.get_window(" + luaString(target) + ")",
       "if not selected or not selected.workspace then return end",
@@ -300,11 +308,26 @@ Item {
     // Re-check the live location: a window can be minimized/restored while the
     // list is open. Never move an already-visible window or steal a moved one.
     actions.push("if selected_workspace == " + luaString(minimizedName) + " then hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(destination) + ", follow = false, window = selected })) end")
-    actions.push("if tonumber(selected.fullscreen) ~= 0 then local workspace = selected.workspace; local windows = hl.get_windows(); for i = #windows, 1, -1 do local window = windows[i]; if window.workspace == workspace and window.floating and not window.pinned and tonumber(window.fullscreen) == 0 and window.allowed_over_fullscreen then hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"bottom\", window = window })) end end end")
+    actions.push("local address = " + luaString("0x" + String(address || "")))
+    actions.push("local workspace = selected.workspace")
+    actions.push("local windows = hl.get_windows()")
+    actions.push("local fullscreen = tonumber(selected.fullscreen) or 0")
+    actions.push("local covering = fullscreen ~= 0")
+    actions.push("if not covering then for i = #windows, 1, -1 do local peer = windows[i]; if peer.workspace == workspace and (tonumber(peer.fullscreen) or 0) ~= 0 then covering = true end end end")
+    // Only a floating window (or the fullscreen window itself) can be drawn above a
+    // covering fullscreen window, so never hide peers for a target that cannot be raised.
+    actions.push("local raiseable = fullscreen ~= 0 or selected.floating == true")
+    if (debug)
+      actions.push("local lowered = 0; local pinned_above = 0")
+    var lowerPeer = "hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"bottom\", window = peer }))"
+    var peerBranch = debug ? lowerPeer + "; lowered = lowered + 1 elseif above then pinned_above = pinned_above + 1" : lowerPeer
+    actions.push("if covering and raiseable then for i = #windows, 1, -1 do local peer = windows[i]; local above = peer.address ~= address and peer.workspace == workspace and peer.floating and (tonumber(peer.fullscreen) or 0) == 0 and peer.allowed_over_fullscreen; if above and not peer.pinned then " + peerBranch + " end end end")
     // alter_zorder itself simulates pointer movement in Hyprland 0.56.2.
     // Finish with explicit focus so follow_mouse cannot undo this handoff.
     actions.push("hl.dispatch(hl.dsp.window.alter_zorder({ mode = \"top\", window = selected }))")
     actions.push("hl.dispatch(hl.dsp.focus({ window = selected }))")
+    if (debug)
+      actions.push("hl.dispatch(hl.dsp.event(\"fatlj.float-panel:log:[fatlj.float-panel] switcher.activation covering=\" .. tostring(covering) .. \" fullscreen=\" .. tostring(fullscreen) .. \" lowered=\" .. tostring(lowered) .. \" pinned_above=\" .. tostring(pinned_above)))")
     debugLog("switcher.activate", { target: target, destination: destination })
     Hyprland.dispatch("(function() return function() " + actions.join("; ") + " end end)()")
   }
@@ -329,7 +352,7 @@ Item {
       cancel()
       return "invalid-selection"
     }
-    closeSwitcher({ target: target, destination: destination, sourceName: sourceName, minimizedName: minimizedName })
+    closeSwitcher({ target: target, destination: destination, sourceName: sourceName, minimizedName: minimizedName, address: address })
     return layerState === "hidden" ? "activated:" + address : "pending-close"
   }
 

@@ -144,15 +144,15 @@ for (const cancel of [root => root.cancel(), root => root.resetRequest()]) {
 
 // Execute the real generated activation callback under a small Lua compositor
 // mock to check routing and races without touching the running desktop.
-function activate(command, setup = "", expected = "top:11,focus:11") {
+function activate(command, setup = "", expected = "top:11,focus:11", assertEvents = "") {
   const program = `
 local destination = { id = 11, name = "11", monitor = {} }
 destination.monitor.active_workspace = destination
 local minimized = { id = -91, name = "special:omarchy-minimized-11" }
 local other = { id = 12, name = "12", monitor = {} }
-local selected = { workspace = destination, fullscreen = 0 }
+local selected = { workspace = destination, fullscreen = 0, floating = true, address = "0xb" }
 local exists, workspace_exists = true, true
-local peers, actions = {}, {}
+local peers, actions, events = {}, {}, {}
 local focused = nil
 ${setup}
 hl = {
@@ -161,6 +161,7 @@ hl = {
   get_windows = function() return peers end,
   dsp = { window = {} },
 }
+hl.dsp.event = function(line) return function() table.insert(events, line) end end
 hl.dsp.window.move = function(args)
   assert(args.workspace == "11" and args.follow == false and args.window == selected)
   return function() selected.workspace = destination; table.insert(actions, "move:11") end
@@ -179,6 +180,7 @@ local callback = ${command}
 callback()
 assert(table.concat(actions, ",") == ${JSON.stringify(expected)}, table.concat(actions, ","))
 if #actions > 0 then assert(focused == selected, "pointer refocus stole the final keyboard focus") end
+${assertEvents}
 `
   const result = spawnSync("lua", ["-"], { input: program, encoding: "utf8", timeout: 5000 })
   assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout)
@@ -203,10 +205,47 @@ if #actions > 0 then assert(focused == selected, "pointer refocus stole the fina
   activate(command, `
 selected.fullscreen = 2
 peers = {
-  { workspace = destination, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
-  { workspace = other, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
-  { workspace = destination, floating = true, pinned = true, fullscreen = 0, allowed_over_fullscreen = true },
+  { address = "0xc", workspace = destination, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
+  { address = "0xb", workspace = destination, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
+  { address = "0xd", workspace = other, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
+  { address = "0xe", workspace = destination, floating = true, pinned = true, fullscreen = 0, allowed_over_fullscreen = true },
 }`, "bottom:11,top:11,focus:11")
+  // Another window owns the covering fullscreen state: the activated floating window still
+  // has to become the top-most window above it, and the fullscreen owner is not lowered.
+  activate(command, `
+peers = {
+  { address = "0xc", workspace = destination, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
+  { address = "0xf", workspace = destination, floating = false, fullscreen = 2, allowed_over_fullscreen = true },
+}`, "bottom:11,top:11,focus:11")
+  // Nothing is fullscreen, so peer z-order is left alone.
+  activate(command, `
+peers = {
+  { address = "0xc", workspace = destination, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
+}`)
+  // A tiled target can never be drawn above a covering fullscreen window, so peers are
+  // not hidden for it.
+  activate(command, `
+selected.floating = false
+peers = {
+  { address = "0xc", workspace = destination, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
+  { address = "0xf", workspace = destination, floating = false, fullscreen = 2, allowed_over_fullscreen = true },
+}`)
+  // Debug mode adds counters and one journal line without changing the dispatch order.
+  {
+    const { root, dispatches } = harness()
+    root.debugEnabled = true
+    root.beginFromSnapshot(clients, monitors, 1)
+    mapped(root)
+    root.commit()
+    closed(root)
+    activate(dispatches[0], `
+selected.fullscreen = 2
+peers = {
+  { address = "0xc", workspace = destination, floating = true, fullscreen = 0, allowed_over_fullscreen = true },
+  { address = "0xe", workspace = destination, floating = true, pinned = true, fullscreen = 0, allowed_over_fullscreen = true },
+}`, "bottom:11,top:11,focus:11",
+      'assert(#events == 1 and events[1]:find("lowered=1", 1, true) and events[1]:find("pinned_above=1", 1, true), table.concat(events, "|"))')
+  }
 }
 
 {

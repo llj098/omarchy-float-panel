@@ -2,3 +2,4 @@
 __pycache__/
 *.py[cod]
 native/build/
+.debug/

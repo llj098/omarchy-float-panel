@@ -123,17 +123,33 @@ for forbidden_cache_source in (
 activation = switcher[switcher.index("  function dispatchActivation("):switcher.index("  function commit()")]
 live_target = "local selected = hl.get_window("
 existence_guard = "if not selected or not selected.workspace then return end"
-fullscreen_guard = "if tonumber(selected.fullscreen) ~= 0"
-lower = 'hl.dsp.window.alter_zorder({ mode = \\"bottom\\", window = window })'
+covering_guard = "if covering and raiseable then"
+lower = 'hl.dsp.window.alter_zorder({ mode = \\"bottom\\", window = peer })'
 focus = 'hl.dsp.focus({ window = selected })'
 raise_top = 'hl.dsp.window.alter_zorder({ mode = \\"top\\", window = selected })'
 assert live_target in activation
 assert existence_guard in activation
-assert fullscreen_guard in activation
-assert "window.workspace == workspace" in activation
-assert "window.allowed_over_fullscreen" in activation
-assert activation.index(live_target) < activation.index(existence_guard) < activation.index(fullscreen_guard) < activation.index(lower) < activation.index(raise_top) < activation.index(focus)
+assert covering_guard in activation
+assert "local workspace = selected.workspace" in activation, \
+    "workspace and fullscreen state must be read live, after a minimized restore"
+assert "if not covering then for i = #windows, 1, -1 do local peer = windows[i]; if peer.workspace == workspace and (tonumber(peer.fullscreen) or 0) ~= 0 then covering = true end end end" in activation, \
+    "a covering fullscreen window must be detected on the destination workspace, not only on the target itself"
+assert "local raiseable = fullscreen ~= 0 or selected.floating == true" in activation, \
+    "a tiled target cannot be drawn above a fullscreen window, so its peers must not be hidden"
+assert "peer.address ~= address" in activation, "the activated window must never lower itself"
+assert "peer.workspace == workspace" in activation
+assert "peer.floating" in activation
+assert "not peer.pinned" in activation, "pinned windows are always drawn over a fullscreen window and must not be reported as lowered"
+assert "peer.allowed_over_fullscreen" in activation
+assert activation.index(live_target) < activation.index(existence_guard) < activation.index(covering_guard), \
+    "activation must resolve and validate the live window before touching any z-order"
+assert activation.index(live_target) < activation.index(existence_guard) < activation.index(covering_guard), \
+    "activation must resolve and validate the live window before touching any z-order"
+assert activation.index(lower) < activation.index(covering_guard) < activation.index(raise_top) < activation.index(focus), \
+    "the lowered-peer dispatch must be built into the conditional cleanup only, before raise and focus"
 assert activation.count(lower) == 1, "fullscreen cleanup must remain conditional and normal activation unchanged"
+assert 'actions.push("hl.dispatch(hl.dsp.event(\\"fatlj.float-panel:log:' in activation, \
+    "debug mode must report the activation decision through the shared journal route"
 assert "Number(ipc.fullscreen)" not in switcher, "mutable fullscreen state must not come from stale lastIpcObject"
 assert "activateSelection(activation)" in switcher
 assert 'value === "closelayer>>" + switcherNamespace' in switcher
