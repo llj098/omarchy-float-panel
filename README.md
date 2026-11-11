@@ -211,6 +211,11 @@ Lua, TaskList, and AppSwitcher records all use the `[fatlj.float-panel]` prefix.
 ./scripts/validate.sh
 ```
 
+Two further checks run against the real desktop and are not part of `scripts/validate.sh`:
+
+- `scripts/session-model-verify.sh` is read-only and safe to run while the machine is in use. It snapshots the live `j/monitors` and `j/clients` data, evaluates the real `AppSwitcher.qml` and `TaskListModel.js` offscreen in node against that snapshot plus synthetic minimized stores, and reports whether the overlay would open, which candidates it would list, and which store each activation would restore from. Nothing is moved, minimized, focused or drawn.
+- `scripts/desktop-background-verify.sh` builds a throwaway nested Hyprland in a private runtime directory when real pixels are needed. Its host window is parked in a dedicated special workspace by a window rule for the whole run and the run aborts if that ever stops holding, so no window, overlay or screenshot ever reaches the user's outputs. It runs a separate Omarchy shell with the working-tree plugin inside that instance and captures the nested output with grim.
+
 The validation suite also runs an isolated offscreen Quickshell socket-recovery test, and checks default-Float/explicit-Tiling migration, new workspace rules, the manifest, QML/JavaScript/Lua syntax, grouping behavior, cross-monitor Alt-Tab scope including Omarchy's shared minimized store and per-window restore routing, stock `Super+M` ownership, silent-no-op diagnostics, asynchronous snapshot/Alt-release handling, active-window workspace routing, the covering-fullscreen lower/raise invariant in activation, including always-on-top peers, fractional-scale geometry, pinned-window fitting, workspace-mode events, minimize routing, and the absence of fixed workspace/hyprbars dependencies.
 
 A real Omarchy/Hyprland session is still required for final visual and interaction testing.
