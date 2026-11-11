@@ -197,11 +197,33 @@ function listSwitcherToplevels(visibleToplevels, minimizedToplevels, describe) {
   return items
 }
 
+// Omarchy 4.5 minimizes through a single shared special workspace and tags each
+// window with the regular workspace it came from. Windows minimized that way are
+// absent from the source workspace's own minimized special workspace, so a scope
+// that only reads the plugin's store would silently drop them.
+var minimizedFromTagPrefix = "omarchy-minimized-from-"
+// The shared store itself is Omarchy's contract, not this plugin's own convention.
+var sharedMinimizedName = "special:minimized"
+
+function minimizedSourceWorkspaceId(tags) {
+  var values = tags || []
+  var source = null
+  for (var i = 0; i < values.length; i++) {
+    var tag = stringValue(values[i])
+    if (tag.slice(0, minimizedFromTagPrefix.length) !== minimizedFromTagPrefix) continue
+    var id = Number(tag.slice(minimizedFromTagPrefix.length))
+    if (!isFinite(id) || id <= 0 || Math.floor(id) !== id) continue
+    if (source === null || id < source) source = id
+  }
+  return source
+}
+
 // Scope by the compositor's actual active workspace IDs, never by the bar's
 // per-monitor labels (two displayed "1" labels may mean IDs 1 and 11).
 function listSwitcherClients(clients, monitors, describe) {
   var byId = Object.create(null)
   var byMinimizedName = Object.create(null)
+  var focusedRoute = null
   var outputs = monitors || []
   for (var i = 0; i < outputs.length; i++) {
     var monitor = outputs[i]
@@ -217,6 +239,7 @@ function listSwitcherClients(clients, monitors, describe) {
     }
     byId[id] = route
     byMinimizedName[route.minimizedWorkspaceName] = route
+    if (monitor.focused === true && focusedRoute === null) focusedRoute = route
   }
 
   var visible = []
@@ -234,12 +257,26 @@ function listSwitcherClients(clients, monitors, describe) {
     var destination = byId[Number(clientWorkspace.id)]
     if (destination && destination.workspaceName === clientName) {
       visible.push(client)
-    } else {
-      destination = byMinimizedName[clientName]
-      if (!destination) continue
-      minimized.push(client)
+      routes[address] = destination
+      continue
     }
-    routes[address] = destination
+    destination = byMinimizedName[clientName]
+    if (!destination && clientName === sharedMinimizedName) {
+      // A tagged window belongs to the workspace it was minimized from; without a
+      // tag the shared store says nothing about its origin, so it follows the
+      // focused workspace exactly like the dock's own restore does.
+      var sourceId = minimizedSourceWorkspaceId(client.tags)
+      destination = sourceId === null ? focusedRoute : (byId[sourceId] || null)
+    }
+    if (!destination) continue
+    minimized.push(client)
+    // Restore routing keeps the window's own store: it may be the shared one, and
+    // activation re-checks the live workspace against this name before moving it.
+    routes[address] = {
+      workspaceId: destination.workspaceId,
+      workspaceName: destination.workspaceName,
+      minimizedWorkspaceName: clientName
+    }
   }
 
   return listSwitcherToplevels(visible, minimized, function(client) {

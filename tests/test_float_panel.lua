@@ -247,6 +247,10 @@ for _, route in ipairs(resize_routes) do assert(unbound_set[route[1]], route[1] 
 for _, keys in ipairs({ "SUPER + LEFT", "SUPER + RIGHT", "SUPER + UP", "SUPER + DOWN", "SUPER + F" }) do
   assert(unbound_set[keys], keys .. " stock binding must be unbound")
 end
+-- Omarchy 4.5 parks a SUPER + M window in its own shared minimized workspace, which
+-- these lists do not read; the plugin's documented minimize must own the chord alone.
+assert(unbound_set["SUPER + M"], "Omarchy's dock minimize must not share SUPER + M")
+assert(binds["SUPER + M"] ~= nil, "the plugin's own SUPER + M minimize must stay bound")
 for _, keys in ipairs({ "SUPER + CTRL + TAB", "SUPER + ALT + TAB", "ALT + 1", "ALT + 2", "ALT + 3", "ALT + 4", "ALT + 5", "ALT + 6", "ALT + 7", "ALT + 8", "ALT + 9" }) do
   assert(not unbound_set[keys] and binds[keys] == nil, keys .. " must remain owned by Omarchy")
 end

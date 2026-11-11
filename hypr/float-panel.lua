@@ -1999,6 +1999,13 @@ for _, binding in ipairs(resize_bindings) do
   o.bind(keys, description, function() mode_aware_resize(dx, dy) end)
 end
 
+-- Omarchy 4.5 binds SUPER + M to its dock minimize, which parks a window in the one
+-- shared minimized special workspace and tags it with its source workspace. That store
+-- is not this plugin's per-workspace minimized store, so leaving both bound would let a
+-- single press minimize one window into each store, and the plugin's own lists would
+-- miss the dock one. This plugin documents SUPER + M as its own minimize, so it takes
+-- the chord over exactly like SUPER + F, SUPER + TAB and ALT + TAB above.
+hl.unbind("SUPER + M")
 hl.unbind("SUPER + LEFT")
 hl.unbind("SUPER + RIGHT")
 hl.unbind("SUPER + UP")

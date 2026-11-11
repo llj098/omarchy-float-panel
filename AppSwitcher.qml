@@ -157,7 +157,20 @@ Item {
   }
 
   function requestBegin(direction) {
-    if (hideWhenMapped || layerState === "closing") return
+    if (hideWhenMapped && layerState === "mapping") {
+      // The overlay was requested but its map was never reported, so its close can
+      // never be reported either. A release waiting on that map would ignore every
+      // later press for the rest of the session. A new press proves that
+      // presentation is abandoned, so drop it and start over.
+      debugLog("switcher.recover_unmapped", {})
+      abortPresentation()
+    }
+    if (hideWhenMapped || layerState === "closing") {
+      // A press dropped here used to leave no trace, which made a switcher that
+      // never appeared indistinguishable from one that was never asked at all.
+      debugLog("switcher.request_ignored", { layer: layerState, hideWhenMapped: hideWhenMapped })
+      return
+    }
     if (snapshotRequestPending) {
       pendingDirection += direction
       return
@@ -230,11 +243,16 @@ Item {
     var items = TaskListModel.listSwitcherClients(clients, monitors, function(client) {
       return root.describeClient(client)
     })
-    if (items.length === 0) return
 
     var monitorId = null
     for (var j = 0; j < monitors.length; j++) {
       if (monitors[j] && monitors[j].focused === true) { monitorId = monitors[j].id; break }
+    }
+    if (items.length === 0) {
+      // Nothing to switch to is a legitimate outcome, but it must be visible in the
+      // journal: a window in a store this scope does not read looks exactly like this.
+      debugLog("switcher.begin", { monitor: monitorId, candidates: 0, selected: -1 })
+      return
     }
     var activeIndex = -1
     for (var i = 0; i < items.length; i++) {
@@ -245,7 +263,10 @@ Item {
         break
       }
     }
-    if (items.length === 1 && activeIndex === 0) return
+    if (items.length === 1 && activeIndex === 0) {
+      debugLog("switcher.begin", { monitor: monitorId, candidates: 1, selected: -1, single: true })
+      return
+    }
     snapshot = items
     targetScreen = screenForMonitorId(monitorId)
     // Several repeated Shift+Tabs can arrive while the requests are pending.
@@ -297,13 +318,19 @@ Item {
   // counted but never unpinned, and a target that cannot be drawn over a covering fullscreen
   // window never lowers peers.
   function dispatchActivation(target, destination, sourceName, minimizedName, address) {
+    // Every early return below is a selection the user made that will not happen. Report
+    // the reason instead of leaving a silent no-op in the journal.
+    var reportSkip = root.debugEnabled
+      ? "local function skipped(reason) hl.dispatch(hl.dsp.event(\"fatlj.float-panel:log:[fatlj.float-panel] switcher.activation skipped=\" .. reason)) end"
+      : "local function skipped(reason) end"
     var actions = [
+      reportSkip,
       "local selected = hl.get_window(" + luaString(target) + ")",
-      "if not selected or not selected.workspace then return end",
+      "if not selected or not selected.workspace then skipped(\"missing-window\") return end",
       "local destination_workspace = hl.get_workspace(" + destination + ")",
-      "if not destination_workspace or destination_workspace.name ~= " + luaString(sourceName) + " or not destination_workspace.monitor or destination_workspace.monitor.active_workspace ~= destination_workspace then return end",
+      "if not destination_workspace or destination_workspace.name ~= " + luaString(sourceName) + " or not destination_workspace.monitor or destination_workspace.monitor.active_workspace ~= destination_workspace then skipped(\"workspace-not-displayed\") return end",
       "local selected_workspace = selected.workspace.name",
-      "if selected_workspace ~= " + luaString(sourceName) + " and selected_workspace ~= " + luaString(minimizedName) + " then return end"
+      "if selected_workspace ~= " + luaString(sourceName) + " and selected_workspace ~= " + luaString(minimizedName) + " then skipped(\"window-moved\") return end"
     ]
     // Re-check the live location: a window can be minimized/restored while the
     // list is open. Never move an already-visible window or steal a moved one.

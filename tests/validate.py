@@ -122,13 +122,19 @@ for forbidden_cache_source in (
 
 activation = switcher[switcher.index("  function dispatchActivation("):switcher.index("  function commit()")]
 live_target = "local selected = hl.get_window("
-existence_guard = "if not selected or not selected.workspace then return end"
+existence_guard = 'if not selected or not selected.workspace then skipped(\\"missing-window\\") return end'
+skip_report = 'local function skipped(reason) hl.dispatch(hl.dsp.event(\\"'
 covering_guard = "if covering and raiseable then"
 lower = 'hl.dsp.window.alter_zorder({ mode = \\"bottom\\", window = peer })'
 focus = 'hl.dsp.focus({ window = selected })'
 raise_top = 'hl.dsp.window.alter_zorder({ mode = \\"top\\", window = selected })'
 assert live_target in activation
 assert existence_guard in activation
+assert activation.index(skip_report) < activation.index(existence_guard), \
+    "every activation early return must report why the selected window stayed put"
+assert activation.count('skipped(\\"missing-window\\")') == 1
+assert activation.count('skipped(\\"workspace-not-displayed\\")') == 1
+assert activation.count('skipped(\\"window-moved\\")') == 1
 assert covering_guard in activation
 assert "local workspace = selected.workspace" in activation, \
     "workspace and fullscreen state must be read live, after a minimized restore"

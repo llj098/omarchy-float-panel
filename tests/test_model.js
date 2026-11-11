@@ -314,6 +314,60 @@ function descriptor(values) {
   assert.equal(named[0].representative.route.minimizedWorkspaceName, "special:omarchy-minimized-37")
 }
 
+// Omarchy 4.5 minimizes into one shared special workspace and tags the window with
+// the workspace it came from. Those windows are absent from the plugin's own
+// per-workspace minimized store, so the switcher has to read both or a minimized
+// window would have no entry anywhere and Alt-Tab would open nothing at all.
+{
+  const monitors = [
+    { id: 1, focused: true, activeWorkspace: { id: 1, name: "1" } },
+    { id: 2, focused: false, activeWorkspace: { id: 7, name: "7" } }
+  ]
+  function client(address, id, name, mru, extra = {}) {
+    return { address, workspace: { id, name }, mapped: true, class: "same.app", focusHistoryID: mru, ...extra }
+  }
+  const describe = value => ({
+    address: value.address, appId: value.class, mru: value.focusHistoryID,
+    activated: value.focusHistoryID === 0
+  })
+  const addresses = items => Array.from(items, item => item.representative.address)
+  const rows = clients => context.listSwitcherClients(clients, monitors, describe)
+
+  const tagged = client("dock-tagged", -91, "special:minimized", 1, { tags: ["omarchy-minimized-from-1"] })
+  const taggedOther = client("dock-other", -92, "special:minimized", 2, { tags: ["omarchy-minimized-from-9"] })
+  const untagged = client("dock-untagged", -93, "special:minimized", 3, { tags: [] })
+  const malformed = client("dock-malformed", -94, "special:minimized", 4, { tags: ["omarchy-minimized-from-", "omarchy-minimized-from-x"] })
+  const visible = client("visible", 1, "1", 0)
+  const ownStore = client("own", -95, "special:omarchy-minimized-1", 5)
+
+  const items = rows([visible, tagged, taggedOther, untagged, malformed, ownStore])
+  assert.deepEqual(addresses(items), ["visible", "dock-tagged", "dock-untagged", "dock-malformed", "own"],
+    "a tagged dock window follows the workspace it was minimized from and stays out of the scope " +
+    "while that workspace is hidden; an untagged or malformed one has no origin and falls back to " +
+    "the focused workspace, exactly like the dock's own restore")
+  const dockRow = items[1].representative
+  assert.equal(dockRow.minimized, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(dockRow.route)), {
+    workspaceId: 1, workspaceName: "1", minimizedWorkspaceName: "special:minimized"
+  }, "a restored dock window must leave the store it is actually in, not a store name it never had")
+  const ownRow = items[items.length - 1].representative
+  assert.equal(ownRow.address, "own")
+  assert.equal(ownRow.route.minimizedWorkspaceName, "special:omarchy-minimized-1",
+    "the plugin's own store keeps its per-workspace restore route")
+
+  assert.deepEqual(addresses(rows([tagged, ownStore])), ["dock-tagged", "own"],
+    "all-minimized dock and plugin windows still produce candidates")
+  assert.deepEqual(addresses(rows([taggedOther])), [],
+    "a window minimized from a workspace that is not displayed stays out of the scope")
+  assert.deepEqual(addresses(rows([visible, client("untagged", -96, "special:minimized", 6)])), ["visible", "untagged"],
+    "an untagged shared-store window has no origin of its own and follows the focused workspace")
+
+  const noFocused = [{ id: 1, activeWorkspace: { id: 1, name: "1" } }]
+  assert.deepEqual(addresses(context.listSwitcherClients([tagged, untagged], noFocused, describe)), ["dock-tagged"],
+    "a tagged dock window still resolves without a focused monitor, while an untagged one has no " +
+    "destination and must be skipped")
+}
+
 assert.equal(context.actionForGroup(null), null)
 assert.equal(context.normalizeAppId(" Org.Example.App.desktop "), "org.example.app")
 assert.equal(context.launchOrderFromTags(["default-opacity*", "float-panel-order-42"]), 42)
