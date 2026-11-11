@@ -304,7 +304,7 @@ ws2.windows = {}
 
 local function side_tag(window)
   for _, tag in ipairs(window.tags) do
-    if tag:match("^float%-panel%-side%-v1%-") then return tag end
+    if tag:match("^float%-panel%-side%-v[12]%-") then return tag end
   end
 end
 
@@ -323,7 +323,7 @@ assert(not side_tag(malformed_half) and malformed_half.size.y == 400,
   "short malformed/free windows must not be adopted or enlarged")
 for _, window in ipairs({ w1, w2 }) do
   for index = #window.tags, 1, -1 do
-    if window.tags[index]:match("^float%-panel%-side%-v1%-") then table.remove(window.tags, index) end
+    if window.tags[index]:match("^float%-panel%-side%-v[12]%-") then table.remove(window.tags, index) end
   end
 end
 ws1.windows = { w1, w2 }
@@ -354,7 +354,7 @@ assert(dispatched[before_context_snap + 1].kind == "float" and dispatched[before
   "Float routing must follow the active window workspace, not the focused monitor workspace")
 assert(context_window.at.x == 5340 and context_window.at.y == 12 and context_window.size.x == 315 and context_window.size.y == 443,
   "fractional monitor geometry must use Hyprland's nearest-logical-pixel rounding")
-assert(side_tag(context_window):match("%-p3%-33$"), "side intent must record the active window's real workspace")
+assert(side_tag(context_window):match("%-p3%-33%-"), "side intent must record the active window's real workspace")
 
 local tiled_context = {
   workspace = ws2, floating = false, mapped = true, fullscreen = 0, monitor = own_monitor,
@@ -753,6 +753,94 @@ assert(not geometric_tag(w1) and not side_tag(w1) and not w1.floating and not w2
   "switching the source workspace to Tiling must clear max and side metadata and tile its windows")
 binds["SUPER + SHIFT + T"]()
 assert(w1.floating and w2.floating, "the Float workspace must remain usable after deterministic tag cleanup")
+
+-- Down after a half snap returns the box the window had before that snap.
+local snap_probe = {
+  address = "0x5a9ce7", workspace = ws1, floating = true, mapped = true, fullscreen = 0,
+  monitor = own_monitor, at = { x = 200, y = 150 }, size = { x = 320, y = 240 }, tags = {},
+}
+ws1.windows = { snap_probe }
+active_workspace, active_window = ws1, snap_probe
+
+binds["SUPER + LEFT"]()
+assert(snap_probe.at.x == 32 and snap_probe.at.y == 62 and
+  snap_probe.size.x == 466 and snap_probe.size.y == 406,
+  "a Float left snap must still fill the half")
+assert(side_tag(snap_probe) == "float-panel-side-v2-l-p32-p62-p466-p406-p10-p20-p1-31-p200-p150-p320-p240",
+  "a snapped window must carry its pre-snap box inside the same versioned tag")
+
+local before_half_down = #dispatched
+binds["SUPER + DOWN"]()
+assert(#dispatched == before_half_down + 3 and dispatched[before_half_down + 1].kind == "resize" and
+  dispatched[before_half_down + 2].kind == "move" and dispatched[before_half_down + 3].kind == "tag",
+  "Down from a half must resize, move, and drop the saved tag exactly once")
+assert(not side_tag(snap_probe) and snap_probe.at.x == 200 and snap_probe.at.y == 150 and
+  snap_probe.size.x == 320 and snap_probe.size.y == 240,
+  "Down after a half snap must restore the pre-snap box and clear the saved tag")
+local free_dispatches = #dispatched
+binds["SUPER + DOWN"]()
+assert(#dispatched == free_dispatches, "Down on an unmanaged window must stay a no-op")
+
+-- Switching halves keeps the original box, and max-from-half restores the
+-- half first so the next Down still gives the original box back.
+binds["SUPER + RIGHT"]()
+assert(side_tag(snap_probe):find("^float%-panel%-side%-v2%-r%-") and
+  side_tag(snap_probe):find("p200%-p150%-p320%-p240$"),
+  "switching halves must keep the original pre-snap box")
+binds["SUPER + UP"]()
+assert(geometric_tag(snap_probe) and snap_probe.size.x == 946, "Up must still geometry-maximize a half")
+binds["SUPER + DOWN"]()
+assert(geometric_tag(snap_probe) == nil and snap_probe.at.x == 512 and snap_probe.at.y == 62 and
+  snap_probe.size.x == 466 and snap_probe.size.y == 406 and side_tag(snap_probe),
+  "the first Down after max-from-half must restore that half and keep the saved box")
+binds["SUPER + DOWN"]()
+assert(not side_tag(snap_probe) and snap_probe.at.x == 200 and snap_probe.at.y == 150 and
+  snap_probe.size.x == 320 and snap_probe.size.y == 240,
+  "the next Down must restore the box saved before the first snap")
+
+-- Snapping a maximized window must save the pre-max box, not the full area.
+snap_probe.at, snap_probe.size = { x = 250, y = 180 }, { x = 360, y = 260 }
+binds["SUPER + UP"]()
+assert(geometric_tag(snap_probe) and snap_probe.size.x == 946, "Up from free must still maximize")
+binds["SUPER + LEFT"]()
+assert(snap_probe.size.x == 466 and side_tag(snap_probe):find("p250%-p180%-p360%-p260$"),
+  "snapping a maximized window must save the pre-max free box")
+binds["SUPER + DOWN"]()
+assert(not geometric_tag(snap_probe) and not side_tag(snap_probe) and
+  snap_probe.at.x == 250 and snap_probe.at.y == 180 and
+  snap_probe.size.x == 360 and snap_probe.size.y == 260,
+  "Down after snap-from-max must restore the pre-max free box")
+
+-- An explicit resize discards the saved box together with the side tag.
+binds["SUPER + LEFT"]()
+binds["SUPER + ALT + code:21"]()
+assert(not side_tag(snap_probe), "keyboard resize must clear the side intent and its saved box")
+local kept_x, kept_width, kept_dispatches = snap_probe.at.x, snap_probe.size.x, #dispatched
+binds["SUPER + DOWN"]()
+assert(#dispatched == kept_dispatches and snap_probe.at.x == kept_x and snap_probe.size.x == kept_width,
+  "Down after a manual resize must not resurrect the discarded pre-snap box")
+
+-- A legacy tag without a saved box (adopted or reopened half) stays inert.
+snap_probe.at, snap_probe.size = { x = 32, y = 62 }, { x = 466, y = 406 }
+snap_probe.tags = { "float-panel-side-v1-l-p32-p62-p466-p406-p10-p20-p1-31" }
+local legacy_dispatches = #dispatched
+binds["SUPER + DOWN"]()
+assert(#dispatched == legacy_dispatches and snap_probe.at.x == 32 and snap_probe.size.x == 466,
+  "a half tag without a saved pre-snap box must make Down a no-op")
+
+-- The saved box is clamped to the current work area when restored.
+snap_probe.at, snap_probe.size, snap_probe.tags = { x = 900, y = 400 }, { x = 320, y = 240 }, {}
+binds["SUPER + LEFT"]()
+assert(side_tag(snap_probe):find("p900%-p400%-p320%-p240$"),
+  "the saved box must keep the observed pre-snap geometry")
+binds["SUPER + DOWN"]()
+assert(snap_probe.at.x == 658 and snap_probe.at.y == 228 and
+  snap_probe.size.x == 320 and snap_probe.size.y == 240,
+  "restoring a saved box must clamp it inside the current work area")
+
+ws1.windows = { w1, w2 }
+snap_probe.tags = {}
+active_workspace, active_window = ws1, w1
 
 binds["SUPER + F"]()
 last = dispatched[#dispatched]

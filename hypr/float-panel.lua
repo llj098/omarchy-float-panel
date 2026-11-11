@@ -103,6 +103,9 @@ hl.window_rule({
 local order_tag_prefix = "float-panel-order-"
 local geometric_max_tag_prefix = "float-panel-geometric-max-v1-"
 local side_intent_tag_prefix = "float-panel-side-v1-"
+-- A snapped window can also remember the box it had before the snap, so Down
+-- can undo the half placement. Tags written without that box stay v1.
+local side_restore_tag_prefix = "float-panel-side-v2-"
 local geometry_slot_tag_prefix = "float-panel-geometry-slot-v1-"
 local geometry_records = {}
 local geometry_claims = {}
@@ -541,19 +544,40 @@ local function side_geometry(side, monitor)
 end
 
 local function parse_side_intent_tag(tag)
-  if type(tag) ~= "string" or tag:sub(1, #side_intent_tag_prefix) ~= side_intent_tag_prefix then return nil end
-  local body = tag:sub(#side_intent_tag_prefix + 1)
-  local side, x, y, width, height, monitor_x, monitor_y, workspace_id, source_hex =
-    body:match("^([lr])%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([0-9a-f]+)$")
+  if type(tag) ~= "string" then return nil end
+  local version, body
+  if tag:sub(1, #side_restore_tag_prefix) == side_restore_tag_prefix then
+    version, body = "v2", tag:sub(#side_restore_tag_prefix + 1)
+  elseif tag:sub(1, #side_intent_tag_prefix) == side_intent_tag_prefix then
+    version, body = "v1", tag:sub(#side_intent_tag_prefix + 1)
+  else
+    return nil
+  end
+  local pattern = "^([lr])%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([0-9a-f]+)"
+  if version == "v2" then
+    pattern = pattern .. "%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)%-([pn]%d+)$"
+  else
+    pattern = pattern .. "$"
+  end
+  local side, x, y, width, height, monitor_x, monitor_y, workspace_id, source_hex,
+    restore_x, restore_y, restore_width, restore_height = body:match(pattern)
   if not side then return nil end
   local result = {
-    raw = tag, side = side == "l" and "left" or "right",
+    raw = tag, version = version, side = side == "l" and "left" or "right",
     x = decode_integer(x), y = decode_integer(y), width = decode_integer(width), height = decode_integer(height),
     monitor_x = decode_integer(monitor_x), monitor_y = decode_integer(monitor_y),
     workspace_id = decode_integer(workspace_id), source = decode_hex(source_hex),
   }
   if not result.x or not result.y or not result.width or not result.height or result.width < 1 or result.height < 1 or
       not result.monitor_x or not result.monitor_y or not result.workspace_id or not result.source or result.source == "" then return nil end
+  if version == "v2" then
+    result.restore = {
+      x = decode_integer(restore_x), y = decode_integer(restore_y),
+      width = decode_integer(restore_width), height = decode_integer(restore_height),
+    }
+    if not result.restore.x or not result.restore.y or not result.restore.width or not result.restore.height or
+        result.restore.width < 1 or result.restore.height < 1 then return nil end
+  end
   return result
 end
 
@@ -565,14 +589,22 @@ local function window_side_intent(window)
   return nil
 end
 
-local function make_side_intent_tag(window, workspace, side, geometry, target_monitor)
+local function make_side_intent_tag(window, workspace, side, geometry, target_monitor, restore)
   local monitor = target_monitor or (window and window.monitor or nil)
   if not monitor or not geometry then return nil end
-  return side_intent_tag_prefix .. table.concat({
+  local fields = {
     side == "left" and "l" or "r",
     encode_integer(geometry.x), encode_integer(geometry.y), encode_integer(geometry.width), encode_integer(geometry.height),
     encode_integer(monitor.x), encode_integer(monitor.y), encode_integer(workspace.id), encode_hex(workspace_selector(workspace)),
-  }, "-")
+  }
+  if restore then
+    table.insert(fields, encode_integer(restore.x))
+    table.insert(fields, encode_integer(restore.y))
+    table.insert(fields, encode_integer(restore.width))
+    table.insert(fields, encode_integer(restore.height))
+    return side_restore_tag_prefix .. table.concat(fields, "-")
+  end
+  return side_intent_tag_prefix .. table.concat(fields, "-")
 end
 
 local function clear_side_intent(window)
@@ -580,13 +612,13 @@ local function clear_side_intent(window)
   if metadata then remove_window_tag(window, metadata.raw) end
 end
 
-local function update_side_intent(window, workspace, side, geometry, target_monitor)
+local function update_side_intent(window, workspace, side, geometry, target_monitor, restore)
   local old = window_side_intent(window)
   local at, size = window and window.at or nil, window and window.size or nil
   local observed = at and size and {
     x = tonumber(at.x), y = tonumber(at.y), width = tonumber(size.x), height = tonumber(size.y),
   } or geometry
-  local tag = make_side_intent_tag(window, workspace, side, observed, target_monitor)
+  local tag = make_side_intent_tag(window, workspace, side, observed, target_monitor, restore or (old and old.restore))
   if not tag or (old and old.raw == tag) then return end
   if old then remove_window_tag(window, old.raw) end
   add_window_tag(window, tag)
@@ -1005,6 +1037,21 @@ local function restore_geometric_max(window)
   return true
 end
 
+-- Down after a half snap returns the window to the box it had before that
+-- snap. The saved box lives in the same tag as the half intent, so every
+-- existing intent-clearing path also drops it.
+local function restore_side_snap(window)
+  local metadata = window_side_intent(window)
+  local bounds = window and floating_window_bounds(window.monitor) or nil
+  if not metadata or not metadata.restore or not bounds then return false end
+  local geometry = geometry_clamped_to_bounds(metadata.restore, bounds)
+  geometry_dispatch("resize", { x = geometry.width, y = geometry.height, window = window }, "restore-side-snap")
+  geometry_dispatch("move", { x = geometry.x, y = geometry.y, window = window }, "restore-side-snap")
+  remove_window_tag(window, metadata.raw)
+  rebase_reflow_anchor(window, nil, nil, nil, "restore-side-snap")
+  return true
+end
+
 local function maximize_geometric_window(window, workspace)
   if not window or window_geometric_max_metadata(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
   local bounds = floating_window_bounds(window.monitor)
@@ -1125,8 +1172,28 @@ local function mode_aware_resize(dx, dy)
   rebase_reflow_anchor(window, nil, nil, nil, "keyboard.resize")
 end
 
-local function snap_active_window(window, workspace, side)
+-- The box a snap must be able to give back: the pre-max box when the window was
+-- geometry-maximized, otherwise the half's own previous box, otherwise the
+-- live box. Restoring a persisted half passes capture_restore = false because
+-- its pre-snap geometry belongs to a closed window, not to this one.
+local function snap_restore_geometry(window)
+  local side = window_side_intent(window)
+  if side and side.restore then return side.restore end
+  local maximum = window_geometric_max_metadata(window)
+  if maximum then
+    return { x = maximum.x, y = maximum.y, width = maximum.width, height = maximum.height }
+  end
+  local at, size = window and window.at or nil, window and window.size or nil
+  if not at or not size then return nil end
+  return {
+    x = nearest_integer(at.x), y = nearest_integer(at.y),
+    width = nearest_integer(size.x), height = nearest_integer(size.y),
+  }
+end
+
+local function snap_active_window(window, workspace, side, capture_restore)
   if not window then return end
+  local restore = capture_restore ~= false and snap_restore_geometry(window) or nil
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   local geometry = side_geometry(side, window.monitor)
   if not geometry then return end
@@ -1135,7 +1202,7 @@ local function snap_active_window(window, workspace, side)
   -- Resize first so Hyprland does not clamp the old, wider window before placing it.
   geometry_dispatch("resize", { x = geometry.width, y = geometry.height, window = window }, "snap." .. side)
   geometry_dispatch("move", { x = geometry.x, y = geometry.y, window = window }, "snap." .. side)
-  update_side_intent(window, workspace, side, geometry)
+  update_side_intent(window, workspace, side, geometry, nil, restore)
   rebase_reflow_anchor(window, nil, nil, nil, "snap." .. side)
 end
 
@@ -1149,7 +1216,7 @@ local function mode_aware_direction(direction)
     elseif direction == "u" then
       maximize_geometric_window(window, workspace)
     else
-      restore_geometric_max(window)
+      if not restore_geometric_max(window) then restore_side_snap(window) end
     end
     return
   end
@@ -1606,10 +1673,10 @@ local function restore_window_placement(window, workspace, record)
   if record.intent == "free" then
     return restore_free_record(window, record)
   elseif record.intent == "left" or record.intent == "right" then
-    snap_active_window(window, workspace, record.intent)
+    snap_active_window(window, workspace, record.intent, false)
     return true
   elseif record.intent == "max-left" or record.intent == "max-right" then
-    snap_active_window(window, workspace, record.intent == "max-left" and "left" or "right")
+    snap_active_window(window, workspace, record.intent == "max-left" and "left" or "right", false)
     return maximize_geometric_window(window, workspace)
   elseif record.intent == "max-free" and restore_free_record(window, record) then
     return maximize_geometric_window(window, workspace)
