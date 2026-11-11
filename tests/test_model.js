@@ -336,7 +336,10 @@ function descriptor(values) {
   const tagged = client("dock-tagged", -91, "special:minimized", 1, { tags: ["omarchy-minimized-from-1"] })
   const taggedOther = client("dock-other", -92, "special:minimized", 2, { tags: ["omarchy-minimized-from-9"] })
   const untagged = client("dock-untagged", -93, "special:minimized", 3, { tags: [] })
-  const malformed = client("dock-malformed", -94, "special:minimized", 4, { tags: ["omarchy-minimized-from-", "omarchy-minimized-from-x"] })
+  const malformed = client("dock-malformed", -94, "special:minimized", 4, {
+    tags: ["omarchy-minimized-from-", "omarchy-minimized-from-x", "omarchy-minimized-from-0x2",
+           "omarchy-minimized-from-1e3", "omarchy-minimized-from-1.0", "omarchy-minimized-from--2"]
+  })
   const visible = client("visible", 1, "1", 0)
   const ownStore = client("own", -95, "special:omarchy-minimized-1", 5)
 

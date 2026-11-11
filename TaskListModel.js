@@ -206,13 +206,16 @@ var minimizedFromTagPrefix = "omarchy-minimized-from-"
 var sharedMinimizedName = "special:minimized"
 
 function minimizedSourceWorkspaceId(tags) {
-  var values = tags || []
+  var values = Array.isArray(tags) ? tags : []
   var source = null
   for (var i = 0; i < values.length; i++) {
     var tag = stringValue(values[i])
     if (tag.slice(0, minimizedFromTagPrefix.length) !== minimizedFromTagPrefix) continue
-    var id = Number(tag.slice(minimizedFromTagPrefix.length))
-    if (!isFinite(id) || id <= 0 || Math.floor(id) !== id) continue
+    // Omarchy only ever writes a plain workspace id here ("[1-9][0-9]*"); anything
+    // else belongs to something else and must not be read as a destination.
+    var digits = tag.slice(minimizedFromTagPrefix.length)
+    if (!/^[1-9][0-9]*$/.test(digits)) continue
+    var id = Number(digits)
     if (source === null || id < source) source = id
   }
   return source
