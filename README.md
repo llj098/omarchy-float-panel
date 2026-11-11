@@ -1,6 +1,6 @@
 # Omarchy Float Panel
 
-An Omarchy 4 / 4.5 bar widget that shows one icon per application on each monitor's active workspace. It also includes native Hyprland Lua bindings for per-workspace floating mode and keyboard-driven minimize/restore behavior.
+An Omarchy 4 / 4.5 bar widget that shows one icon per application on each monitor's active workspace. It also includes native Hyprland Lua bindings for per-workspace floating mode and keyboard-driven minimize/restore behavior. Window chrome is selectable: the default invisible hover drag strip, or an optional Omarchy-style titlebar.
 
 ## Behavior
 
@@ -26,7 +26,7 @@ Hyprland draws a workspace's covering fullscreen window first and then only the 
 - Float windows without application-specified placement remember their last closed free, half-screen, or geometric-max placement per workspace and restore it when reopened.
 - New parented windows without application-specified placement are initially centered over their concrete parent, then fitted to the monitor work area; application-specified placement remains application-owned.
 - Application minimum-size hints are ignored globally without application-class rules; maximum-size hints retain Hyprland's native behavior.
-- No daemon, polling loop, fixed workspace ID, or hyprbars plugin is used.
+- No daemon, polling loop, or fixed workspace ID is used. Hover chrome has no hyprbars dependency; optional titlebar chrome preloads Omarchy's `omarchy-hyprland-titlebars` package and keeps all placement, minimize, and geometry decisions in this plugin's Lua.
 
 Hyprland supports tiled and floating windows concurrently. The Lua integration defaults regular workspaces to Float and keeps explicit Tiling overrides. For each enabled workspace it enables a standard workspace-matched `float` window rule, so new windows are Float before layout placement; current and moved windows are reconciled separately.
 
@@ -49,6 +49,7 @@ omarchy-shell shell call fatlj.float-panel status '{}'
 - Hyprland 0.56.2 with Lua configuration, development headers, and `pkg-config` metadata
 - A C++23 compiler and the Lua development package matching Hyprland
 - Quickshell 0.3.1 or a compatible build
+- Optional for `chrome = "titlebar"`: `omarchy-hyprland-titlebars`, preloaded by the user's `hyprland.lua`
 
 This does not target the legacy Waybar-based Omarchy releases.
 
@@ -131,6 +132,31 @@ hl.config({ general = { resize_on_border = true } })
 ```
 
 Application minimum-size hints are ignored globally by applying Hyprland's standard per-window `min_size = 1 1` property to every existing mapped window and every `window.open`; the highest-priority property also replaces stale constraints left on persistent XWayland window objects by earlier plugin versions. No application name, class, or title is special-cased. Application maximum-size hints retain Hyprland's native behavior.
+
+## Titlebar chrome
+
+The default `hover` chrome is the invisible top drag strip. To use a visible Omarchy-style titlebar, preload Omarchy's titlebar plugin before the float-panel integration and select `chrome = "titlebar"`:
+
+```lua
+-- ~/.config/hypr/hyprland.lua
+pcall(hl.plugin.load, "/usr/lib/omarchy-hyprland-titlebars/titlebars.so")
+float_panel_options = { chrome = "titlebar" }
+dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/hypr/float-panel.lua")
+```
+
+The preload line is required. Loading `titlebars.so` from inside config evaluation makes that plugin reload the same config recursively; the plugin therefore never loads it itself and falls back to the hover strip with a notification if the plugin API is absent. If the package is not installed, the same fallback applies.
+
+Titlebar mode inherits the titlebar package's interaction: app-name/title text, theme colors, close/maximize/minimize buttons, double-click maximize, dragging by the bar, top-edge resize, and touch. The actions remain this plugin's:
+
+- close uses the standard window close;
+- minimize moves the window to `special:omarchy-minimized-N`, the same per-workspace store as `Super+M` and TaskList, not Omarchy's shared dock store;
+- maximize and double-click use the plugin's geometric maximize/restore, the same state as `Super+Up`/`Super+Down`, not compositor maximize.
+
+Only ordinary floating windows on plugin Float workspaces receive the titlebar tag. Tiling workspaces, the minimized special store, and auxiliary menu/tooltip windows do not. The titlebar's reserved height is subtracted from the floating work area, so a window stops below the bar instead of sliding under the monitor's top edge; full-height and maximized windows are reduced by exactly that height.
+
+To switch back, set `chrome = "hover"` and run `hyprctl reload`. The preload line may stay (the plugin draws nothing without the tag), or be removed. The plugin removes the titlebar tag and reclaims the reserved strip; a window that was pushed down or capped by the titlebar returns to its full work-area geometry.
+
+Do not use this chrome with Omarchy's official floating workspace mode: that mode has its own titlebar configuration, tags, and placement policy. `Super+Shift+T` / Float Toggle remain the only mode controls for this plugin.
 
 ## Minimize and restore
 
@@ -216,6 +242,6 @@ Two further checks run against the real desktop and are not part of `scripts/val
 - `scripts/session-model-verify.sh` is read-only and safe to run while the machine is in use. It snapshots the live `j/monitors` and `j/clients` data, evaluates the real `AppSwitcher.qml` and `TaskListModel.js` offscreen in node against that snapshot plus synthetic minimized stores, and reports whether the overlay would open, which candidates it would list, and which store each activation would restore from. Nothing is moved, minimized, focused or drawn.
 - `scripts/desktop-background-verify.sh` builds a throwaway nested Hyprland in a private runtime directory when real pixels are needed. Its host window is parked in a dedicated special workspace by a window rule for the whole run and the run aborts if that ever stops holding, so no window, overlay or screenshot ever reaches the user's outputs. It runs a separate Omarchy shell with the working-tree plugin inside that instance and captures the nested output with grim.
 
-The validation suite also runs an isolated offscreen Quickshell socket-recovery test, and checks default-Float/explicit-Tiling migration, new workspace rules, the manifest, QML/JavaScript/Lua syntax, grouping behavior, cross-monitor Alt-Tab scope including Omarchy's shared minimized store and per-window restore routing, stock `Super+M` ownership, silent-no-op diagnostics, asynchronous snapshot/Alt-release handling, active-window workspace routing, the covering-fullscreen lower/raise invariant in activation, including always-on-top peers, fractional-scale geometry, pinned-window fitting, workspace-mode events, minimize routing, and the absence of fixed workspace/hyprbars dependencies.
+The validation suite also runs an isolated offscreen Quickshell socket-recovery test, and checks default-Float/explicit-Tiling migration, new workspace rules, the manifest, QML/JavaScript/Lua syntax, grouping behavior, cross-monitor Alt-Tab scope including Omarchy's shared minimized store and per-window restore routing, stock `Super+M` ownership, silent-no-op diagnostics, asynchronous snapshot/Alt-release handling, active-window workspace routing, the covering-fullscreen lower/raise invariant in activation, including always-on-top peers, fractional-scale geometry, pinned-window fitting, workspace-mode events, minimize routing, hover-mode titlebar independence, and the optional titlebar setup/inset/reclaim contracts. It does not require a fixed workspace ID.
 
 A real Omarchy/Hyprland session is still required for final visual and interaction testing.

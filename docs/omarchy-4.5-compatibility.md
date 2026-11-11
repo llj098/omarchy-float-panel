@@ -63,3 +63,32 @@ journalctl --user -t omarchy-shell -g 'fatlj\.float-panel'
 Lua、TaskList、TaskListModel、AppSwitcher、`ReconnectingEventSocket.qml` 必须作为一组更新。模式文件 v2 保存显式 Tiling 例外，旧的正向 Float 列表会自然迁移为默认 Float。不要在新 QML 与旧 Lua 混用时判断模式是否正确。
 
 更新完成、文件 watcher 稳定后 reload Hyprland 配置并重启一次 Omarchy Shell；不需要重启桌面或热卸载 native bridge。回滚到旧版本时，必须同时恢复备份的旧 `float-panel-workspaces` 文件，因为旧版不理解 v2。geometry 文件格式未改变。
+
+## Titlebar chrome（2026-11-11）
+
+本插件新增可选的 `chrome = "titlebar"`：不再使用隐形的 hover drag strip，而是复用 Omarchy 4.5 的 `omarchy-hyprland-titlebars` 作为 titlebar 渲染层。它不是官方 floating workspace 模式的一部分：Float/Tiling 状态、几何持久化、最小化存储和 Alt-Tab 仍由本插件管理。
+
+配置方式（`~/.config/hypr/hyprland.lua`，必须在插件的 `dofile` 之前）：
+
+```lua
+pcall(hl.plugin.load, "/usr/lib/omarchy-hyprland-titlebars/titlebars.so")
+float_panel_options = { chrome = "titlebar" }
+dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/hypr/float-panel.lua")
+```
+
+- 预加载行是必需的。在 config 求值过程中加载 titlebars 会让它递归 reload 同一份 config；插件自身不加载该包，只在 `hl.plugin.hyprbars` 已存在时配置它。缺少包或未预加载时保留 hover strip，并通过通知/日志提示。
+- titlebar 的 `workspace_tag` 由插件打的 `fatlj-float-titlebar` tag 限定；Tiling、special minimized store 和 auxiliary menu/tooltip 窗口不带该 tag。
+- titlebar 是主表面之上的 top decoration，并预留 `bar_height`（默认 30px）。插件的 floating bounds 对带 tag 的窗口增加同样的 top inset，所以窗口内容不会钻到 bar 下面；切换回 `hover` 时会显式 reclaim 这 30px，避免窗口永久缩小或停在下方。
+- 按钮动作仍走 Lua：close 标准关闭；minimize 写 `special:omarchy-minimized-N`；maximize/双击走几何最大化。不要换成官方 dock 的共享 `special:minimized` store。
+
+### 已验证
+
+- 嵌套合成器（Hyprland 0.56.2）：同时加载 `hyprbars` 与 `float-panel-native`，窗口 tag 为 `fatlj-float-titlebar`，`plugin:hyprbars:enabled=true`、`workspace_tag=fatlj-float-titlebar`、`bar_height=30`；窗口主表面 `at.y` 从 9 变为 39，`size.y` 从 342 变为 312，外框保持工作区高度。
+- 真实桌面（会话锁屏状态，只读 geometry/tag 核对）：titlebar 模式下窗口 `at.y=42`、`size.y=1266`；切换 `chrome="hover"` 后恢复 `at.y=12`、`size.y=1296`；切回 titlebar 再次变为 `42/1266`。窗口 tag 随模式正确增删。
+- 嵌套合成器里通过 `hyprctl dispatch 'fatlj_float_panel.titlebar_action("0x…", "maximize")'` 验证按钮动作路径：窗口获得 `float-panel-geometric-max-v1…` tag，并落到带 30px inset 的完整 floating bounds；`"minimize"` 则移动到 `special:omarchy-minimized-1`。动作字符串本身由 `add_button` 注册，单元测试覆盖了三条命令都带 `%WINDOW%`。
+- `scripts/validate.sh` 覆盖 titlebar setup、tag、inset、几何最大化/最小化路由和回退契约。
+
+### 尚未验证
+
+- 锁屏状态下无法做指针级验收：titlebar 按钮点击、拖动、双击、顶部 resize 的实际像素/输入路径仍需解锁后在专用 workspace 复测。
+- 不要把 `chrome="titlebar"` 与官方 `Super+L` / Workspace Layout 的 floating 模式同时使用；官方 `titlebars()` 会改写全局 `workspace_tag` 和按钮动作，且其 placement/tag 策略与本插件冲突。

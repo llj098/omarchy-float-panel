@@ -213,7 +213,7 @@ for required in (
     "for _, window in safe_ipairs(hl.get_windows()) do",
     "for _, window in safe_ipairs(workspace:get_windows()) do",
     "defensively_fit_float_workspace(workspace)",
-    "floating_window_bounds(window.monitor)",
+    "window_floating_bounds(window)",
     "window.mapped ~= true",
     "window.hidden == true",
     "window.floating ~= true",
@@ -313,7 +313,7 @@ for required in (
     '"event.drag_before"',
     '"record.write"',
     'window_side_intent(window)',
-    'side_geometry(side.side, window.monitor)',
+    'side_geometry(side.side, window.monitor, titlebar_inset(window))',
     'local function update_side_intent(window, workspace, side, geometry, target_monitor, restore)',
     'local observed = at and size and {',
     'adopt_existing_side_intent(window, workspace)',
@@ -362,7 +362,25 @@ for unsafe_iteration in (
 for forbidden in ("hyprbars", "hyprctl clients", "workspace 9", "workspace = \"9\""):
     assert forbidden not in qml
     assert forbidden not in switcher
+
+for forbidden in ("hyprctl clients", "workspace 9", "workspace = \"9\""):
     assert forbidden not in lua
+
+# The titlebar provider is optional and must stay behind the chrome switch.
+for required in (
+    "float_panel_options",
+    'chrome == "titlebar"',
+    'titlebar_tag = "fatlj-float-titlebar"',
+    "workspace_tag = titlebar_tag",
+    "hyprbars.add_button",
+    "titlebar_action",
+    "titlebar_inset",
+):
+    assert required in lua, f"titlebar contract missing: {required}"
+assert "hl.plugin.load(titlebar_path)" not in lua and "pcall(hl.plugin.load" not in lua, \
+    "the plugin must not load titlebars during config evaluation; the user's preload line owns that"
+assert 'titlebar_unavailable("not-loaded")' in lua, \
+    "titlebar mode must fall back when the titlebar package is not preloaded"
 
 assert "native_float_panel.apply_xwayland_size_hints" not in lua, \
     "native corrected size-hint application must remain removed"

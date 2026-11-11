@@ -7,6 +7,18 @@ local geometry_state_path = home .. "/.local/state/omarchy/float-panel-geometrie
 local debug_flag_path = home .. "/.local/state/omarchy/float-panel-debug"
 local debug_sink = rawget(_G, "FLOAT_PANEL_DEBUG_SINK")
 local native_bridge_path = home .. "/.config/omarchy/plugins/fatlj.float-panel/native/build/float-panel-native.so"
+local titlebar_path = "/usr/lib/omarchy-hyprland-titlebars/titlebars.so"
+local titlebar_tag = "fatlj-float-titlebar"
+-- Optional chrome layer. "hover" is the original drag strip; "titlebar" uses
+-- Omarchy's titlebars package and is selected from the user's hyprland.lua:
+--   float_panel_options = { chrome = "titlebar" }
+local plugin_options = type(rawget(_G, "float_panel_options")) == "table" and rawget(_G, "float_panel_options") or {}
+local chrome = plugin_options.chrome == "titlebar" and "titlebar" or "hover"
+local titlebar_options = type(plugin_options.titlebar) == "table" and plugin_options.titlebar or {}
+local titlebar_height = math.floor(tonumber(titlebar_options.height) or 30)
+if titlebar_height < 1 or titlebar_height > 64 then titlebar_height = 30 end
+local titlebar_ready = false
+local sync_titlebar_tag
 -- Absence means Float. Only explicit Tiling overrides need persistence.
 local float_workspaces = {}
 local mode_state_header = "# float-panel-workspaces-v2"
@@ -521,16 +533,57 @@ local function remove_window_tag(window, tag)
   hl.dispatch(hl.dsp.window.tag({ tag = "-" .. tag, window = window }))
 end
 
-local function side_geometry(side, monitor)
+local function has_window_tag(window, tag)
+  for _, value in ipairs(window and window.tags or {}) do
+    if value == tag then return true end
+  end
+  return false
+end
+
+-- The titlebar is a top decoration above the main surface, so the main surface
+-- must stay one bar height below the floating work-area top. The tag is applied
+-- only to eligible Float windows; special-store windows keep it while their
+-- source workspace still floats.
+local function titlebar_inset(window)
+  if chrome ~= "titlebar" or not titlebar_ready or not window or window.floating ~= true then return 0 end
+  local workspace = window.workspace
+  if workspace and workspace_is_regular(workspace) then
+    if not workspace_float_enabled(workspace) then return 0 end
+  elseif workspace and workspace.special == true then
+    if not has_window_tag(window, titlebar_tag) then return 0 end
+  else
+    return 0
+  end
+  if has_window_tag(window, auxiliary_no_border_tag) then return 0 end
+  return titlebar_height
+end
+
+local function window_floating_bounds(window, monitor)
+  local bounds = floating_window_bounds(monitor or (window and window.monitor))
+  local inset = titlebar_inset(window)
+  if not bounds or inset <= 0 then return bounds end
+  local top = bounds.top + inset
+  return {
+    left = bounds.left,
+    top = top,
+    right = bounds.right,
+    bottom = bounds.bottom,
+    width = bounds.width,
+    height = math.max(1, bounds.bottom - top),
+  }
+end
+
+local function side_geometry(side, monitor, inset)
   local area = monitor_work_area(monitor)
   if not area then return nil end
   local gaps_out = config_gap("general.gaps_out")
   local gaps_in = config_gap("general.gaps_in")
   local border = math.max(0, tonumber(hl.get_config("general.border_size")) or 0)
+  inset = math.max(0, tonumber(inset) or 0)
   local outer_x = area.x + gaps_out.left
-  local outer_y = area.y + gaps_out.top
+  local outer_y = area.y + gaps_out.top + inset
   local outer_width = math.max(1, area.width - gaps_out.left - gaps_out.right)
-  local outer_height = math.max(1, area.height - gaps_out.top - gaps_out.bottom)
+  local outer_height = math.max(1, area.height - gaps_out.top - gaps_out.bottom - inset)
   local middle_gap = math.max(0, gaps_in.left + gaps_in.right)
   local halves_width = math.max(2, outer_width - middle_gap)
   local left_outer_width = math.floor(halves_width / 2)
@@ -721,7 +774,7 @@ end
 -- topology reflow updates only the observed last-applied state.
 local function rebase_reflow_anchor_from(window, box, bounds, monitor, source_workspace, reason, trace)
   local token = geometry_window_token(window)
-  bounds = bounds or floating_window_bounds(monitor or (window and window.monitor or nil))
+  bounds = bounds or window_floating_bounds(window, monitor or (window and window.monitor or nil))
   monitor = monitor or (window and window.monitor or nil)
   source_workspace = source_workspace or (window and window.workspace or nil)
   if not token or not box or not bounds or box.width < 1 or box.height < 1 then return nil end
@@ -772,7 +825,7 @@ end
 debug_window_details = function(window, fields)
   local anchor = reflow_anchor(window)
   fields.current_goal = format_box(window_box(window))
-  fields.current_bounds = format_bounds(floating_window_bounds(window and window.monitor))
+  fields.current_bounds = format_bounds(window_floating_bounds(window))
   fields.prev = format_anchor(anchor)
   fields.last_applied = format_box(anchor and anchor.last_applied)
   fields.last_bounds = format_bounds(anchor and anchor.last_bounds)
@@ -881,7 +934,7 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
 
   target_monitor = target_monitor or window.monitor
   source_workspace = source_workspace or window.workspace
-  local bounds = floating_window_bounds(target_monitor)
+  local bounds = window_floating_bounds(window, target_monitor)
   local at = window.at
   local size = window.size
   if not bounds or not at or not size then return end
@@ -929,7 +982,7 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
       remove_window_tag(window, side.raw)
       anchor = rebase_reflow_anchor(window, target_monitor, bounds, source_workspace, "reflow.side-invalid", trace)
     else
-      local geometry = side_geometry(side.side, target_monitor)
+      local geometry = side_geometry(side.side, target_monitor, titlebar_inset(window))
       if not geometry then return end
       local resize_request, move_request
       if tonumber(size.x) ~= geometry.width or tonumber(size.y) ~= geometry.height then
@@ -1024,10 +1077,10 @@ end
 
 local function restore_geometric_max(window)
   local metadata = window_geometric_max_metadata(window)
-  local bounds = window and floating_window_bounds(window.monitor) or nil
+  local bounds = window and window_floating_bounds(window) or nil
   if not metadata or not bounds then return false end
   local side = window_side_intent(window)
-  local geometry = side and side_geometry(side.side, window.monitor) or geometry_clamped_to_bounds(metadata, bounds)
+  local geometry = side and side_geometry(side.side, window.monitor, titlebar_inset(window)) or geometry_clamped_to_bounds(metadata, bounds)
   if not geometry then return false end
   geometry_dispatch("resize", { x = geometry.width, y = geometry.height, window = window }, "restore-geometric-max")
   geometry_dispatch("move", { x = geometry.x, y = geometry.y, window = window }, "restore-geometric-max")
@@ -1042,7 +1095,7 @@ end
 -- existing intent-clearing path also drops it.
 local function restore_side_snap(window)
   local metadata = window_side_intent(window)
-  local bounds = window and floating_window_bounds(window.monitor) or nil
+  local bounds = window and window_floating_bounds(window) or nil
   if not metadata or not metadata.restore or not bounds then return false end
   local geometry = geometry_clamped_to_bounds(metadata.restore, bounds)
   geometry_dispatch("resize", { x = geometry.width, y = geometry.height, window = window }, "restore-side-snap")
@@ -1054,7 +1107,7 @@ end
 
 local function maximize_geometric_window(window, workspace)
   if not window or window_geometric_max_metadata(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
-  local bounds = floating_window_bounds(window.monitor)
+  local bounds = window_floating_bounds(window)
   local tag = make_geometric_max_tag(window, workspace)
   if not bounds or not tag then return false end
   add_window_tag(window, tag)
@@ -1075,20 +1128,60 @@ local function clear_geometric_max_metadata_for_workspace(workspace)
   end
 end
 
+-- Titlebar tags are the only thing that makes the optional titlebars plugin
+-- draw. A tag is added only for ordinary floating windows on a Float workspace;
+-- special-store windows keep it while their source workspace still floats, and
+-- a move to Tiling or a scratchpad removes it. Tag changes themselves fire
+-- window.update_rules, so this function never dispatches on an unchanged tag.
+sync_titlebar_tag = function(window, workspace)
+  if not window then return end
+  local present = has_window_tag(window, titlebar_tag)
+  if chrome ~= "titlebar" or not titlebar_ready then
+    if present then remove_window_tag(window, titlebar_tag) end
+    return
+  end
+
+  workspace = workspace or window.workspace
+  local eligible = false
+  if workspace and workspace_is_regular(workspace) then
+    eligible = workspace_float_enabled(workspace)
+  elseif workspace and workspace.special == true then
+    eligible = present and tostring(workspace.name or ""):match("^special:omarchy%-minimized%-%-?%d+$") ~= nil
+  end
+
+  if eligible and window.floating == true and not has_window_tag(window, auxiliary_no_border_tag) then
+    if not present then add_window_tag(window, titlebar_tag) end
+  elseif present then
+    remove_window_tag(window, titlebar_tag)
+  end
+end
+
 apply_workspace_mode = function(workspace)
   if not workspace_is_regular(workspace) then return end
   local enabled = workspace_float_enabled(workspace)
   if not enabled then clear_geometric_max_metadata_for_workspace(workspace) end
   for _, window in safe_ipairs(workspace:get_windows()) do
     set_window_floating(window, enabled)
-    if enabled then rebase_reflow_anchor(window, nil, nil, nil, "apply-workspace-mode")
-    else clear_reflow_anchor(window, "apply-workspace-mode") end
+    sync_titlebar_tag(window, workspace)
+    if enabled then
+      rebase_reflow_anchor(window, nil, nil, nil, "apply-workspace-mode")
+      if chrome == "titlebar" and titlebar_ready then
+        fit_window_to_floating_bounds(window, nil, workspace, false, "workspace-mode")
+      end
+    else
+      clear_reflow_anchor(window, "apply-workspace-mode")
+    end
     reconcile_drag_strip(window)
   end
-  if not enabled then
-    local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
-    for _, window in safe_ipairs(hl.get_windows()) do
-      if window.workspace and window.workspace.name == minimized_name then clear_reflow_anchor(window, "mode-disabled-minimized") end
+  local minimized_name = "special:omarchy-minimized-" .. tostring(workspace.id)
+  for _, window in safe_ipairs(hl.get_windows()) do
+    if window.workspace and window.workspace.name == minimized_name then
+      if enabled and chrome == "titlebar" and titlebar_ready then
+        if not has_window_tag(window, titlebar_tag) then add_window_tag(window, titlebar_tag) end
+      elseif not enabled then
+        if has_window_tag(window, titlebar_tag) then remove_window_tag(window, titlebar_tag) end
+        clear_reflow_anchor(window, "mode-disabled-minimized")
+      end
     end
   end
 end
@@ -1099,7 +1192,7 @@ local function adopt_existing_side_intent(window, workspace)
   local at, size = window.at, window.size
   if not at or not size then return end
   for _, side in ipairs({ "left", "right" }) do
-    local expected = side_geometry(side, window.monitor)
+    local expected = side_geometry(side, window.monitor, titlebar_inset(window))
     -- Some clients quantize configure sizes; only a 2px increment delta is
     -- accepted so unrelated near-half/free windows are never adopted.
     if expected and tonumber(at.x) == expected.x and tonumber(at.y) == expected.y and
@@ -1155,7 +1248,7 @@ local function mode_aware_resize(dx, dy)
 
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   clear_side_intent(window)
-  local bounds = window and floating_window_bounds(window.monitor) or nil
+  local bounds = window and window_floating_bounds(window) or nil
   local at = window and window.at or nil
   local size = window and window.size or nil
   if not bounds or not at or not size then return end
@@ -1195,7 +1288,7 @@ local function snap_active_window(window, workspace, side, capture_restore)
   if not window then return end
   local restore = capture_restore ~= false and snap_restore_geometry(window) or nil
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
-  local geometry = side_geometry(side, window.monitor)
+  local geometry = side_geometry(side, window.monitor, titlebar_inset(window))
   if not geometry then return end
 
   set_window_floating(window, true)
@@ -1553,7 +1646,7 @@ end
 local function geometry_record_from_window(window)
   if not window or window.mapped ~= true or window.floating ~= true then return nil, "not-recordable" end
   local at, size = window.at, window.size
-  local bounds = floating_window_bounds(window.monitor)
+  local bounds = window_floating_bounds(window)
   if not at or not size or not bounds then return nil, "missing-geometry-or-bounds" end
 
   local maximum = window_geometric_max_metadata(window)
@@ -1644,7 +1737,7 @@ local function scaled_placement_offset(offset, old_travel, new_travel)
 end
 
 local function restore_free_record(window, record)
-  local bounds = floating_window_bounds(window and window.monitor or nil)
+  local bounds = window_floating_bounds(window)
   if not bounds then return false end
   local width = nearest_integer(record.width * bounds.width / record.bounds_width)
   local height = nearest_integer(record.height * bounds.height / record.bounds_height)
@@ -1714,6 +1807,7 @@ local function drag_strip_style()
 end
 
 local function drag_strip_eligible(window)
+  if chrome == "titlebar" and titlebar_ready then return false end
   if not window or window.mapped ~= true or window.hidden == true or window.visible ~= true or
       window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
   if not workspace_is_regular(window.workspace) or not workspace_float_enabled(window.workspace) then return false end
@@ -1741,11 +1835,11 @@ if native_float_panel then
           if not box then return nil end
           return { x = box.x, y = box.y, width = box.width, height = box.height,
             workspace = window.workspace, monitor = window.monitor,
-            bounds = copy_bounds(floating_window_bounds(window.monitor)),
+            bounds = copy_bounds(window_floating_bounds(window)),
             maximum = window_geometric_max_metadata(window), side = window_side_intent(window) }
         end,
         equal = boxes_equal,
-        destination_valid = function(window) return floating_window_bounds(window.monitor) ~= nil end,
+        destination_valid = function(window) return window_floating_bounds(window) ~= nil end,
         accept = function(window, final, before)
           local metadata = window_geometric_max_metadata(window)
           if metadata then remove_window_tag(window, metadata.raw) end
@@ -1798,6 +1892,191 @@ end
 debug_log("diagnostics.begin", { schema = 2, geometry_reads = "compositor-goal", anchor_cache = "new-lua-instance" })
 load_float_workspaces()
 load_geometry_records()
+
+local function titlebar_theme_colors()
+  local colors = {}
+  local file = io.open(home .. "/.local/state/omarchy/current/theme/colors.toml", "r")
+  if file then
+    for line in file:lines() do
+      local key, value = line:match('^%s*([%w_]+)%s*=%s*"#(%x%x%x%x%x%x)"')
+      if key then colors[key] = value end
+    end
+    file:close()
+  end
+  local background = colors.background or "1a1b26"
+  local titlebar = colors.lighter_background
+  if not titlebar or titlebar == background then titlebar = colors.selection or background end
+  return { titlebar = "rgb(" .. titlebar .. ")", foreground = "rgb(" .. (colors.foreground or "c0caf5") .. ")" }
+end
+
+local function titlebar_action_command(action)
+  return "hyprctl dispatch 'fatlj_float_panel.titlebar_action(\"%WINDOW%\", \"" .. action .. "\")'"
+end
+
+local function titlebar_close_command()
+  return "hyprctl dispatch 'hl.dsp.window.close({ window = \"address:%WINDOW%\" })'"
+end
+
+local function titlebar_unavailable(reason)
+  debug_log("titlebar.unavailable", { reason = reason })
+  pcall(function()
+    hl.exec_cmd("omarchy-notification-send " .. o.shell_quote("Float panel: titlebar unavailable, using hover bar"))
+  end)
+end
+
+function fatlj_float_panel.titlebar_action(address, action)
+  local selector = "address:" .. tostring(address or "")
+  local window = nil
+  pcall(function() window = hl.get_window(selector) end)
+  if not window or chrome ~= "titlebar" or not titlebar_ready then return hl.dsp.exec_cmd("true") end
+
+  action = tostring(action or "")
+  debug_window_action("titlebar.action", window, window.workspace, { action = action })
+  if action == "minimize" then
+    local workspace = window.workspace
+    if workspace and workspace_is_regular(workspace) then
+      geometry_dispatch("move", {
+        workspace = "special:omarchy-minimized-" .. tostring(workspace.id), follow = false, window = window,
+      }, "titlebar.minimize")
+      hl.dispatch(hl.dsp.focus({ workspace = workspace_selector(workspace) }))
+    end
+  elseif action == "maximize" then
+    if window_geometric_max_metadata(window) then
+      restore_geometric_max(window)
+    else
+      maximize_geometric_window(window, window.workspace)
+    end
+  elseif action == "close" then
+    hl.dispatch(hl.dsp.window.close({ window = window }))
+  end
+  return hl.dsp.exec_cmd("true")
+end
+
+-- Switching chrome back must also give the titlebar's reserved 30px back to
+-- windows that were clamped against the top. A free window that was merely
+-- pushed down moves up; a geometric max or side snap returns to its full
+-- work-area geometry. Windows that were not near the top are left alone.
+local function reclaim_titlebar_space(window)
+  if not has_window_tag(window, titlebar_tag) then return end
+  if window.floating == true and workspace_is_regular(window.workspace) and
+      workspace_float_enabled(window.workspace) and (tonumber(window.fullscreen) or 0) == 0 then
+    local bounds = floating_window_bounds(window.monitor)
+    local at, size = window.at, window.size
+    if bounds and at and size then
+      local target
+      local maximum = window_geometric_max_metadata(window)
+      local side = window_side_intent(window)
+      if maximum then
+        target = { x = bounds.left, y = bounds.top, width = bounds.width, height = bounds.height }
+      elseif side then
+        target = side_geometry(side.side, window.monitor, 0)
+      elseif (tonumber(at.y) or bounds.top) <= bounds.top + titlebar_height then
+        local height = size.y
+        -- A free window that filled the work area was capped at bounds-height
+        -- minus the bar; give that strip back, but do not grow a merely
+        -- pushed-down window that never touched the bottom.
+        if math.abs((tonumber(size.y) or 0) + titlebar_height - bounds.height) <= 1 then
+          height = bounds.height
+        end
+        target = { x = at.x, y = bounds.top, width = size.x, height = height }
+      end
+      if target then
+        if tonumber(size.x) ~= target.width or tonumber(size.y) ~= target.height then
+          geometry_dispatch("resize", { x = target.width, y = target.height, window = window }, "titlebar.reclaim")
+        end
+        if tonumber(at.x) ~= target.x or tonumber(at.y) ~= target.y then
+          geometry_dispatch("move", { x = target.x, y = target.y, window = window }, "titlebar.reclaim")
+        end
+      end
+    end
+  end
+  remove_window_tag(window, titlebar_tag)
+end
+
+local function setup_titlebar()
+  if chrome ~= "titlebar" then
+    for _, window in safe_ipairs(hl.get_windows()) do reclaim_titlebar_space(window) end
+    return
+  end
+
+  local file = io.open(titlebar_path, "r")
+  if not file then
+    titlebar_unavailable("missing")
+    return
+  end
+  file:close()
+
+  if type(hl.plugin) ~= "table" or type(hl.plugin.hyprbars) ~= "table" then
+    for _, window in safe_ipairs(hl.get_windows()) do reclaim_titlebar_space(window) end
+    titlebar_unavailable("not-loaded")
+    return
+  end
+
+  local hyprbars = hl.plugin.hyprbars
+  if type(hyprbars.add_button) ~= "function" then
+    titlebar_unavailable("button-api")
+    return
+  end
+
+  local colors = titlebar_theme_colors()
+  local configured = pcall(hl.config, {
+    plugin = {
+      hyprbars = {
+        enabled = true,
+        workspace_tag = titlebar_tag,
+        bar_height = titlebar_height,
+        bar_color = colors.titlebar,
+        col = { text = colors.foreground },
+        bar_text_font = "monospace",
+        bar_text_size = 12,
+        bar_text_weight = "normal",
+        bar_text_align = "left",
+        bar_buttons_alignment = "right",
+        bar_part_of_window = true,
+        bar_precedence_over_border = true,
+        bar_padding = 10,
+        bar_button_padding = 8,
+        button_rounding = 0,
+        icon_on_hover = false,
+        inactive_button_color = colors.titlebar,
+        on_double_click = titlebar_action_command("maximize"),
+      },
+    },
+  })
+  if not configured then
+    titlebar_unavailable("config-failed")
+    return
+  end
+
+  local button_size = math.max(10, math.min(20, titlebar_height - 10))
+  for _, button in ipairs({
+    { icon = "×", action = titlebar_close_command() },
+    { icon = "□", action = titlebar_action_command("maximize") },
+    { icon = "−", action = titlebar_action_command("minimize") },
+  }) do
+    local ok = pcall(hyprbars.add_button, {
+      bg_color = colors.titlebar,
+      fg_color = colors.foreground,
+      size = button_size,
+      icon = button.icon,
+      action = button.action,
+    })
+    if not ok then
+      pcall(hl.config, { plugin = { hyprbars = { enabled = false } } })
+      titlebar_unavailable("button-failed")
+      return
+    end
+  end
+
+  titlebar_ready = true
+end
+
+local function sync_all_titlebar_tags()
+  for _, window in safe_ipairs(hl.get_windows()) do sync_titlebar_tag(window) end
+end
+
+setup_titlebar()
+sync_all_titlebar_tags()
 local function debug_monitor(event, monitor)
   if not debug_enabled then return end
   local reserved = monitor and monitor.reserved or {}
@@ -1868,6 +2147,7 @@ hl.on("window.open", function(window)
   })
   if float_enabled then
     set_window_floating(window, true)
+    sync_titlebar_tag(window, workspace)
     local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
     slot, record = claimed_slot, claimed_record
     if persistence_eligible and record then
@@ -1896,6 +2176,10 @@ hl.on("window.open", function(window)
     requested_maximize = startup_maximize,
     restored_intent = record and record.intent or "none",
   })
+end)
+
+hl.on("window.update_rules", function(window)
+  sync_titlebar_tag(window)
 end)
 
 hl.on("window.close", function(window)
@@ -1972,11 +2256,13 @@ hl.on("window.move_to_workspace", function(window, workspace)
       (side and workspace_selector(workspace) == side.source) or
       (anchor and workspace_selector(workspace) == anchor.source_workspace)
     set_window_floating(window, float_enabled)
+    sync_titlebar_tag(window, workspace)
     release_geometry_slot(window, true)
     if float_enabled then claim_geometry_slot(window, workspace) end
     if not returning_to_source then clear_reflow_anchor(window, "window.move-to-workspace") end
   elseif metadata or side then
     set_window_floating(window, true)
+    sync_titlebar_tag(window, workspace)
   end
   reconcile_drag_strip(window)
   debug_window_geometry("event.window_move_workspace_after", window, workspace, { layout_phase = "pre-final-placement" })

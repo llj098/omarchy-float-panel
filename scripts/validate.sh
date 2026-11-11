@@ -24,6 +24,7 @@ TMP_HOME=$(mktemp -d)
 trap 'rm -r "$TMP_HOME"' EXIT
 mkdir -p "$TMP_HOME/.local/state/omarchy"
 HOME="$TMP_HOME" lua tests/test_workspace_modes.lua
+HOME="$TMP_HOME" lua tests/test_titlebar.lua
 HOME="$TMP_HOME" lua tests/test_float_panel.lua
 HOME="$TMP_HOME" timeout 5 lua tests/test_keybinding_scanner.lua
 
