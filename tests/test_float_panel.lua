@@ -1741,7 +1741,7 @@ for index = snap_before + 1, #dispatched do
 end
 assert(snapped, "Super+Left must still snap an app-owned window")
 
-app_owned.fullscreen = 1
+app_owned.fullscreenClient = 1
 local unmax_before = #dispatched
 binds["SUPER + RIGHT"]()
 local unmaxed = false
@@ -1749,34 +1749,39 @@ local snapped_after_unmax = false
 for index = unmax_before + 1, #dispatched do
   local item = dispatched[index]
   if (item.params and item.params.window) == app_owned then
-    if item.kind == "fullscreen" and item.params.action == "unset" then unmaxed = true end
+    if item.kind == "fullscreen_state" and item.params.client == 0 then unmaxed = true end
     if item.kind == "resize" or item.kind == "move" then snapped_after_unmax = true end
   end
 end
-assert(unmaxed, "snapping a maximized app-owned window must clear the client maximize first")
-assert(snapped_after_unmax, "the snap itself must still happen after clearing the maximize")
-app_owned.fullscreen = 0
+assert(snapped_after_unmax, "the snap itself must still happen for an app-owned window")
+app_owned.fullscreenClient = 0
 
 local maximize_before = #dispatched
 binds["SUPER + UP"]()
-local native_max = nil
+local split_max = nil
+local maximized_geometry = false
 for index = maximize_before + 1, #dispatched do
   local item = dispatched[index]
-  if item.kind == "fullscreen" and (item.params and item.params.window) == app_owned then native_max = item.params end
+  if (item.params and item.params.window) == app_owned then
+    if item.kind == "fullscreen_state" then split_max = item.params end
+    if item.kind == "resize" or item.kind == "move" then maximized_geometry = true end
+  end
 end
-assert(native_max and native_max.mode == "maximized" and native_max.action == "set",
-  "Super+Up on an app-owned window must use Hyprland's native maximize")
-app_owned.fullscreen = 1
+assert(split_max and split_max.internal == 0 and split_max.client == 1,
+  "app-owned maximize must tell the client while leaving Hyprland's internal state alone")
+assert(maximized_geometry, "app-owned maximize must own the geometry itself")
+app_owned.fullscreenClient = 1
 local restore_before = #dispatched
 binds["SUPER + DOWN"]()
-local native_restore = nil
+local client_cleared = false
 for index = restore_before + 1, #dispatched do
   local item = dispatched[index]
-  if item.kind == "fullscreen" and (item.params and item.params.window) == app_owned then native_restore = item.params end
+  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen_state" and item.params.client == 0 then
+    client_cleared = true
+  end
 end
-assert(native_restore and native_restore.action == "unset",
-  "Super+Down on a maximized app-owned window must unmaximize it natively")
-app_owned.fullscreen = 0
+assert(client_cleared, "Super+Down on an app-owned window must clear the client maximize bit")
+app_owned.fullscreenClient = 0
 
 
 print("LUA_TESTS_OK")

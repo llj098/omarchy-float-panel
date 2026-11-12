@@ -364,6 +364,7 @@ end
 -- toolkits all remember that state themselves) must see exactly the state it
 -- asked for, otherwise its headerbar shows a maximize button for a maximized
 -- window or the reverse, and the click has nothing left to toggle.
+
 local apply_workspace_mode
 local persist_window_placement
 local persist_workspace_placements
@@ -777,15 +778,123 @@ local function geometry_window_token(window)
   return tostring(window)
 end
 
+-- Maximizing an app-owned window keeps two independent facts apart:
+--   * the client side: the app must be told it is maximized, or its own middle
+--     button shows the wrong glyph and its click toggles nothing;
+--   * the compositor side: a window in Hyprland's internal maximized state
+--     gates hover focus (input:follow_mouse) and is drawn under every floating
+--     peer flagged as allowed over it, which is not what a floating desktop
+--     wants.
+-- fullscreen_state lets the two differ: client maximized, internal untouched.
+-- The plugin owns the geometry for this case, so the window is resized to the
+-- floating work area and its previous box is remembered for restore.
+local app_owned_max_boxes = {}
+-- Last box an app-owned window had while it was neither client- nor
+-- internally maximized. Hyprland applies a client maximize request before the
+-- plugin sees it, so this is the only way to know what to restore to.
+local app_owned_last_boxes = {}
+
+local function app_owned_maximized(window)
+  local token = geometry_window_token(window)
+  return token and app_owned_max_boxes[token] or nil
+end
+
+local function remember_app_owned_box(window)
+  if not window or not titlebar_excluded(window) then return end
+  if (tonumber(window.fullscreen) or 0) ~= 0 or (tonumber(window.fullscreenClient) or 0) ~= 0 then return end
+  local token = geometry_window_token(window)
+  local at, size = window.at, window.size
+  if not token or not at or not size then return end
+  app_owned_last_boxes[token] = {
+    x = nearest_integer(at.x), y = nearest_integer(at.y),
+    width = nearest_integer(size.x), height = nearest_integer(size.y),
+  }
+end
+
+local function set_client_maximized(window, enabled)
+  pcall(function()
+    hl.dispatch(hl.dsp.window.fullscreen_state({
+      internal = 0,
+      client = enabled and 1 or 0,
+      action = "set",
+      window = window,
+    }))
+  end)
+end
+
+local function app_owned_maximize(window, enabled)
+  if not window then return false end
+  local token = geometry_window_token(window)
+  local bounds = window and window_floating_bounds(window) or nil
+  if not token or not bounds then return false end
+  if enabled then
+    if app_owned_max_boxes[token] then
+      set_client_maximized(window, true)
+      return true
+    end
+    local at, size = window.at, window.size
+    if not at or not size then return false end
+    app_owned_max_boxes[token] = app_owned_last_boxes[token] or {
+      x = nearest_integer(at.x), y = nearest_integer(at.y),
+      width = nearest_integer(size.x), height = nearest_integer(size.y),
+    }
+    set_client_maximized(window, true)
+    geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "app-owned.maximize")
+    geometry_dispatch("move", { x = bounds.left, y = bounds.top, window = window }, "app-owned.maximize")
+    hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
+    return true
+  end
+  local box = app_owned_max_boxes[token]
+  if not box then
+    set_client_maximized(window, false)
+    return false
+  end
+  app_owned_max_boxes[token] = nil
+  set_client_maximized(window, false)
+  geometry_dispatch("resize", { x = box.width, y = box.height, window = window }, "app-owned.restore")
+  geometry_dispatch("move", { x = box.x, y = box.y, window = window }, "app-owned.restore")
+  return true
+end
+
+-- A window that is already in Hyprland's internal maximized state (started
+-- before this policy, or maximized by a plugin load in between) is moved to the
+-- same split state once: drop the internal bit, keep the client bit, and record
+-- the box Hyprland restores to so the next restore click has a target.
+local function adopt_app_owned_maximize(window)
+  if not window or not titlebar_excluded(window) then return end
+  local token = geometry_window_token(window)
+  if not token or app_owned_max_boxes[token] then return end
+  local internal = tonumber(window.fullscreen) or 0
+  local client = tonumber(window.fullscreenClient) or 0
+  if internal ~= 0 then
+    set_client_maximized(window, client ~= 0)
+    return
+  end
+  if client == 0 then return end
+  local bounds = window and window_floating_bounds(window) or nil
+  local at, size = window and window.at or nil, window and window.size or nil
+  if not bounds or not at or not size then return end
+  if (tonumber(size.x) or 0) >= bounds.width - 1 and (tonumber(size.y) or 0) >= bounds.height - 1 then return end
+  app_owned_max_boxes[token] = {
+    x = nearest_integer(at.x), y = nearest_integer(at.y),
+    width = nearest_integer(size.x), height = nearest_integer(size.y),
+  }
+  geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "app-owned.adopt")
+  geometry_dispatch("move", { x = bounds.left, y = bounds.top, window = window }, "app-owned.adopt")
+end
+
 if native_maximize_request_event then
   hl.on("float_panel.maximize_request", function(window, requested)
     local token = geometry_window_token(window)
     if not token then return end
     if opened_window_tokens[token] then
-      -- App-owned CSD controls are excluded from this plugin's titlebar and,
-      -- with Omarchy's global maximize suppression removed by the user config,
-      -- are handled natively by Hyprland. Do not double-apply a geometric max.
-      if titlebar_excluded(window) then return end
+      -- App-owned CSD controls keep the app's own maximize state, but the
+      -- compositor must not enter its internal maximized mode: keep the client
+      -- bit and own the geometry here.
+      if titlebar_excluded(window) then
+        app_owned_maximize(window, requested == true)
+        return
+      end
       -- Otherwise route a Float workspace's own maximize request to the
       -- plugin's geometric maximize instead of leaving it a no-op.
       local workspace = window.workspace
@@ -1370,22 +1479,6 @@ local function rebase_workspace_reflow_anchors(workspace)
   end
 end
 
--- An app that keeps its own chrome also keeps its own maximize state, so an
--- explicit Super+Up/Down is forwarded to Hyprland's native maximize instead of
--- the plugin's geometric box: the app then shows the state it is really in.
-local function native_maximize(window, enabled)
-  if not window then return false end
-  local mode = tonumber(window.fullscreen) or 0
-  if enabled and mode ~= 0 then return false end
-  if not enabled and mode == 0 then return false end
-  pcall(function()
-    hl.dispatch(hl.dsp.window.fullscreen({
-      mode = "maximized", action = enabled and "set" or "unset", window = window,
-    }))
-  end)
-  return true
-end
-
 local function mode_aware_resize(dx, dy)
   local window, workspace = active_window_context()
   if not window then return end
@@ -1398,7 +1491,7 @@ local function mode_aware_resize(dx, dy)
 
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   clear_side_intent(window)
-  if titlebar_excluded(window) then native_maximize(window, false) end
+  if titlebar_excluded(window) then app_owned_maximize(window, false) end
   local bounds = window and window_floating_bounds(window) or nil
   local at = window and window.at or nil
   local size = window and window.size or nil
@@ -1459,12 +1552,12 @@ local function mode_aware_direction(direction)
       -- Super+Down unmaximizes first; a half snap needs the maximize state gone
       -- or Hyprland re-applies the maximized box after the resize.
       if direction == "u" then
-        native_maximize(window, true)
+        app_owned_maximize(window, true)
         return
-      elseif direction == "d" and native_maximize(window, false) then
+      elseif direction == "d" and app_owned_maximize(window, false) then
         return
       elseif direction == "l" or direction == "r" then
-        native_maximize(window, false)
+        app_owned_maximize(window, false)
       end
     end
     if direction == "l" or direction == "r" then
@@ -2058,6 +2151,8 @@ if native_float_panel then
       -- Raw floating/rules/openLate facts; public window.open precedes final visibility.
       hl.on("float_panel.window_changed", function(window)
         debug_window_geometry("event.window_changed", window, window and window.workspace, {})
+        remember_app_owned_box(window)
+        adopt_app_owned_maximize(window)
         reconcile_drag_strip(window)
       end)
       hl.on("window.fullscreen", function(window)
@@ -2301,7 +2396,11 @@ for _, window in safe_ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
   local semantics = read_native_window_semantics(window)
   tag_auxiliary_window_no_border(window, semantics)
-  if titlebar_excluded(window) then release_excluded_geometry(window) end
+  if titlebar_excluded(window) then
+    release_excluded_geometry(window)
+    remember_app_owned_box(window)
+    adopt_app_owned_maximize(window)
+  end
   local workspace = source_float_workspace(window)
   if workspace and not titlebar_excluded(window) then claim_geometry_slot(window, workspace) end
 end
@@ -2351,7 +2450,9 @@ hl.on("window.open", function(window)
       -- Hyprland re-place a window the app asked to have maximized.
       if window.floating ~= true then set_window_floating(window, true) end
       release_excluded_geometry(window)
-      initial_placement = "app-owned"
+      remember_app_owned_box(window)
+      if startup_maximize then app_owned_maximize(window, true) end
+      initial_placement = app_owned_max_boxes[token] and "app-maximized" or "app-owned"
     else
       local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
       slot, record = claimed_slot, claimed_record
@@ -2397,6 +2498,7 @@ hl.on("window.close", function(window)
     pending_startup_maximize[token] = nil
     minimize_request_handled[token] = nil
     opened_window_tokens[token] = nil
+    app_owned_max_boxes[token] = nil
   end
   local workspace = source_float_workspace(window)
   if workspace and not interrupted and not titlebar_excluded(window) then
