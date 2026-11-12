@@ -1724,4 +1724,80 @@ for index = startup_before + 1, #dispatched do
   end
 end
 
+-- Explicit keyboard geometry commands keep working for app-owned windows, and
+-- the maximize key forwards to Hyprland's native maximize so the app's own
+-- button and the window agree.
+active_window = app_owned
+app_owned.floating = true
+local snap_before = #dispatched
+binds["SUPER + LEFT"]()
+local snapped = false
+for index = snap_before + 1, #dispatched do
+  local item = dispatched[index]
+  if (item.params and item.params.window) == app_owned then
+    if item.kind == "resize" or item.kind == "move" then snapped = true end
+    assert(item.kind ~= "fullscreen", "a floating app-owned window needs no maximize change to snap")
+  end
+end
+assert(snapped, "Super+Left must still snap an app-owned window")
+
+app_owned.fullscreen = 1
+local unmax_before = #dispatched
+binds["SUPER + RIGHT"]()
+local unmaxed = false
+local snapped_after_unmax = false
+for index = unmax_before + 1, #dispatched do
+  local item = dispatched[index]
+  if (item.params and item.params.window) == app_owned then
+    if item.kind == "fullscreen" and item.params.action == "unset" then unmaxed = true end
+    if item.kind == "resize" or item.kind == "move" then snapped_after_unmax = true end
+  end
+end
+assert(unmaxed, "snapping a maximized app-owned window must clear the client maximize first")
+assert(snapped_after_unmax, "the snap itself must still happen after clearing the maximize")
+app_owned.fullscreen = 0
+
+local maximize_before = #dispatched
+binds["SUPER + UP"]()
+local native_max = nil
+for index = maximize_before + 1, #dispatched do
+  local item = dispatched[index]
+  if item.kind == "fullscreen" and (item.params and item.params.window) == app_owned then native_max = item.params end
+end
+assert(native_max and native_max.mode == "maximized" and native_max.action == "set",
+  "Super+Up on an app-owned window must use Hyprland's native maximize")
+app_owned.fullscreen = 1
+local restore_before = #dispatched
+binds["SUPER + DOWN"]()
+local native_restore = nil
+for index = restore_before + 1, #dispatched do
+  local item = dispatched[index]
+  if item.kind == "fullscreen" and (item.params and item.params.window) == app_owned then native_restore = item.params end
+end
+assert(native_restore and native_restore.action == "unset",
+  "Super+Down on a maximized app-owned window must unmaximize it natively")
+app_owned.fullscreen = 0
+
+-- Focus landing on a floating maximized window lowers the ordinary floating
+-- peers, so a click brings the maximized window forward instead of leaving it
+-- behind (Hyprland's allowed-over-fullscreen rendering).
+local focused_max = persisted_window("0xfocusmax", "FocusMax", 0, 0, 1900, 880)
+focused_max.workspace, focused_max.floating, focused_max.fullscreen = ws3, true, 1
+local peer_float = persisted_window("0xpeerfloat", "PeerFloat", 400, 100, 600, 400)
+peer_float.workspace, peer_float.floating = ws3, true
+table.insert(ws3.windows, focused_max)
+table.insert(ws3.windows, peer_float)
+local lower_before = #dispatched
+handlers["window.active"](focused_max)
+local lowered_peer, lowered_focus = false, false
+for index = lower_before + 1, #dispatched do
+  local item = dispatched[index]
+  if item.kind == "alter_zorder" then
+    if (item.params and item.params.window) == peer_float then lowered_peer = true end
+    if (item.params and item.params.window) == focused_max then lowered_focus = true end
+  end
+end
+assert(lowered_peer, "focus on a maximized floating window must lower its floating peers")
+assert(not lowered_focus, "the focused maximized window itself must stay on top")
+
 print("LUA_TESTS_OK")

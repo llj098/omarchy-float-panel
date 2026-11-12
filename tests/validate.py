@@ -509,8 +509,10 @@ assert "must fail closed without stripping an existing tag" in policy_tests
 # App-owned windows keep their own maximize state and geometry: the plugin may
 # clear a client maximize only for a window it puts its own titlebar on, never
 # set one, and never resize or move an excluded window behind its back.
-assert lua.count('mode = "maximized"') == 1, "only the external titlebar path may touch client maximize"
+assert lua.count('mode = "maximized"') == 2, "only the titlebar path and the app-owned maximize key may touch client maximize"
 assert 'mode = "maximized", action = "unset"' in lua, "the titlebar path may only clear a client maximize"
+assert 'mode = "maximized", action = enabled and "set" or "unset"' in lua, \
+    "Super+Up/Down must forward an app-owned window's maximize to Hyprland"
 assert 'action = "set"' not in lua, "Float maximize must not use Hyprland's single fullscreen owner"
 reset_calls = [line.strip() for line in lua.splitlines()
                if "reset_client_maximize(window)" in line and "local function" not in line]

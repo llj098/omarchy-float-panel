@@ -1370,6 +1370,22 @@ local function rebase_workspace_reflow_anchors(workspace)
   end
 end
 
+-- An app that keeps its own chrome also keeps its own maximize state, so an
+-- explicit Super+Up/Down is forwarded to Hyprland's native maximize instead of
+-- the plugin's geometric box: the app then shows the state it is really in.
+local function native_maximize(window, enabled)
+  if not window then return false end
+  local mode = tonumber(window.fullscreen) or 0
+  if enabled and mode ~= 0 then return false end
+  if not enabled and mode == 0 then return false end
+  pcall(function()
+    hl.dispatch(hl.dsp.window.fullscreen({
+      mode = "maximized", action = enabled and "set" or "unset", window = window,
+    }))
+  end)
+  return true
+end
+
 local function mode_aware_resize(dx, dy)
   local window, workspace = active_window_context()
   if not window then return end
@@ -1382,6 +1398,7 @@ local function mode_aware_resize(dx, dy)
 
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   clear_side_intent(window)
+  if titlebar_excluded(window) then native_maximize(window, false) end
   local bounds = window and window_floating_bounds(window) or nil
   local at = window and window.at or nil
   local size = window and window.size or nil
@@ -1419,7 +1436,7 @@ local function snap_restore_geometry(window)
 end
 
 local function snap_active_window(window, workspace, side, capture_restore)
-  if not window or titlebar_excluded(window) then return end
+  if not window then return end
   local restore = capture_restore ~= false and snap_restore_geometry(window) or nil
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   local geometry = side_geometry(side, window.monitor, titlebar_inset(window))
@@ -1438,6 +1455,18 @@ local function mode_aware_direction(direction)
   local float_mode = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
   debug_window_action("bind.direction", window, workspace, { direction = direction, float = float_mode })
   if float_mode then
+    if window and titlebar_excluded(window) then
+      -- Super+Down unmaximizes first; a half snap needs the maximize state gone
+      -- or Hyprland re-applies the maximized box after the resize.
+      if direction == "u" then
+        native_maximize(window, true)
+        return
+      elseif direction == "d" and native_maximize(window, false) then
+        return
+      elseif direction == "l" or direction == "r" then
+        native_maximize(window, false)
+      end
+    end
     if direction == "l" or direction == "r" then
       snap_active_window(window, workspace, direction == "l" and "left" or "right")
     elseif direction == "u" then
@@ -2357,6 +2386,30 @@ end)
 
 hl.on("window.update_rules", function(window)
   sync_titlebar_tag(window)
+end)
+
+-- Hyprland draws a window that gains focus while a floating maximized or
+-- fullscreen window sits on the same workspace above that window, whatever the
+-- stack says: the peer is flagged as allowed over fullscreen (upstream
+-- hyprwm/Hyprland#16412). Clicking the maximized window then focuses it without
+-- bringing it forward. Lowering the other floating windows of the workspace
+-- restores the order the click implies, the same way Alt-Tab already does.
+local function lower_peers_over_maximized(window)
+  if not window or window.mapped == false then return end
+  if (tonumber(window.fullscreen) or 0) == 0 or window.floating ~= true then return end
+  local workspace = window.workspace
+  if not workspace_is_regular(workspace) or not workspace_float_enabled(workspace) then return end
+  local address = tostring(window.address or "")
+  for _, peer in safe_ipairs(workspace:get_windows()) do
+    if tostring(peer.address or "") ~= address and peer.mapped == true and
+        peer.floating == true and peer.pinned ~= true and (tonumber(peer.fullscreen) or 0) == 0 then
+      hl.dispatch(hl.dsp.window.alter_zorder({ mode = "bottom", window = peer }))
+    end
+  end
+end
+
+hl.on("window.active", function(window)
+  lower_peers_over_maximized(window)
 end)
 
 hl.on("window.close", function(window)
