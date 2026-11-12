@@ -173,6 +173,7 @@ local reflow_anchors = {}
 local monitor_bounds_cache = {}
 local pending_startup_maximize = {}
 local opened_window_tokens = {}
+local app_owned_initial_size = {}
 local minimize_request_handled = {}
 local debug_window_details
 local geometry_dispatch
@@ -356,6 +357,27 @@ local function reset_client_maximize(window)
   pcall(function()
     hl.dispatch(hl.dsp.window.fullscreen({ mode = "maximized", action = "unset", window = window }))
   end)
+end
+
+-- App-owned windows that open at the whole work area have no meaningful
+-- restore target and their headerbar shows a permanent restore icon. Give
+-- them a normal floating size once, at open, while leaving user-sized windows
+-- alone.
+local function fit_app_owned_window(window)
+  local bounds = window_floating_bounds(window)
+  local at, size = window and window.at or nil, window and window.size or nil
+  if not bounds or not at or not size then return end
+  local width, height = tonumber(size.x) or 0, tonumber(size.y) or 0
+  if width < bounds.width - 1 and height < bounds.height - 1 then return false end
+  width = math.max(1, math.min(width, math.floor(bounds.width * 0.8)))
+  height = math.max(1, math.min(height, math.floor(bounds.height * 0.8)))
+  geometry_dispatch("resize", { x = width, y = height, window = window }, "app-owned.initial-size")
+  geometry_dispatch("move", {
+    x = bounds.left + math.floor((bounds.width - width) / 2),
+    y = bounds.top + math.floor((bounds.height - height) / 2),
+    window = window,
+  }, "app-owned.initial-size")
+  return true
 end
 
 local apply_workspace_mode
@@ -1290,6 +1312,10 @@ apply_workspace_mode = function(workspace)
     if enabled and titlebar_excluded(window) then
       reset_client_maximize(window)
       release_excluded_geometry(window)
+      local token = geometry_window_token(window)
+      if token and not app_owned_initial_size[token] and fit_app_owned_window(window) then
+        app_owned_initial_size[token] = true
+      end
     elseif enabled then
       rebase_reflow_anchor(window, nil, nil, nil, "apply-workspace-mode")
       if chrome == "titlebar" and titlebar_ready then
@@ -2022,6 +2048,10 @@ if native_float_panel then
       -- Raw floating/rules/openLate facts; public window.open precedes final visibility.
       hl.on("float_panel.window_changed", function(window)
         debug_window_geometry("event.window_changed", window, window and window.workspace, {})
+        local token = geometry_window_token(window)
+        if token and titlebar_excluded(window) and window.mapped == true and not app_owned_initial_size[token] then
+          if fit_app_owned_window(window) then app_owned_initial_size[token] = true end
+        end
         reconcile_drag_strip(window)
       end)
       hl.on("window.fullscreen", function(window)
@@ -2294,6 +2324,7 @@ hl.on("window.open", function(window)
   if token then
     pending_startup_maximize[token] = nil
     minimize_request_handled[token] = nil
+    app_owned_initial_size[token] = nil
     opened_window_tokens[token] = true
   end
   ignore_window_minimum_size(window)
@@ -2313,7 +2344,7 @@ hl.on("window.open", function(window)
     if titlebar_excluded(window) then
       reset_client_maximize(window)
       release_excluded_geometry(window)
-      fit_window_to_floating_bounds(window)
+      if fit_app_owned_window(window) then app_owned_initial_size[token] = true end
       initial_placement = "app-owned"
     else
       local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
@@ -2360,6 +2391,7 @@ hl.on("window.close", function(window)
   if token then
     pending_startup_maximize[token] = nil
     minimize_request_handled[token] = nil
+    app_owned_initial_size[token] = nil
     opened_window_tokens[token] = nil
   end
   local workspace = source_float_workspace(window)
