@@ -348,6 +348,17 @@ local function set_window_floating(window, enabled)
   }, "set-floating")
 end
 
+-- A float toggle re-places a window. For an app-owned window that Hyprland
+-- already maximized, that means the geometry drops back to the pre-maximize box
+-- while the app keeps the maximized bit, which is the stale "restore glyph on a
+-- floating window" state. Only float when it is really tiled, and never while a
+-- fullscreen or maximize state is active.
+local function ensure_window_floating(window)
+  if not window or window.floating == true then return end
+  if (tonumber(window.fullscreen) or 0) ~= 0 or (tonumber(window.fullscreenClient) or 0) ~= 0 then return end
+  set_window_floating(window, true)
+end
+
 -- Windows this plugin puts a titlebar on are maximized geometrically, so any
 -- client-side maximize bit is cleared first: the external titlebar is then the
 -- only maximize state the user sees.
@@ -779,15 +790,67 @@ local function geometry_window_token(window)
 end
 
 
+-- The app is the owner of its maximize state; the plugin only keeps the window
+-- geometry agreeing with it. Whatever set the client bit (the app's own button,
+-- Hyprland, or a stale toolkit belief), a maximized client bit means a work-area
+-- box, and clearing it gives the box back. No state is ever sent to the app from
+-- here, so this cannot produce a glyph the window does not match.
+local app_owned_boxes = {}
+local app_owned_last = {}
+local app_owned_restoring = {}
+
+local function app_owned_sync(window)
+  if not window or not titlebar_excluded(window) then return end
+  local token = geometry_window_token(window)
+  if not token then return end
+  local at, size = window.at, window.size
+  if not at or not size then return end
+  local client = tonumber(window.fullscreenClient) or 0
+  local bounds = window_floating_bounds(window)
+  if client == 0 then
+    app_owned_boxes[token] = nil
+    app_owned_last[token] = {
+      x = nearest_integer(at.x), y = nearest_integer(at.y),
+      width = nearest_integer(size.x), height = nearest_integer(size.y),
+    }
+    return
+  end
+  if not bounds then return end
+  if not app_owned_boxes[token] then
+    app_owned_boxes[token] = app_owned_last[token] or {
+      x = nearest_integer(at.x), y = nearest_integer(at.y),
+      width = nearest_integer(size.x), height = nearest_integer(size.y),
+    }
+  end
+  if (tonumber(size.x) or 0) >= bounds.width - 1 and (tonumber(size.y) or 0) >= bounds.height - 1 then return end
+  if app_owned_restoring[token] then return end
+  app_owned_restoring[token] = true
+  geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "app-owned.sync")
+  geometry_dispatch("move", { x = bounds.left, y = bounds.top, window = window }, "app-owned.sync")
+  app_owned_restoring[token] = nil
+end
+
+local function app_owned_restore(window)
+  if not window or not titlebar_excluded(window) then return end
+  local token = geometry_window_token(window)
+  local box = token and app_owned_boxes[token]
+  if not token or not box then return end
+  app_owned_boxes[token] = nil
+  geometry_dispatch("resize", { x = box.width, y = box.height, window = window }, "app-owned.giveback")
+  geometry_dispatch("move", { x = box.x, y = box.y, window = window }, "app-owned.giveback")
+end
+
 if native_maximize_request_event then
   hl.on("float_panel.maximize_request", function(window, requested)
     local token = geometry_window_token(window)
     if not token then return end
     if opened_window_tokens[token] then
-      -- App-owned windows own their maximize state end to end: Hyprland has
-      -- already applied the request, and any attempt to mirror it in the plugin
-      -- left the app's own middle button showing a state the window was not in.
-      if titlebar_excluded(window) then return end
+      -- App-owned windows own their maximize state: Hyprland already applied the
+      -- request. Only the geometry is kept in step with the client bit.
+      if titlebar_excluded(window) then
+        if requested then app_owned_sync(window) else app_owned_restore(window) end
+        return
+      end
       -- Otherwise route a Float workspace's own maximize request to the
       -- plugin's geometric maximize instead of leaving it a no-op.
       local workspace = window.workspace
@@ -1293,7 +1356,11 @@ apply_workspace_mode = function(workspace)
   local enabled = workspace_float_enabled(workspace)
   if not enabled then clear_geometric_max_metadata_for_workspace(workspace) end
   for _, window in safe_ipairs(workspace:get_windows()) do
-    set_window_floating(window, enabled)
+    if enabled and titlebar_excluded(window) then
+      ensure_window_floating(window)
+    else
+      set_window_floating(window, enabled)
+    end
     sync_titlebar_tag(window, workspace)
     if enabled and titlebar_excluded(window) then
       -- App-owned window: drop any geometry metadata this plugin may have added
@@ -2060,6 +2127,7 @@ if native_float_panel then
       -- Raw floating/rules/openLate facts; public window.open precedes final visibility.
       hl.on("float_panel.window_changed", function(window)
         debug_window_geometry("event.window_changed", window, window and window.workspace, {})
+        app_owned_sync(window)
         reconcile_drag_strip(window)
       end)
       hl.on("window.fullscreen", function(window)
@@ -2303,7 +2371,10 @@ for _, window in safe_ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
   local semantics = read_native_window_semantics(window)
   tag_auxiliary_window_no_border(window, semantics)
-  if titlebar_excluded(window) then release_excluded_geometry(window) end
+  if titlebar_excluded(window) then
+    release_excluded_geometry(window)
+    app_owned_sync(window)
+  end
   local workspace = source_float_workspace(window)
   if workspace and not titlebar_excluded(window) then claim_geometry_slot(window, workspace) end
 end
@@ -2351,8 +2422,9 @@ hl.on("window.open", function(window)
       -- fight the app's own titlebar buttons. A window that already floats is
       -- left alone entirely, because even a redundant float toggle makes
       -- Hyprland re-place a window the app asked to have maximized.
-      if window.floating ~= true then set_window_floating(window, true) end
+      ensure_window_floating(window)
       release_excluded_geometry(window)
+      app_owned_sync(window)
       initial_placement = "app-owned"
     else
       local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
@@ -2399,6 +2471,9 @@ hl.on("window.close", function(window)
     pending_startup_maximize[token] = nil
     minimize_request_handled[token] = nil
     opened_window_tokens[token] = nil
+    app_owned_boxes[token] = nil
+    app_owned_last[token] = nil
+    app_owned_restoring[token] = nil
   end
   local workspace = source_float_workspace(window)
   if workspace and not interrupted and not titlebar_excluded(window) then
