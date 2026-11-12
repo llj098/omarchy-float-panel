@@ -365,9 +365,10 @@ end
 -- them a normal floating size once, at open, while leaving user-sized windows
 -- alone.
 local function fit_app_owned_window(window)
+  if not window or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
   local bounds = window_floating_bounds(window)
   local at, size = window and window.at or nil, window and window.size or nil
-  if not bounds or not at or not size then return end
+  if not bounds or not at or not size then return false end
   local width, height = tonumber(size.x) or 0, tonumber(size.y) or 0
   if width < bounds.width - 1 and height < bounds.height - 1 then return false end
   width = math.max(1, math.min(width, math.floor(bounds.width * 0.8)))
@@ -2057,6 +2058,11 @@ if native_float_panel then
       end)
       hl.on("window.fullscreen", function(window)
         debug_window_geometry("event.fullscreen", window, window and window.workspace, {})
+        local token = geometry_window_token(window)
+        if token and titlebar_excluded(window) and window.mapped == true and
+            (tonumber(window.fullscreen) or 0) == 0 and not app_owned_initial_size[token] then
+          if fit_app_owned_window(window) then app_owned_initial_size[token] = true end
+        end
         reconcile_drag_strip(window)
       end)
       local function reconcile_all()
