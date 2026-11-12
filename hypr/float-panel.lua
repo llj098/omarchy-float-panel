@@ -769,10 +769,11 @@ if native_maximize_request_event then
       -- is open, route a Float workspace's own maximize button to the plugin's
       -- geometric maximize instead of leaving it a no-op.
       local workspace = window.workspace
+      debug_window_action("event.maximize_request.post", window, workspace, { requested = requested == true })
       if requested and workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
         maximize_geometric_window(window, workspace)
       elseif not requested then
-        restore_geometric_max(window)
+        if window_geometric_max_metadata(window) then restore_geometric_max(window) end
       end
       return
     end
@@ -2010,6 +2011,7 @@ if native_float_panel then
 end
 
 debug_log("diagnostics.begin", { schema = 2, geometry_reads = "compositor-goal", anchor_cache = "new-lua-instance" })
+debug_log("native.request_events", { maximize = native_maximize_request_event, minimize = native_minimize_request_event })
 load_float_workspaces()
 load_geometry_records()
 

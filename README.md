@@ -144,7 +144,7 @@ float_panel_options = {
   titlebar = {
     -- Case-insensitive class substrings, or globs containing *.
     -- An empty list disables all exclusions.
-    exclude = { "wechat", "nautilus", "lollypop", "firefox" },
+    exclude = { "wechat", "brave", "chrome", "chromium" },
     -- Width of each top-corner resize zone; 0 disables corner resizing.
     corner_resize = 10,
   },
@@ -163,19 +163,21 @@ Titlebar mode inherits the titlebar package's interaction: app-name/title text, 
 
 Only ordinary floating windows on plugin Float workspaces receive the titlebar tag. Tiling workspaces, the minimized special store, and auxiliary menu/tooltip windows do not. Windows whose class matches `titlebar.exclude` are also left untagged. A pattern without `*` is a case-insensitive substring; a pattern with `*` is a case-insensitive glob.
 
-For apps that already draw a GTK CSD headerbar — Nautilus, Lollypop, and similar — exclude them and put their own controls back with GTK's layout instead of stacking a second titlebar:
+GTK CSD apps such as Nautilus and Lollypop must not own a second set of controls. Remove their client-side buttons and let this plugin's titlebar be the only chrome:
 
 ```ini
 # ~/.config/gtk-3.0/settings.ini and ~/.config/gtk-4.0/settings.ini
 [Settings]
-gtk-decoration-layout=appmenu:minimize,maximize,close
+gtk-decoration-layout=appmenu:
 ```
 
 ```bash
-gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:minimize,maximize,close'
+gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:'
 ```
 
-Restart those apps after changing it. Chromium-based Brave/Chrome draw no client-side window controls on Hyprland, so they should **not** be excluded; this plugin's titlebar supplies their missing maximize/close/minimize. WeChat is excluded because its own headerbar controls are now forwarded to the plugin's minimize/maximize policy.
+Restart those apps after changing it; Lollypop/Nautilus then use this plugin's close/maximize/minimize and their middle button is no longer the app's own no-op. GTK CSD apps left excluded (or tiled windows) have no client-side buttons, so keyboard close/maximize remains available.
+
+WeChat, Brave and Chrome keep their own headerbar/tab-strip controls and stay excluded to avoid a second titlebar. Brave/Chrome need their own "Use system title bar and borders" setting to expose a maximize button on Hyprland; WeChat's own Qt buttons currently send no minimize request and an unmaximize request, so they cannot be made functional from the compositor without an app-side change.
 
 The titlebar's reserved height is subtracted from the floating work area, so a window stops below the bar instead of sliding under the monitor's top edge; full-height and maximized windows are reduced by exactly that height. `titlebar.corner_resize` adds invisible top-left and top-right resize zones inside the bar's padding, so the close/maximize/minimize buttons remain clickable; dragging a corner starts the compositor's native corner resize. The titlebar package's own top-edge resize remains available above the bar when `general.resize_on_border` is enabled.
 

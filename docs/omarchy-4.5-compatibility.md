@@ -101,10 +101,9 @@ Hyprland 0.56.2 的 `CWindow::onUpdateState()` 只消费 fullscreen 和 maximize
 
 ## CSD 应用的窗口按钮（2026-11-12）
 
-GTK CSD 应用（Nautilus、Lollypop）会在自己的 headerbar 画窗口按钮；Omarchy titlebar 再画一套就会重复。处理方式是分层：
+GTK CSD 应用（Nautilus、Lollypop）会在自己的 headerbar 画窗口按钮；Omarchy titlebar 再画一套就会重复。可靠的单一 owner 是本插件 titlebar：
 
-- GTK CSD 应用：设置 `gtk-decoration-layout=appmenu:minimize,maximize,close`（同时写 `gtk-3.0`/`gtk-4.0/settings.ini` 和 gsettings），并把 `nautilus`、`lollypop` 等加入 `titlebar.exclude`；它们保留自己的 min/max/close，不再有第二套标题栏。XFCE 下看到的也是这套 GTK headerbar 按钮。
-- Chromium 系（Brave/Chrome）：在 Hyprland 的 SSD 模式下不画自己的窗口按钮，不能排除；保留本插件 titlebar 才有 maximize/close/minimize。
-- WeChat：保留排除；它自己的 Qt headerbar 按钮通过 `float_panel.minimize_request` / post-open maximize 转发到插件策略。
-
-GTK 设置只影响 GTK CSD，Tiling 下没有本插件 titlebar 的 GTK 窗口会依赖键盘关闭/最大化；这是保留应用原生 headerbar 的代价。不要同时全局清空 GTK 按钮又让插件 titlebar 接管所有窗口。
+- GTK CSD 应用：设置 `gtk-decoration-layout=appmenu:`（同时写 `gtk-3.0`/`gtk-4.0/settings.ini` 和 gsettings），去掉应用自己的按钮；保留本插件 titlebar，Lollypop/Nautilus 的 maximize 已验证走 `maximize-geometric`。
+- Chromium 系（Brave/Chrome）：它们自己的 tab strip 按钮与插件 titlebar 会重复，因此保留在 `titlebar.exclude`；Brave 若需要 maximize，应在浏览器设置里启用 "Use system title bar and borders"，让浏览器不再画自己的按钮，再从 exclude 移除。
+- WeChat：保留 exclude。实测其 Qt headerbar 的最大化按钮只发出 `maximize_request=false`，最小化按钮不发出任何协议请求；compositor 无法区分用户点击与工具包状态，不能用 toggle 兜底（会震荡）。需要应用侧改为标准 xdg_toplevel 请求，或改用 `Super+M`/`Super+Up`。
+- 不要全局清空 GTK 按钮后又让应用自己拥有窗口控制；也不要对 false-only 的客户端做“false 当 toggle”的兜底，它会因客户端状态回写持续震荡。
