@@ -872,7 +872,7 @@ local function restore_peer_over_maximized()
     if peer and peer.mapped == true then
       hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = peer }))
     end
-  end, { interval = 80 })
+  end, { timeout = 80 })
 end
 
 if native_maximize_request_event then
