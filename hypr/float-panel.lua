@@ -174,6 +174,7 @@ local monitor_bounds_cache = {}
 local pending_startup_maximize = {}
 local opened_window_tokens = {}
 local app_owned_initial_size = {}
+local window_floating_bounds
 local minimize_request_handled = {}
 local debug_window_details
 local geometry_dispatch
@@ -650,7 +651,7 @@ local function titlebar_inset(window)
   return titlebar_height
 end
 
-local function window_floating_bounds(window, monitor)
+window_floating_bounds = function(window, monitor)
   local bounds = floating_window_bounds(monitor or (window and window.monitor))
   local inset = titlebar_inset(window)
   if not bounds or inset <= 0 then return bounds end
