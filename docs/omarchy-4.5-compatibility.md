@@ -98,3 +98,13 @@ dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/
 Hyprland 0.56.2 的 `CWindow::onUpdateState()` 只消费 fullscreen 和 maximize；`requestsMinimize` 虽然由 XDG/X11 状态设置，但没有消费路径。Omarchy 另有全局 `o.window(".*", { suppress_event = "maximize" })`，所以客户端自绘按钮在默认配置下表现为 no-op。
 
 本插件的 native bridge 现在把 `requestsMinimize` 作为 `float_panel.minimize_request` 事件转发给 Lua；Lua 在窗口已映射且位于 regular workspace 时把它移到 `special:omarchy-minimized-N`（与 `Super+M` 同一存储），并用每个 window token 去重，客户端发回 `false` 时清除。窗口打开后的 maximize 请求在 Float workspace 上转成几何最大化/还原；Tiling 保留 Omarchy 的抑制。嵌套合成器用 X11 `xdotool ... windowminimize` 验证了窗口进入 `special:omarchy-minimized-1`；Wayland 的 `set_minimized` 走同一条状态事件。
+
+## CSD 应用的窗口按钮（2026-11-12）
+
+GTK CSD 应用（Nautilus、Lollypop）会在自己的 headerbar 画窗口按钮；Omarchy titlebar 再画一套就会重复。处理方式是分层：
+
+- GTK CSD 应用：设置 `gtk-decoration-layout=appmenu:minimize,maximize,close`（同时写 `gtk-3.0`/`gtk-4.0/settings.ini` 和 gsettings），并把 `nautilus`、`lollypop` 等加入 `titlebar.exclude`；它们保留自己的 min/max/close，不再有第二套标题栏。XFCE 下看到的也是这套 GTK headerbar 按钮。
+- Chromium 系（Brave/Chrome）：在 Hyprland 的 SSD 模式下不画自己的窗口按钮，不能排除；保留本插件 titlebar 才有 maximize/close/minimize。
+- WeChat：保留排除；它自己的 Qt headerbar 按钮通过 `float_panel.minimize_request` / post-open maximize 转发到插件策略。
+
+GTK 设置只影响 GTK CSD，Tiling 下没有本插件 titlebar 的 GTK 窗口会依赖键盘关闭/最大化；这是保留应用原生 headerbar 的代价。不要同时全局清空 GTK 按钮又让插件 titlebar 接管所有窗口。
