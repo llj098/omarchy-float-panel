@@ -840,34 +840,32 @@ local function app_owned_restore(window)
   geometry_dispatch("move", { x = box.x, y = box.y, window = window }, "app-owned.giveback")
 end
 
--- Hyprland draws a focused floating window above a window that holds the
--- internal fullscreen/maximize state, but hit testing follows the real stack. A
--- click inside the maximized window raises it in the stack while the picture
--- does not change, so from then on the peer is only drawn on top: pointing at it
--- stops focusing it. Keep the last ordinary floating window per Float workspace
--- and re-assert its stack position while a maximized window has the focus; the
--- picture does not change, but hit testing agrees with it again.
-local maximized_peer_address = {}
-
-local function remember_float_peer(window)
-  if not window or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return end
-  local workspace = window.workspace
-  if not workspace_is_regular(workspace) or not workspace_float_enabled(workspace) then return end
-  local address = tostring(window.address or "")
-  if address == "" then return end
-  maximized_peer_address[workspace_key(workspace)] = "address:" .. address
-end
-
-local function restore_peer_over_maximized()
+-- Hyprland draws focused floating windows above a window that holds the internal
+-- fullscreen/maximize state, but hit testing follows the real stack. A click
+-- inside the maximized window raises it in the stack while the picture stays the
+-- same, so from then on the peers are only drawn on top: pointing at them stops
+-- focusing them. While a floating maximized window has the focus, put every other
+-- floating window of that workspace back on top of the stack in a stable order;
+-- the picture does not change, hit testing agrees with it again.
+local function restore_peers_over_maximized()
   local active = hl.get_active_window()
-  if not active or active.floating ~= true or (tonumber(active.fullscreen) or 0) == 0 then return end
+  if not active or (tonumber(active.fullscreen) or 0) == 0 then return end
   local workspace = active.workspace
-  if not workspace_is_regular(workspace) or not workspace_float_enabled(workspace) then return end
-  local address = maximized_peer_address[workspace_key(workspace)]
-  if not address or address == "address:" .. tostring(active.address or "") then return end
-  local peer = hl.get_window(address)
-  if not peer or peer.mapped ~= true or peer.floating ~= true or (tonumber(peer.fullscreen) or 0) ~= 0 then return end
-  hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = peer }))
+  if not workspace_is_regular(workspace) then return end
+  local address = tostring(active.address or "")
+  local peers = {}
+  for _, peer in safe_ipairs(workspace:get_windows()) do
+    local peer_address = tostring(peer.address or "")
+    if peer_address ~= "" and peer_address ~= address and peer.floating == true and
+        peer.mapped == true and peer.pinned ~= true and (tonumber(peer.fullscreen) or 0) == 0 then
+      table.insert(peers, peer_address)
+    end
+  end
+  table.sort(peers)
+  for _, peer_address in ipairs(peers) do
+    local peer = hl.get_window("address:" .. peer_address)
+    if peer then hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = peer })) end
+  end
 end
 
 if native_maximize_request_event then
@@ -2492,15 +2490,11 @@ hl.on("window.update_rules", function(window)
   sync_titlebar_tag(window)
 end)
 
-hl.on("window.active", function(window)
-  remember_float_peer(window)
-end)
-
 -- Poll instead of binding a mouse button: a mouse bind here swallowed every
 -- click in the session, and Hyprland exposes no pointer-button event to Lua.
 -- One cheap pass per tick, and only while a floating maximized window is focused.
 pcall(function()
-  hl.timer(restore_peer_over_maximized, { timeout = 400, type = "repeat" })
+  hl.timer(restore_peers_over_maximized, { timeout = 400, type = "repeat" })
 end)
 hl.on("window.close", function(window)
   local interrupted = drag_strip and drag_strip.active(window)
