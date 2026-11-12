@@ -509,13 +509,13 @@ assert "must fail closed without stripping an existing tag" in policy_tests
 # App-owned windows keep their own maximize state and geometry: the plugin may
 # clear a client maximize only for a window it puts its own titlebar on, never
 # set one, and never resize or move an excluded window behind its back.
-assert lua.count('mode = "maximized"') == 1, "only the external titlebar path may clear a client maximize"
+assert lua.count('mode = "maximized"') == 2, "client maximize is only cleared by the titlebar path and the app-owned maximize key"
 assert 'mode = "maximized", action = "unset"' in lua, "the titlebar path may only clear a client maximize"
-assert 'fullscreen_state({' in lua and 'internal = 0' in lua and 'client = enabled and 1 or 0' in lua, \
-    "app-owned maximize must tell the client while leaving the internal state untouched"
+assert lua.count('fullscreen_state({') == 1 and 'internal = 2' in lua, \
+    "only the plugin's own Float fullscreen key may drive the internal fullscreen state"
 assert 'action = "toggle"' in lua, "Float maximize keeps its own toggle path"
-assert 'fullscreen_state({' in lua and 'internal = 0' in lua, \
-    "the app-owned maximize must keep Hyprland's internal fullscreen state untouched"
+assert lua.count('fullscreen_state({') == 1 and 'internal = 2' in lua, \
+    "only the plugin's own Float fullscreen key may drive the internal fullscreen state"
 reset_calls = [line.strip() for line in lua.splitlines()
                if "reset_client_maximize(window)" in line and "local function" not in line]
 assert reset_calls == ["reset_client_maximize(window)"], \
