@@ -506,7 +506,20 @@ for policy_case in (
 assert "synthetic native bridge failure" in policy_tests
 assert "must fail closed without stripping an existing tag" in policy_tests
 
-assert 'mode = "maximized"' not in lua, "Float maximize must not use Hyprland's single fullscreen owner"
+# App-owned windows keep their own maximize state and geometry: the plugin may
+# clear a client maximize only for a window it puts its own titlebar on, never
+# set one, and never resize or move an excluded window behind its back.
+assert lua.count('mode = "maximized"') == 1, "only the external titlebar path may touch client maximize"
+assert 'mode = "maximized", action = "unset"' in lua, "the titlebar path may only clear a client maximize"
+assert 'action = "set"' not in lua, "Float maximize must not use Hyprland's single fullscreen owner"
+reset_calls = [line.strip() for line in lua.splitlines()
+               if "reset_client_maximize(window)" in line and "local function" not in line]
+assert reset_calls == ["reset_client_maximize(window)"], \
+    "client maximize may only be cleared from the external titlebar action"
+for removed in ("fit_app_owned_window", "app_owned_initial_size"):
+    assert removed not in lua, f"app-owned windows must keep their own geometry: {removed}"
+for case in ("app-owned", "own maximize state"):
+    assert case in lua or case in policy_tests, f"app-owned policy must stay documented: {case}"
 assert "monocle" not in lua.lower() and "hl.workspace_rule(" not in lua, "geometry maximize must not change tiled layouts"
 assert 'workspace = next_workspace and "e+1" or "e-1"' not in lua, "cross-monitor workspace cycling must not break same-monitor boundary wrap"
 assert "hl.dsp.window.cycle_next" not in lua and "hl.dsp.window.bring_to_top" not in lua, "Super+Tab must remain workspace navigation in every mode"

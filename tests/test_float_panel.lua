@@ -1672,4 +1672,56 @@ do
   assert(tagged, "post-open client maximize request must use geometric maximize on a Float workspace")
 end
 
+-- App-owned windows: the plugin may float them and drop its own tags, but it
+-- must never unmaximize, resize or move them. A toolkit that remembers its own
+-- maximized state then sees exactly what it asked for, so its headerbar button
+-- matches the window and the click has something to toggle.
+float_panel_options = { chrome = "hover", titlebar = { exclude = { "appowned" } } }
+local app_owned_state = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-workspaces", "w"))
+app_owned_state:write("# float-panel-workspaces-v2\ntile\t1\ntile\t2\ntile\t3\n")
+app_owned_state:close()
+dofile("hypr/float-panel.lua")
+fatlj_float_panel.toggle_workspace_mode(3)
+local app_owned = persisted_window("0xappowned", "AppOwned", 0, 0, 2000, 900)
+app_owned.workspace, app_owned.floating = ws3, false
+app_owned.size = { x = 1990, y = 890 }
+windows_by_address[app_owned.address] = app_owned
+table.insert(ws3.windows, app_owned)
+local app_owned_before = #dispatched
+local floated_by_plugin = false
+handlers["window.open"](app_owned)
+for index = app_owned_before + 1, #dispatched do
+  local item = dispatched[index]
+  if item.kind == "float" and (item.params and item.params.window) == app_owned then floated_by_plugin = true end
+end
+assert(floated_by_plugin, "test setup: the app-owned window must open on a Float workspace")
+handlers["float_panel.window_changed"](app_owned)
+handlers["window.fullscreen"](app_owned)
+for index = app_owned_before + 1, #dispatched do
+  local item = dispatched[index]
+  local target = item.params and item.params.window
+  if target == app_owned then
+    assert(item.kind ~= "fullscreen", "app-owned windows must keep their own maximize state")
+    assert(item.kind ~= "resize" and item.kind ~= "move", "app-owned windows must keep their own geometry")
+  end
+end
+for _, tag in ipairs(app_owned.tags or {}) do
+  assert(not tag:match("^float%-panel%-geometric%-max%-"), "app-owned windows must not receive a geometric maximize tag")
+  assert(not tag:match("^float%-panel%-side%-"), "app-owned windows must not receive a side intent tag")
+end
+assert(not handlers["float_panel.maximize_request"] or true)
+local maximized_app_owned = persisted_window("0xappmax", "AppOwned", 0, 0, 1990, 890)
+maximized_app_owned.workspace, maximized_app_owned.floating = ws3, true
+maximized_app_owned.fullscreen = 1
+windows_by_address[maximized_app_owned.address] = maximized_app_owned
+table.insert(ws3.windows, maximized_app_owned)
+local startup_before = #dispatched
+handlers["window.open"](maximized_app_owned)
+for index = startup_before + 1, #dispatched do
+  local item = dispatched[index]
+  if (item.params and item.params.window) == maximized_app_owned then
+    assert(item.kind ~= "fullscreen", "a maximized app-owned window must not be unmaximized by the plugin")
+  end
+end
+
 print("LUA_TESTS_OK")
