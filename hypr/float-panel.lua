@@ -789,6 +789,9 @@ end
 -- The plugin owns the geometry for this case, so the window is resized to the
 -- floating work area and its previous box is remembered for restore.
 local app_owned_max_boxes = {}
+-- A maximize request can arrive before the window has a monitor/work area; the
+-- geometry part is retried on the next window change instead of being dropped.
+local app_owned_pending_max = {}
 -- Last box an app-owned window had while it was neither client- nor
 -- internally maximized. Hyprland applies a client maximize request before the
 -- plugin sees it, so this is the only way to know what to restore to.
@@ -822,11 +825,22 @@ local function set_client_maximized(window, enabled)
   end)
 end
 
+local function apply_app_owned_max_geometry(window, bounds)
+  geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "app-owned.maximize")
+  geometry_dispatch("move", { x = bounds.left, y = bounds.top, window = window }, "app-owned.maximize")
+end
+
 local function app_owned_maximize(window, enabled)
   if not window then return false end
   local token = geometry_window_token(window)
+  if not token then return false end
   local bounds = window and window_floating_bounds(window) or nil
-  if not token or not bounds then return false end
+  if enabled and not bounds then
+    -- Keep the client bit and remember to place it once the work area is known.
+    app_owned_pending_max[token] = true
+    set_client_maximized(window, true)
+    return true
+  end
   if enabled then
     if app_owned_max_boxes[token] then
       set_client_maximized(window, true)
@@ -839,11 +853,11 @@ local function app_owned_maximize(window, enabled)
       width = nearest_integer(size.x), height = nearest_integer(size.y),
     }
     set_client_maximized(window, true)
-    geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "app-owned.maximize")
-    geometry_dispatch("move", { x = bounds.left, y = bounds.top, window = window }, "app-owned.maximize")
+    apply_app_owned_max_geometry(window, bounds)
     hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
     return true
   end
+  app_owned_pending_max[token] = nil
   local box = app_owned_max_boxes[token]
   if not box then
     set_client_maximized(window, false)
@@ -863,7 +877,30 @@ end
 local function adopt_app_owned_maximize(window)
   if not window or not titlebar_excluded(window) then return end
   local token = geometry_window_token(window)
-  if not token or app_owned_max_boxes[token] then return end
+  if not token then return end
+  if app_owned_pending_max[token] then
+    local pending_bounds = window and window_floating_bounds(window) or nil
+    if pending_bounds then
+      app_owned_pending_max[token] = nil
+      app_owned_max_boxes[token] = app_owned_max_boxes[token] or app_owned_last_boxes[token]
+      set_client_maximized(window, true)
+      apply_app_owned_max_geometry(window, pending_bounds)
+    end
+    return
+  end
+  if app_owned_max_boxes[token] then
+    -- Keep a window we consider maximized maximized, even if Hyprland dropped
+    -- the client bit or something moved it back to its old box.
+    local box_bounds = window and window_floating_bounds(window) or nil
+    if box_bounds then
+      local size = window.size
+      if (tonumber(window.fullscreenClient) or 0) == 0 or (size and (tonumber(size.x) or 0) < box_bounds.width - 1) then
+        set_client_maximized(window, true)
+        apply_app_owned_max_geometry(window, box_bounds)
+      end
+    end
+    return
+  end
   local internal = tonumber(window.fullscreen) or 0
   local client = tonumber(window.fullscreenClient) or 0
   if internal ~= 0 then
