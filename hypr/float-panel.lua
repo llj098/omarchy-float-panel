@@ -17,8 +17,51 @@ local chrome = plugin_options.chrome == "titlebar" and "titlebar" or "hover"
 local titlebar_options = type(plugin_options.titlebar) == "table" and plugin_options.titlebar or {}
 local titlebar_height = math.floor(tonumber(titlebar_options.height) or 30)
 if titlebar_height < 1 or titlebar_height > 64 then titlebar_height = 30 end
+local titlebar_corner = math.floor(tonumber(titlebar_options.corner_resize) or 10)
+if titlebar_corner < 0 or titlebar_corner > 24 then titlebar_corner = 10 end
+if titlebar_corner > 0 and titlebar_corner < 4 then titlebar_corner = 4 end
 local titlebar_ready = false
+local titlebar_corners
+local reclaim_titlebar_space
 local sync_titlebar_tag
+
+-- Application-level opt-out for the optional titlebar. A bare entry is a
+-- case-insensitive substring of the window class; an entry containing * is a
+-- case-insensitive glob. The list is user policy, not a built-in application
+-- classification; the documented example excludes browsers and chat clients
+-- whose own chrome is already a better titlebar.
+local titlebar_exclusions = {}
+do
+  local configured = titlebar_options.exclude
+  if type(configured) == "table" then
+    for _, value in ipairs(configured) do
+      if type(value) == "string" and value ~= "" then table.insert(titlebar_exclusions, value:lower()) end
+    end
+  end
+end
+
+local function titlebar_glob_pattern(value)
+  local escaped = value:gsub("([%^%$%(%)%%%.%[%]%+%-%?])", "%%%1")
+  return "^" .. escaped:gsub("%*", ".*") .. "$"
+end
+
+local function titlebar_excluded(window)
+  if #titlebar_exclusions == 0 or not window then return false end
+  local identities = { window.class, window.initial_class }
+  for _, pattern in ipairs(titlebar_exclusions) do
+    for _, identity in ipairs(identities) do
+      local value = type(identity) == "string" and identity:lower() or ""
+      if value ~= "" then
+        if pattern:find("*", 1, true) then
+          if value:match(titlebar_glob_pattern(pattern)) then return true end
+        elseif value:find(pattern, 1, true) then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
 -- Absence means Float. Only explicit Tiling overrides need persistence.
 local float_workspaces = {}
 local mode_state_header = "# float-panel-workspaces-v2"
@@ -131,7 +174,16 @@ local debug_window_details
 local geometry_dispatch
 local drag_strip
 local function reconcile_drag_strip(window)
-  if drag_strip then drag_strip.reconcile(window) end
+  -- One native primitive per window: remove the inactive chrome first, then
+  -- install the active one. The titlebar's corner zones are last so the drag
+  -- strip's ineligible pass cannot erase them.
+  if chrome == "titlebar" and titlebar_ready then
+    if drag_strip then drag_strip.reconcile(window) end
+    if titlebar_corners then titlebar_corners.reconcile(window) end
+  else
+    if titlebar_corners then titlebar_corners.reconcile(window) end
+    if drag_strip then drag_strip.reconcile(window) end
+  end
 end
 
 local function process_start_ticks(pid)
@@ -546,6 +598,7 @@ end
 -- source workspace still floats.
 local function titlebar_inset(window)
   if chrome ~= "titlebar" or not titlebar_ready or not window or window.floating ~= true then return 0 end
+  if titlebar_excluded(window) then return 0 end
   local workspace = window.workspace
   if workspace and workspace_is_regular(workspace) then
     if not workspace_float_enabled(workspace) then return 0 end
@@ -1149,10 +1202,15 @@ sync_titlebar_tag = function(window, workspace)
     eligible = present and tostring(workspace.name or ""):match("^special:omarchy%-minimized%-%-?%d+$") ~= nil
   end
 
-  if eligible and window.floating == true and not has_window_tag(window, auxiliary_no_border_tag) then
+  if eligible and not titlebar_excluded(window) and window.floating == true and
+      not has_window_tag(window, auxiliary_no_border_tag) then
     if not present then add_window_tag(window, titlebar_tag) end
   elseif present then
-    remove_window_tag(window, titlebar_tag)
+    if titlebar_excluded(window) and reclaim_titlebar_space then
+      reclaim_titlebar_space(window)
+    else
+      remove_window_tag(window, titlebar_tag)
+    end
   end
 end
 
@@ -1852,16 +1910,40 @@ if native_float_panel then
           })
         end,
       })
+      local corners = dofile(directory .. "titlebar-corners.lua")
+      titlebar_corners = corners.new(native_float_panel, {
+        identity = function(window)
+          return window and (window.stable_id ~= nil and ("stable:" .. tostring(window.stable_id)) or geometry_window_token(window))
+        end,
+        address = function(window) return window and tostring(window.address) end,
+        eligible = function(window)
+          return titlebar_corner > 0 and chrome == "titlebar" and titlebar_ready and
+            window ~= nil and titlebar_inset(window) > 0 and (tonumber(window.fullscreen) or 0) == 0
+        end,
+        focus = function(window)
+          hl.dispatch(hl.dsp.focus({ window = window }))
+          hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
+        end,
+        height = titlebar_height,
+        corner = titlebar_corner,
+      })
+
       hl.on("float_panel.decoration_pointer", function(window, phase, button)
         debug_window_geometry("event.decoration_pointer", window, window and window.workspace, { phase = phase, button = button })
-        drag_strip.pointer(window, phase, button)
+        if chrome == "titlebar" and titlebar_ready and titlebar_corners then
+          titlebar_corners.pointer(window, phase, button)
+        elseif drag_strip then
+          drag_strip.pointer(window, phase, button)
+        end
       end)
       hl.on("float_panel.drag", function(window, phase, mode, sequence)
         debug_window_geometry("event.drag_before", window, window and window.workspace, {
           phase = phase, mode = mode, drag_sequence = sequence, pending = drag_strip.active(window),
         })
         if phase == "begin" then reconcile_drag_strip(window) end
-        drag_strip.drag(window, phase, mode, sequence)
+        if not (chrome == "titlebar" and titlebar_ready) then
+          drag_strip.drag(window, phase, mode, sequence)
+        end
         if phase ~= "begin" then reconcile_drag_strip(window) end
         debug_window_geometry("event.drag_after", window, window and window.workspace, {
           phase = phase, mode = mode, drag_sequence = sequence, pending = drag_strip.active(window),
@@ -1956,7 +2038,7 @@ end
 -- windows that were clamped against the top. A free window that was merely
 -- pushed down moves up; a geometric max or side snap returns to its full
 -- work-area geometry. Windows that were not near the top are left alone.
-local function reclaim_titlebar_space(window)
+reclaim_titlebar_space = function(window)
   if not has_window_tag(window, titlebar_tag) then return end
   if window.floating == true and workspace_is_regular(window.workspace) and
       workspace_float_enabled(window.workspace) and (tonumber(window.fullscreen) or 0) == 0 then
@@ -2007,8 +2089,11 @@ local function setup_titlebar()
   file:close()
 
   if type(hl.plugin) ~= "table" or type(hl.plugin.hyprbars) ~= "table" then
+    -- The user loads titlebars after this file so the native input listener
+    -- registers before the titlebar's own press handler. That first pass has no
+    -- Lua API yet; stay quiet and let the reload configure it.
+    debug_log("titlebar.awaiting-api", {})
     for _, window in safe_ipairs(hl.get_windows()) do reclaim_titlebar_space(window) end
-    titlebar_unavailable("not-loaded")
     return
   end
 
@@ -2186,6 +2271,7 @@ hl.on("window.close", function(window)
   local interrupted = drag_strip and drag_strip.active(window)
   debug_window_geometry("event.window_close_before", window, window and window.workspace, { interrupted = interrupted == true })
   if drag_strip then drag_strip.forget(window) end
+  if titlebar_corners then titlebar_corners.forget(window) end
   local token = geometry_window_token(window)
   if token then
     pending_startup_maximize[token] = nil
@@ -2211,6 +2297,7 @@ end)
 hl.on("hyprland.shutdown", function()
   debug_log("event.shutdown", {})
   if drag_strip then drag_strip.shutdown() end
+  if titlebar_corners then titlebar_corners.shutdown() end
   local changed = false
   for _, window in safe_ipairs(hl.get_windows()) do
     local workspace = source_float_workspace(window)

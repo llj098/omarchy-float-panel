@@ -135,16 +135,25 @@ Application minimum-size hints are ignored globally by applying Hyprland's stand
 
 ## Titlebar chrome
 
-The default `hover` chrome is the invisible top drag strip. To use a visible Omarchy-style titlebar, preload Omarchy's titlebar plugin before the float-panel integration and select `chrome = "titlebar"`:
+The default `hover` chrome is the invisible top drag strip. To use a visible Omarchy-style titlebar, load the float-panel integration first and Omarchy's titlebar plugin after it:
 
 ```lua
 -- ~/.config/hypr/hyprland.lua
-pcall(hl.plugin.load, "/usr/lib/omarchy-hyprland-titlebars/titlebars.so")
-float_panel_options = { chrome = "titlebar" }
+float_panel_options = {
+  chrome = "titlebar",
+  titlebar = {
+    -- Case-insensitive class substrings, or globs containing *.
+    -- An empty list disables all exclusions.
+    exclude = { "brave", "wechat", "chrome", "chromium", "firefox" },
+    -- Width of each top-corner resize zone; 0 disables corner resizing.
+    corner_resize = 10,
+  },
+}
 dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/hypr/float-panel.lua")
+pcall(hl.plugin.load, "/usr/lib/omarchy-hyprland-titlebars/titlebars.so")
 ```
 
-The preload line is required. Loading `titlebars.so` from inside config evaluation makes that plugin reload the same config recursively; the plugin therefore never loads it itself and falls back to the hover strip with a notification if the plugin API is absent. If the package is not installed, the same fallback applies.
+The titlebar load line is required, and the order matters: the native input bridge must register before the titlebar plugin's own press handler so the top-corner zones can win. The plugin never loads titlebars itself; loading it from inside config evaluation makes it reload the same config recursively. The first pass has no titlebar API yet and stays quiet; the reload caused by the load line configures it. If the package is missing or the API never appears, the hover strip remains.
 
 Titlebar mode inherits the titlebar package's interaction: app-name/title text, theme colors, close/maximize/minimize buttons, double-click maximize, dragging by the bar, top-edge resize, and touch. The actions remain this plugin's:
 
@@ -152,9 +161,11 @@ Titlebar mode inherits the titlebar package's interaction: app-name/title text, 
 - minimize moves the window to `special:omarchy-minimized-N`, the same per-workspace store as `Super+M` and TaskList, not Omarchy's shared dock store;
 - maximize and double-click use the plugin's geometric maximize/restore, the same state as `Super+Up`/`Super+Down`, not compositor maximize.
 
-Only ordinary floating windows on plugin Float workspaces receive the titlebar tag. Tiling workspaces, the minimized special store, and auxiliary menu/tooltip windows do not. The titlebar's reserved height is subtracted from the floating work area, so a window stops below the bar instead of sliding under the monitor's top edge; full-height and maximized windows are reduced by exactly that height.
+Only ordinary floating windows on plugin Float workspaces receive the titlebar tag. Tiling workspaces, the minimized special store, and auxiliary menu/tooltip windows do not. Windows whose class matches `titlebar.exclude` are also left untagged; the default documented list keeps Brave, WeChat, Chrome/Chromium and Firefox on their own browser chrome. A pattern without `*` is a case-insensitive substring; a pattern with `*` is a case-insensitive glob.
 
-To switch back, set `chrome = "hover"` and run `hyprctl reload`. The preload line may stay (the plugin draws nothing without the tag), or be removed. The plugin removes the titlebar tag and reclaims the reserved strip; a window that was pushed down or capped by the titlebar returns to its full work-area geometry.
+The titlebar's reserved height is subtracted from the floating work area, so a window stops below the bar instead of sliding under the monitor's top edge; full-height and maximized windows are reduced by exactly that height. `titlebar.corner_resize` adds invisible top-left and top-right resize zones inside the bar's padding, so the close/maximize/minimize buttons remain clickable; dragging a corner starts the compositor's native corner resize. The titlebar package's own top-edge resize remains available above the bar when `general.resize_on_border` is enabled.
+
+To switch back, set `chrome = "hover"` and run `hyprctl reload`. The titlebar load line may stay (the plugin draws nothing without the tag), or be removed. The plugin removes the titlebar tag and reclaims the reserved strip; a window that was pushed down or capped by the titlebar returns to its full work-area geometry. Excluding an app later also reclaims its strip at the next config reload.
 
 Do not use this chrome with Omarchy's official floating workspace mode: that mode has its own titlebar configuration, tags, and placement policy. `Super+Shift+T` / Float Toggle remain the only mode controls for this plugin.
 

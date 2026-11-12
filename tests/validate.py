@@ -379,8 +379,8 @@ for required in (
     assert required in lua, f"titlebar contract missing: {required}"
 assert "hl.plugin.load(titlebar_path)" not in lua and "pcall(hl.plugin.load" not in lua, \
     "the plugin must not load titlebars during config evaluation; the user's preload line owns that"
-assert 'titlebar_unavailable("not-loaded")' in lua, \
-    "titlebar mode must fall back when the titlebar package is not preloaded"
+assert 'titlebar.awaiting-api' in lua, \
+    "titlebar mode must stay quiet while the user loads titlebars after this file"
 
 assert "native_float_panel.apply_xwayland_size_hints" not in lua, \
     "native corrected size-hint application must remain removed"

@@ -44,7 +44,7 @@ wl_event_source* idle = nullptr;
 struct Primitive {
     PHLWINDOWREF window;
     IHyprWindowDecoration* deco = nullptr;
-    double height = 6, inset = 0;
+    double height = 6, inset = 0, corner = 0;
     uint32_t color = 0xff89b4fa;
     std::string cursor;
     bool visible = false;
@@ -173,7 +173,16 @@ PrimitivePtr hit(const Vector2D& pos) {
     if (it == primitives.end() || !it->second->deco || it->second->window.lock() != w) return {};
     auto p = it->second;
     const auto b = primitiveBox(p);
-    return b.w > 0 && b.containsPoint(pos) ? p : PrimitivePtr{};
+    if (!(b.w > 0 && b.containsPoint(pos))) return {};
+    if (p->corner > 0) {
+        // The full-width decoration is only an input vehicle for its two top
+        // corners; the middle stays available to the titlebar's own drag and
+        // buttons.
+        const double c = std::min(p->corner, b.w / 2);
+        const double rel = pos.x - b.x;
+        if (rel > c && rel < b.w - c) return {};
+    }
+    return p;
 }
 void refresh() {
     if (!running || resetting) return;
@@ -197,9 +206,19 @@ void refresh() {
         // A leave handler may synchronously destroy/reconfigure the next window.
         if (next && next->deco && hovered == next) pointer(next, "enter");
     }
-    if (hovered && hovered->deco && !hovered->cursor.empty() && !blocked()) {
+    std::string cursor;
+    if (hovered && hovered->deco) {
+        cursor = hovered->cursor;
+        if (hovered->corner > 0) {
+            const auto b = primitiveBox(hovered);
+            const auto c = std::min(hovered->corner, b.w / 2);
+            const auto POS = g_pInputManager->getMouseCoordsInternal();
+            cursor = POS.x < b.x + c ? "nwse-resize" : "nesw-resize";
+        }
+    }
+    if (!cursor.empty() && !blocked()) {
         cursorOwned = true;
-        Pointer::Cursor::overrideController->setOverride(hovered->cursor, Pointer::Cursor::CURSOR_OVERRIDE_UNKNOWN);
+        Pointer::Cursor::overrideController->setOverride(cursor, Pointer::Cursor::CURSOR_OVERRIDE_UNKNOWN);
     } else clearCursor();
 }
 void schedule() {
@@ -288,15 +307,17 @@ int set(lua_State* L) {
     auto w = resolve(lua_tostring(L, 1));
     if (resetting || !validMapped(w) || !lua_istable(L, 2)) return result(L, false);
     const double height = number(L, "height", 6), inset = number(L, "hit_inset", 0);
+    const double corner = number(L, "corner", 0);
     const double color = number(L, "color", 0xff89b4fa);
     if (!std::isfinite(height) || height < 1 || height > 64 || !std::isfinite(inset) || inset < 0 ||
+        !std::isfinite(corner) || corner < 0 || corner > 64 ||
         !std::isfinite(color) || color < 0 || color > 4294967295.0) return result(L, false);
     auto key = address(w);
     auto p = argument(L);
     if (!p) { p = std::make_shared<Primitive>(); p->window = w; primitives[key] = p; }
     if (p->deco) p->deco->damageEntire();
     const bool dimensions = p->height != height || p->inset != inset;
-    p->height = height; p->inset = inset;
+    p->height = height; p->inset = inset; p->corner = corner;
     p->color = static_cast<uint32_t>(color);
     lua_getfield(L, 2, "visible"); p->visible = lua_toboolean(L, -1); lua_pop(L, 1);
     lua_getfield(L, 2, "cursor"); p->cursor = lua_isstring(L, -1) ? lua_tostring(L, -1) : ""; lua_pop(L, 1);
@@ -326,11 +347,24 @@ int release(lua_State* L) {
 int begin(lua_State* L) {
     auto p = argument(L);
     const char* mode = lua_tostring(L, 2);
+    const char* corner = lua_tostring(L, 3);
     auto w = p ? p->window.lock() : nullptr;
+    const std::string_view MODE = mode ? mode : "";
+    eMouseBindMode bindMode = MBIND_INVALID;
+    std::optional<Layout::eRectCorner> edge;
+    if (MODE == "move") bindMode = MBIND_MOVE;
+    else if (MODE == "resize") {
+        const std::string_view CORNER = corner ? corner : "";
+        if (CORNER == "top-left") edge = Layout::CORNER_TOPLEFT;
+        else if (CORNER == "top-right") edge = Layout::CORNER_TOPRIGHT;
+        else return result(L, false);
+        bindMode = MBIND_RESIZE;
+    } else return result(L, false);
+
     if (!p || p != captured || !validMapped(w) || !w->layoutTarget() || !w->layoutTarget()->workspace() ||
-        !mode || std::string_view(mode) != "move" || blocked() || starting || ending || g_layoutManager->dragController()->target()) return result(L, false);
+        blocked() || starting || ending || g_layoutManager->dragController()->target()) return result(L, false);
     bridgeStarting = true;
-    g_layoutManager->beginDragTarget(w->layoutTarget(), MBIND_MOVE, std::nullopt, true);
+    g_layoutManager->beginDragTarget(w->layoutTarget(), bindMode, edge, true);
     bridgeStarting = false;
     return result(L, operation && operation->bridge && operation->begun && operation->window.lock() == w);
 }
@@ -351,7 +385,13 @@ void button(IPointer::SButtonEvent e, ::Event::SCallbackInfo& info) {
     auto p = hit(g_pInputManager->getMouseCoordsInternal());
     if (!p) return;
     offered = p; offeredButton = e.button; claimedPress = false;
-    pointer(p, "press", e.button);
+    std::string phase = "press";
+    if (p->corner > 0) {
+        const auto b = primitiveBox(p);
+        const auto c = std::min(p->corner, b.w / 2);
+        phase = g_pInputManager->getMouseCoordsInternal().x < b.x + c ? "press-left" : "press-right";
+    }
+    pointer(p, phase, e.button);
     offered.reset(); offeredButton = 0;
     if (claimedPress) info.cancelled = true;
     schedule();

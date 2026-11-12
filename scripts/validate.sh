@@ -14,6 +14,7 @@ node tests/test_switcher.js
 python tests/test_event_socket.py
 luac -p hypr/float-panel.lua
 luac -p hypr/drag-strip.lua
+luac -p hypr/titlebar-corners.lua
 lua tests/test_drag_strip.lua
 make -C native test
 if pkg-config --exists hyprland lua; then
