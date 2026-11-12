@@ -347,6 +347,17 @@ local function set_window_floating(window, enabled)
   }, "set-floating")
 end
 
+-- App-owned CSD toolkits keep a maximized bit even after this plugin has fitted
+-- a Float workspace's geometry. Clear it so their headerbar shows maximize
+-- rather than a stale restore icon; native maximize requests then start from a
+-- coherent state.
+local function reset_client_maximize(window)
+  if not window or window.mapped ~= true then return end
+  pcall(function()
+    hl.dispatch(hl.dsp.window.fullscreen({ mode = "maximized", action = "unset", window = window }))
+  end)
+end
+
 local apply_workspace_mode
 local persist_window_placement
 local persist_workspace_placements
@@ -1263,6 +1274,7 @@ apply_workspace_mode = function(workspace)
   for _, window in safe_ipairs(workspace:get_windows()) do
     set_window_floating(window, enabled)
     sync_titlebar_tag(window, workspace)
+    if enabled and titlebar_excluded(window) then reset_client_maximize(window) end
     if enabled then
       rebase_reflow_anchor(window, nil, nil, nil, "apply-workspace-mode")
       if chrome == "titlebar" and titlebar_ready then
@@ -2066,6 +2078,7 @@ function fatlj_float_panel.titlebar_action(address, action)
       hl.dispatch(hl.dsp.focus({ workspace = workspace_selector(workspace) }))
     end
   elseif action == "maximize" then
+    reset_client_maximize(window)
     if window_geometric_max_metadata(window) then
       restore_geometric_max(window)
     else
@@ -2236,6 +2249,7 @@ for _, window in safe_ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
   local semantics = read_native_window_semantics(window)
   tag_auxiliary_window_no_border(window, semantics)
+  if titlebar_excluded(window) then reset_client_maximize(window) end
   local workspace = source_float_workspace(window)
   if workspace then claim_geometry_slot(window, workspace) end
 end
@@ -2277,6 +2291,7 @@ hl.on("window.open", function(window)
   if float_enabled then
     set_window_floating(window, true)
     sync_titlebar_tag(window, workspace)
+    if titlebar_excluded(window) then reset_client_maximize(window) end
     local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
     slot, record = claimed_slot, claimed_record
     if persistence_eligible and record then
