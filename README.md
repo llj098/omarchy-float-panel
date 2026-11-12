@@ -177,6 +177,8 @@ For a source workspace with internal ID `N`, `Super+M` moves the active window t
 special:omarchy-minimized-N
 ```
 
+Hyprland 0.56.2 records client minimize requests but does not consume them, so a client-drawn minimize button otherwise does nothing. The native bridge now forwards both XDG and X11 minimize requests to Lua; the plugin moves that window to the same per-workspace store as `Super+M`, and clears the one-shot guard when the client releases the request. Client maximize requests after a window is already open are routed to the plugin's geometric maximize/restore on Float workspaces; Tiling keeps Omarchy's global maximize suppression.
+
 The TaskList combines the active workspace with that matching special workspace. It watches the existing Float workspace state file, so switching workspaces or toggling Float/Tiling updates its visibility without restarting the Shell. Because the source workspace is encoded in the special workspace name, no per-window origin database is needed.
 
 Omarchy 4.5 minimizes independently of this plugin: its `Super+M` binding and its titlebar minimize move a window to the single shared `special:minimized` workspace and tag it `omarchy-minimized-from-N`, and its dock is the UI for that store. Keeping both `Super+M` bindings would make one press move one window into each store. The plugin therefore unbinds the stock chord, and because the tags survive a restore, Alt-Tab still resolves any window that reached the shared store: activation moves it from the store it is really in — never from a store name it never had — to its tagged workspace when that workspace is displayed.

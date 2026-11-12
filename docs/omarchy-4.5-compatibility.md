@@ -92,3 +92,9 @@ dofile((os.getenv("HOME") or "") .. "/.config/omarchy/plugins/fatlj.float-panel/
 
 - 锁屏状态下无法做指针级验收：titlebar 按钮点击、拖动、双击、顶部 resize 的实际像素/输入路径仍需解锁后在专用 workspace 复测。
 - 不要把 `chrome="titlebar"` 与官方 `Super+L` / Workspace Layout 的 floating 模式同时使用；官方 `titlebars()` 会改写全局 `workspace_tag` 和按钮动作，且其 placement/tag 策略与本插件冲突。
+
+## Client minimize/maximize requests（2026-11-12）
+
+Hyprland 0.56.2 的 `CWindow::onUpdateState()` 只消费 fullscreen 和 maximize；`requestsMinimize` 虽然由 XDG/X11 状态设置，但没有消费路径。Omarchy 另有全局 `o.window(".*", { suppress_event = "maximize" })`，所以客户端自绘按钮在默认配置下表现为 no-op。
+
+本插件的 native bridge 现在把 `requestsMinimize` 作为 `float_panel.minimize_request` 事件转发给 Lua；Lua 在窗口已映射且位于 regular workspace 时把它移到 `special:omarchy-minimized-N`（与 `Super+M` 同一存储），并用每个 window token 去重，客户端发回 `false` 时清除。窗口打开后的 maximize 请求在 Float workspace 上转成几何最大化/还原；Tiling 保留 Omarchy 的抑制。嵌套合成器用 X11 `xdotool ... windowminimize` 验证了窗口进入 `special:omarchy-minimized-1`；Wayland 的 `set_minimized` 走同一条状态事件。

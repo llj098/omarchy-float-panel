@@ -86,10 +86,13 @@ local native_float_panel = type(hl.plugin) == "table" and type(hl.plugin.float_p
 local native_window_semantics = native_float_panel and type(native_float_panel.window_semantics) == "function" and
   native_float_panel.window_semantics or nil
 local native_maximize_request_event = false
+local native_minimize_request_event = false
 if native_float_panel and type(native_float_panel.capabilities) == "function" then
   local ok, capabilities = pcall(native_float_panel.capabilities)
   native_maximize_request_event = ok and type(capabilities) == "table" and
     capabilities.maximize_request_event == true
+  native_minimize_request_event = ok and type(capabilities) == "table" and
+    capabilities.minimize_request_event == true
 end
 
 local function read_native_window_semantics(window)
@@ -170,8 +173,11 @@ local reflow_anchors = {}
 local monitor_bounds_cache = {}
 local pending_startup_maximize = {}
 local opened_window_tokens = {}
+local minimize_request_handled = {}
 local debug_window_details
 local geometry_dispatch
+local restore_geometric_max
+local maximize_geometric_window
 local drag_strip
 local function reconcile_drag_strip(window)
   -- One native primitive per window: remove the inactive chrome first, then
@@ -758,9 +764,41 @@ if native_maximize_request_event then
   hl.on("float_panel.maximize_request", function(window, requested)
     local token = geometry_window_token(window)
     if not token then return end
-    if opened_window_tokens[token] then return end
+    if opened_window_tokens[token] then
+      -- Omarchy suppresses client maximize requests globally; after the window
+      -- is open, route a Float workspace's own maximize button to the plugin's
+      -- geometric maximize instead of leaving it a no-op.
+      local workspace = window.workspace
+      if requested and workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
+        maximize_geometric_window(window, workspace)
+      elseif not requested then
+        restore_geometric_max(window)
+      end
+      return
+    end
     pending_startup_maximize[token] = requested == true
     debug_window_action("event.maximize_request", window, window.workspace, { requested = requested == true })
+  end)
+end
+
+if native_minimize_request_event then
+  hl.on("float_panel.minimize_request", function(window, requested)
+    if not window or window.mapped ~= true then return end
+    local token = geometry_window_token(window)
+    if not token then return end
+    if not requested then
+      minimize_request_handled[token] = nil
+      return
+    end
+    if minimize_request_handled[token] or not geometry_dispatch then return end
+    local workspace = window.workspace
+    if not workspace_is_regular(workspace) then return end
+    minimize_request_handled[token] = true
+    debug_window_action("event.minimize_request", window, workspace, {})
+    geometry_dispatch("move", {
+      workspace = "special:omarchy-minimized-" .. tostring(workspace.id), follow = false, window = window,
+    }, "client.minimize")
+    hl.dispatch(hl.dsp.focus({ workspace = workspace_selector(workspace) }))
   end)
 end
 
@@ -1128,7 +1166,7 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
   finish(trigger and "free-anchor" or "free-fit", resize_request, move_request)
 end
 
-local function restore_geometric_max(window)
+restore_geometric_max = function(window)
   local metadata = window_geometric_max_metadata(window)
   local bounds = window and window_floating_bounds(window) or nil
   if not metadata or not bounds then return false end
@@ -1158,7 +1196,7 @@ local function restore_side_snap(window)
   return true
 end
 
-local function maximize_geometric_window(window, workspace)
+maximize_geometric_window = function(window, workspace)
   if not window or window_geometric_max_metadata(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
   local bounds = window_floating_bounds(window)
   local tag = make_geometric_max_tag(window, workspace)
@@ -2217,6 +2255,7 @@ hl.on("window.open", function(window)
   local startup_maximize = token and pending_startup_maximize[token] == true or false
   if token then
     pending_startup_maximize[token] = nil
+    minimize_request_handled[token] = nil
     opened_window_tokens[token] = true
   end
   ignore_window_minimum_size(window)
@@ -2275,6 +2314,7 @@ hl.on("window.close", function(window)
   local token = geometry_window_token(window)
   if token then
     pending_startup_maximize[token] = nil
+    minimize_request_handled[token] = nil
     opened_window_tokens[token] = nil
   end
   local workspace = source_float_workspace(window)
@@ -2286,6 +2326,8 @@ hl.on("window.close", function(window)
 end)
 
 hl.on("window.destroy", function(window)
+  local token = geometry_window_token(window)
+  if token then minimize_request_handled[token] = nil end
   debug_window_geometry("event.window_destroy", window, window and window.workspace, {})
 end)
 hl.on("monitor.added", function(monitor) debug_monitor("event.monitor_added", monitor) end)

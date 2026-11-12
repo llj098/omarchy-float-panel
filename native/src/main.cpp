@@ -30,6 +30,7 @@ HANDLE pluginHandle = nullptr;
 using CustomEvent = Event::CEventBus::CCustomEvent;
 
 SP<CustomEvent>                                    maximizeRequestEvent;
+SP<CustomEvent>                                    minimizeRequestEvent;
 CHyprSignalListener                                configPreReloadListener;
 CHyprSignalListener                                configReloadedListener;
 CHyprSignalListener                                windowCreateListener;
@@ -93,13 +94,21 @@ void setString(lua_State* state, const char* key, std::string_view value) {
     lua_setfield(state, -2, key);
 }
 
+bool hasStateSurface(const PHLWINDOW& window) {
+    if (!window)
+        return false;
+    if (window->m_isX11)
+        return window->m_xwaylandSurface != nullptr;
+    return window->m_xdgSurface && window->m_xdgSurface->m_toplevel;
+}
+
 void forwardMaximizeRequest(const PHLWINDOWREF& reference) {
     const auto window = reference.lock();
-    if (!window || !maximizeRequestEvent)
+    if (!window || !maximizeRequestEvent || !hasStateSurface(window))
         return;
 
-    const auto request = window->m_isX11 && window->m_xwaylandSurface ? window->m_xwaylandSurface->m_state.requestsMaximize :
-                                                                      window->m_xdgSurface->m_toplevel->m_state.requestsMaximize;
+    const auto request = window->m_isX11 ? window->m_xwaylandSurface->m_state.requestsMaximize :
+                                           window->m_xdgSurface->m_toplevel->m_state.requestsMaximize;
     if (!request.has_value())
         return;
 
@@ -107,20 +116,35 @@ void forwardMaximizeRequest(const PHLWINDOWREF& reference) {
     (void)result;
 }
 
+void forwardMinimizeRequest(const PHLWINDOWREF& reference) {
+    const auto window = reference.lock();
+    if (!window || !minimizeRequestEvent || !hasStateSurface(window))
+        return;
+
+    const auto request = window->m_isX11 ? window->m_xwaylandSurface->m_state.requestsMinimize :
+                                           window->m_xdgSurface->m_toplevel->m_state.requestsMinimize;
+    if (!request.has_value())
+        return;
+
+    const auto result = minimizeRequestEvent->emit({PHLWINDOWREF(window), *request});
+    (void)result;
+}
+
 void trackMaximizeRequests(const PHLWINDOW& window) {
-    if (!window)
+    if (!hasStateSurface(window))
         return;
 
     const auto reference = PHLWINDOWREF(window);
-    const auto listener  = window->m_isX11 && window->m_xwaylandSurface ?
-         window->m_xwaylandSurface->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); }) :
-         window->m_xdgSurface->m_toplevel->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); });
+    const auto listener  = window->m_isX11 ?
+         window->m_xwaylandSurface->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); forwardMinimizeRequest(reference); }) :
+         window->m_xdgSurface->m_toplevel->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); forwardMinimizeRequest(reference); });
     maximizeRequestListeners[reinterpret_cast<uintptr_t>(window.get())] = listener;
 }
 
 int luaCapabilities(lua_State* state) {
     lua_newtable(state);
     setBoolean(state, "maximize_request_event", true);
+    setBoolean(state, "minimize_request_event", true);
     setBoolean(state, "decoration_input_v1", DragStrip::ready());
     setBoolean(state, "drag_lifecycle_v1", DragStrip::ready());
     return 1;
@@ -190,13 +214,26 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("failed to register float_panel.maximize_request");
     }
 
-    try {
-        DragStrip::init(handle);
-    } catch (...) {
+    minimizeRequestEvent = makeShared<CustomEvent>(
+        "float_panel.minimize_request", std::vector{CustomEvent::TYPE_WINDOW, CustomEvent::TYPE_BOOL});
+    if (!HyprlandAPI::addEvent(handle, minimizeRequestEvent)) {
         HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
         HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
         HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
         maximizeRequestEvent.reset();
+        minimizeRequestEvent.reset();
+        throw std::runtime_error("failed to register float_panel.minimize_request");
+    }
+
+    try {
+        DragStrip::init(handle);
+    } catch (...) {
+        HyprlandAPI::removeEvent(handle, "float_panel.minimize_request");
+        HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        maximizeRequestEvent.reset();
+        minimizeRequestEvent.reset();
         throw;
     }
 
@@ -208,12 +245,14 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         DragStrip::reset();
         DragStrip::announce(false);
         Event::bus()->m_events.pluginEventRemoved.emit("float_panel.maximize_request");
+        Event::bus()->m_events.pluginEventRemoved.emit("float_panel.minimize_request");
     });
     configReloadedListener  = Event::bus()->m_events.config.reloaded.listen([] {
         if (!maximizeRequestEvent || announcedReloadGeneration == configReloadGeneration)
             return;
         announcedReloadGeneration = configReloadGeneration;
         Event::bus()->m_events.pluginEventAdded.emit(maximizeRequestEvent);
+        Event::bus()->m_events.pluginEventAdded.emit(minimizeRequestEvent);
         DragStrip::announce(true);
     });
 
@@ -227,7 +266,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         "float-panel-native",
         "Raw window semantics and request bridge for fatlj.float-panel",
         "fatlj",
-        "0.6.0",
+        "0.7.0",
     };
 }
 
@@ -240,9 +279,11 @@ APICALL EXPORT void PLUGIN_EXIT() {
     maximizeRequestListeners.clear();
     if (pluginHandle) {
         HyprlandAPI::removeEvent(pluginHandle, "float_panel.maximize_request");
+        HyprlandAPI::removeEvent(pluginHandle, "float_panel.minimize_request");
         HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "capabilities");
         HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "window_semantics");
     }
     maximizeRequestEvent.reset();
+    minimizeRequestEvent.reset();
     pluginHandle = nullptr;
 }

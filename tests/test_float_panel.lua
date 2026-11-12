@@ -187,7 +187,7 @@ hl = {
   plugin = {
     load = function() end,
     float_panel = {
-      capabilities = function() return { maximize_request_event = true } end,
+      capabilities = function() return { maximize_request_event = true, minimize_request_event = true } end,
       window_semantics = window_semantics_bridge,
     },
   },
@@ -1633,6 +1633,43 @@ do
   local before = #journal_lines
   dofile("hypr/float-panel.lua")
   assert(#journal_lines == before, "marker-off must disable all added diagnostic output")
+end
+
+
+-- Client minimize/maximize requests: Omarchy suppresses maximize globally and
+-- Hyprland does not consume minimize, so the Lua policy must route both.
+do
+  local minimized_client = persisted_window("0xclientmin", "ClientMinimize", 120, 150, 300, 200)
+  minimized_client.workspace, minimized_client.mapped, minimized_client.visible, minimized_client.floating = ws1, true, true, true
+  handlers["window.open"](minimized_client)
+  local before = #dispatched
+  handlers["float_panel.minimize_request"](minimized_client, true)
+  local moved = false
+  for index = before + 1, #dispatched do
+    local item = dispatched[index]
+    if item.kind == "move" and item.params.window == minimized_client and
+        item.params.workspace == "special:omarchy-minimized-1" then moved = true end
+  end
+  assert(moved, "client minimize request must move to the per-workspace store")
+  local after_first = #dispatched
+  handlers["float_panel.minimize_request"](minimized_client, true)
+  assert(#dispatched == after_first, "repeated minimize requests must not move the same window twice")
+  handlers["float_panel.minimize_request"](minimized_client, false)
+  handlers["float_panel.minimize_request"](minimized_client, true)
+  assert(#dispatched > after_first, "a later minimize request after release must be handled again")
+
+  local client_workspace = workspace(12, "12", false)
+  client_workspace.monitor = own_monitor
+  local maximized_client = persisted_window("0xclientmax", "ClientMaximize", 180, 200, 320, 220)
+  maximized_client.workspace, maximized_client.monitor = client_workspace, own_monitor
+  maximized_client.mapped, maximized_client.visible, maximized_client.floating = true, true, true
+  handlers["window.open"](maximized_client)
+  handlers["float_panel.maximize_request"](maximized_client, true)
+  local tagged = false
+  for _, tag in ipairs(maximized_client.tags or {}) do
+    if tag:find("float%-panel%-geometric%-max%-v1%-") then tagged = true end
+  end
+  assert(tagged, "post-open client maximize request must use geometric maximize on a Float workspace")
 end
 
 print("LUA_TESTS_OK")

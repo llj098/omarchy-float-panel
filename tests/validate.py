@@ -430,9 +430,11 @@ for required in (
     '"float_panel", "window_semantics"',
     '"float_panel", "capabilities"',
     '"float_panel.maximize_request"',
+    '"float_panel.minimize_request"',
     "CustomEvent::TYPE_WINDOW",
     "CustomEvent::TYPE_BOOL",
     "m_state.requestsMaximize",
+    "m_state.requestsMinimize",
     "m_events.config.preReload",
     "m_events.config.reloaded",
     "m_events.pluginEventRemoved.emit",
@@ -456,6 +458,8 @@ assert native_main.count('removeLuaFunction(pluginHandle, "float_panel"') == 2, 
     "all native bridge bindings must be removed on plugin exit"
 assert 'removeEvent(pluginHandle, "float_panel.maximize_request")' in native_main, \
     "the raw maximize event must be removed on plugin exit"
+assert 'removeEvent(pluginHandle, "float_panel.minimize_request")' in native_main, \
+    "the raw minimize event must be removed on plugin exit"
 for forbidden_native_effect in (
     "apply_xwayland_size_hints", "minSizeOverride", "maxSizeOverride", "PRIORITY_SET_PROP",
     "xwaylandSizeToReal", "xwayland_min_size", "xwayland_max_size", "size_hints_valid",
@@ -476,12 +480,15 @@ assert "maximize_request_present" not in lua and "semantics.maximize_requested" 
     "Lua must consume maximize requests only through the custom-event listener"
 for required_lua_policy in (
     'hl.on("float_panel.maximize_request"',
+    'hl.on("float_panel.minimize_request"',
     "pending_startup_maximize",
+    "minimize_request_handled",
+    '"client.minimize"',
     "persistence_eligible and not record",
     "startup_maximize and maximize_geometric_window(window, workspace)",
     'initial_placement = "app-maximized"',
 ):
-    assert required_lua_policy in lua, f"Lua startup-maximize policy missing: {required_lua_policy}"
+    assert required_lua_policy in lua, f"Lua client-request policy missing: {required_lua_policy}"
 assert not (ROOT / "native" / "src" / "window_policy.hpp").exists()
 assert not (ROOT / "native" / "tests" / "test_window_policy.cpp").exists()
 assert "wechat" not in native_main.lower() and "m_title" not in native_main, \
