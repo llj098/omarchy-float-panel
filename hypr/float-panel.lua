@@ -765,9 +765,12 @@ if native_maximize_request_event then
     local token = geometry_window_token(window)
     if not token then return end
     if opened_window_tokens[token] then
-      -- Omarchy suppresses client maximize requests globally; after the window
-      -- is open, route a Float workspace's own maximize button to the plugin's
-      -- geometric maximize instead of leaving it a no-op.
+      -- App-owned CSD controls are excluded from this plugin's titlebar and,
+      -- with Omarchy's global maximize suppression removed by the user config,
+      -- are handled natively by Hyprland. Do not double-apply a geometric max.
+      if titlebar_excluded(window) then return end
+      -- Otherwise route a Float workspace's own maximize request to the
+      -- plugin's geometric maximize instead of leaving it a no-op.
       local workspace = window.workspace
       debug_window_action("event.maximize_request.post", window, workspace, { requested = requested == true })
       if requested and workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
