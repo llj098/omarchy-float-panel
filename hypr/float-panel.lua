@@ -928,6 +928,18 @@ local function reflow_anchor(window)
   return token and reflow_anchors[token] or nil
 end
 
+-- App-owned CSD controls (GTK/Electron/Qt) manage their own maximize state.
+-- This plugin must not keep geometric max/side tags on those windows, or the
+-- application's restore button fights the tag and keeps a stale restore icon.
+local function release_excluded_geometry(window)
+  if not window then return end
+  local maximum = window_geometric_max_metadata(window)
+  if maximum then remove_window_tag(window, maximum.raw) end
+  local side = window_side_intent(window)
+  if side then remove_window_tag(window, side.raw) end
+  clear_reflow_anchor(window, "app-owned-excluded")
+end
+
 debug_window_details = function(window, fields)
   local anchor = reflow_anchor(window)
   fields.current_goal = format_box(window_box(window))
@@ -1182,6 +1194,7 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
 end
 
 restore_geometric_max = function(window)
+  if not window or titlebar_excluded(window) then return false end
   local metadata = window_geometric_max_metadata(window)
   local bounds = window and window_floating_bounds(window) or nil
   if not metadata or not bounds then return false end
@@ -1212,7 +1225,7 @@ local function restore_side_snap(window)
 end
 
 maximize_geometric_window = function(window, workspace)
-  if not window or window_geometric_max_metadata(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
+  if not window or titlebar_excluded(window) or window_geometric_max_metadata(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
   local bounds = window_floating_bounds(window)
   local tag = make_geometric_max_tag(window, workspace)
   if not bounds or not tag then return false end
@@ -1274,8 +1287,10 @@ apply_workspace_mode = function(workspace)
   for _, window in safe_ipairs(workspace:get_windows()) do
     set_window_floating(window, enabled)
     sync_titlebar_tag(window, workspace)
-    if enabled and titlebar_excluded(window) then reset_client_maximize(window) end
-    if enabled then
+    if enabled and titlebar_excluded(window) then
+      reset_client_maximize(window)
+      release_excluded_geometry(window)
+    elseif enabled then
       rebase_reflow_anchor(window, nil, nil, nil, "apply-workspace-mode")
       if chrome == "titlebar" and titlebar_ready then
         fit_window_to_floating_bounds(window, nil, workspace, false, "workspace-mode")
@@ -1397,7 +1412,7 @@ local function snap_restore_geometry(window)
 end
 
 local function snap_active_window(window, workspace, side, capture_restore)
-  if not window then return end
+  if not window or titlebar_excluded(window) then return end
   local restore = capture_restore ~= false and snap_restore_geometry(window) or nil
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   local geometry = side_geometry(side, window.monitor, titlebar_inset(window))
@@ -1807,6 +1822,7 @@ local function geometry_record_from_window(window)
 end
 
 local function capture_window_placement(window, workspace, reason)
+  if titlebar_excluded(window) then return false end
   local identity, slot = claim_geometry_slot(window, workspace)
   local record, basis = geometry_record_from_window(window)
   if not identity or not slot or not record then
@@ -2249,9 +2265,12 @@ for _, window in safe_ipairs(hl.get_windows()) do
   tag_window_launch_order(window)
   local semantics = read_native_window_semantics(window)
   tag_auxiliary_window_no_border(window, semantics)
-  if titlebar_excluded(window) then reset_client_maximize(window) end
+  if titlebar_excluded(window) then
+    reset_client_maximize(window)
+    release_excluded_geometry(window)
+  end
   local workspace = source_float_workspace(window)
-  if workspace then claim_geometry_slot(window, workspace) end
+  if workspace and not titlebar_excluded(window) then claim_geometry_slot(window, workspace) end
 end
 
 -- Re-apply persisted floating modes and repair geometry if this module loads
@@ -2291,24 +2310,30 @@ hl.on("window.open", function(window)
   if float_enabled then
     set_window_floating(window, true)
     sync_titlebar_tag(window, workspace)
-    if titlebar_excluded(window) then reset_client_maximize(window) end
-    local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
-    slot, record = claimed_slot, claimed_record
-    if persistence_eligible and record then
-      restore_window_placement(window, workspace, record)
-      initial_placement = "restored"
-    elseif place_window_over_parent(window, semantics) then
-      initial_placement = "parent"
+    if titlebar_excluded(window) then
+      reset_client_maximize(window)
+      release_excluded_geometry(window)
+      fit_window_to_floating_bounds(window)
+      initial_placement = "app-owned"
     else
-      initial_placement = "app"
-    end
-    fit_window_to_floating_bounds(window)
-    rebase_reflow_anchor(window, nil, nil, nil, "window.open")
-    if persistence_eligible and not record then
-      if startup_maximize and maximize_geometric_window(window, workspace) then
-        initial_placement = "app-maximized"
+      local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
+      slot, record = claimed_slot, claimed_record
+      if persistence_eligible and record then
+        restore_window_placement(window, workspace, record)
+        initial_placement = "restored"
+      elseif place_window_over_parent(window, semantics) then
+        initial_placement = "parent"
+      else
+        initial_placement = "app"
       end
-      persist_window_placement(window, workspace, "window.open")
+      fit_window_to_floating_bounds(window)
+      rebase_reflow_anchor(window, nil, nil, nil, "window.open")
+      if persistence_eligible and not record then
+        if startup_maximize and maximize_geometric_window(window, workspace) then
+          initial_placement = "app-maximized"
+        end
+        persist_window_placement(window, workspace, "window.open")
+      end
     end
   end
   reconcile_drag_strip(window)
@@ -2338,7 +2363,9 @@ hl.on("window.close", function(window)
     opened_window_tokens[token] = nil
   end
   local workspace = source_float_workspace(window)
-  if workspace and not interrupted then persist_window_placement(window, workspace, "window.close") end
+  if workspace and not interrupted and not titlebar_excluded(window) then
+    persist_window_placement(window, workspace, "window.close")
+  end
   release_geometry_slot(window, false)
   forget_window_persistence_semantics(window)
   clear_reflow_anchor(window, "window.close")
