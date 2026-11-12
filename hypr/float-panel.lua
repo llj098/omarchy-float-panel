@@ -2387,31 +2387,6 @@ end)
 hl.on("window.update_rules", function(window)
   sync_titlebar_tag(window)
 end)
-
--- Hyprland draws a window that gains focus while a floating maximized or
--- fullscreen window sits on the same workspace above that window, whatever the
--- stack says: the peer is flagged as allowed over fullscreen (upstream
--- hyprwm/Hyprland#16412). Clicking the maximized window then focuses it without
--- bringing it forward. Lowering the other floating windows of the workspace
--- restores the order the click implies, the same way Alt-Tab already does.
-local function lower_peers_over_maximized(window)
-  if not window or window.mapped == false then return end
-  if (tonumber(window.fullscreen) or 0) == 0 or window.floating ~= true then return end
-  local workspace = window.workspace
-  if not workspace_is_regular(workspace) or not workspace_float_enabled(workspace) then return end
-  local address = tostring(window.address or "")
-  for _, peer in safe_ipairs(workspace:get_windows()) do
-    if tostring(peer.address or "") ~= address and peer.mapped == true and
-        peer.floating == true and peer.pinned ~= true and (tonumber(peer.fullscreen) or 0) == 0 then
-      hl.dispatch(hl.dsp.window.alter_zorder({ mode = "bottom", window = peer }))
-    end
-  end
-end
-
-hl.on("window.active", function(window)
-  lower_peers_over_maximized(window)
-end)
-
 hl.on("window.close", function(window)
   local interrupted = drag_strip and drag_strip.active(window)
   debug_window_geometry("event.window_close_before", window, window and window.workspace, { interrupted = interrupted == true })

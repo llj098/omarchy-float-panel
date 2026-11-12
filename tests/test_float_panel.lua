@@ -1778,26 +1778,5 @@ assert(native_restore and native_restore.action == "unset",
   "Super+Down on a maximized app-owned window must unmaximize it natively")
 app_owned.fullscreen = 0
 
--- Focus landing on a floating maximized window lowers the ordinary floating
--- peers, so a click brings the maximized window forward instead of leaving it
--- behind (Hyprland's allowed-over-fullscreen rendering).
-local focused_max = persisted_window("0xfocusmax", "FocusMax", 0, 0, 1900, 880)
-focused_max.workspace, focused_max.floating, focused_max.fullscreen = ws3, true, 1
-local peer_float = persisted_window("0xpeerfloat", "PeerFloat", 400, 100, 600, 400)
-peer_float.workspace, peer_float.floating = ws3, true
-table.insert(ws3.windows, focused_max)
-table.insert(ws3.windows, peer_float)
-local lower_before = #dispatched
-handlers["window.active"](focused_max)
-local lowered_peer, lowered_focus = false, false
-for index = lower_before + 1, #dispatched do
-  local item = dispatched[index]
-  if item.kind == "alter_zorder" then
-    if (item.params and item.params.window) == peer_float then lowered_peer = true end
-    if (item.params and item.params.window) == focused_max then lowered_focus = true end
-  end
-end
-assert(lowered_peer, "focus on a maximized floating window must lower its floating peers")
-assert(not lowered_focus, "the focused maximized window itself must stay on top")
 
 print("LUA_TESTS_OK")
