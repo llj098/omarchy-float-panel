@@ -872,7 +872,7 @@ local function restore_peer_over_maximized()
     if peer and peer.mapped == true then
       hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = peer }))
     end
-  end, { timeout = 80 })
+  end, { timeout = 80, type = "oneshot" })
 end
 
 if native_maximize_request_event then
@@ -2507,6 +2507,9 @@ end)
 -- click still reaches the application) and re-stack afterwards.
 for _, key in ipairs({ "mouse:272", "mouse:273" }) do
   pcall(function()
+    -- Reloads re-run this file; drop the previous registration first so a click
+    -- never stacks several handlers from earlier versions of the config.
+    if type(hl.unbind) == "function" then pcall(hl.unbind, key) end
     hl.bind(key, restore_peer_over_maximized, { mouse = true, transparent = true })
   end)
 end
