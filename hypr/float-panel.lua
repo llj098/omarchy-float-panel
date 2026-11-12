@@ -840,6 +840,41 @@ local function app_owned_restore(window)
   geometry_dispatch("move", { x = box.x, y = box.y, window = window }, "app-owned.giveback")
 end
 
+-- Hyprland draws a focused floating window above a window that holds the
+-- internal fullscreen/maximize state, but hit testing still follows the stack.
+-- A click inside the maximized window raises it in the stack while the picture
+-- does not change, so afterwards the peer is only *drawn* on top: hover stops
+-- focusing it. Remember the last ordinary floating window per workspace and put
+-- it back on top of the stack after such a click; the picture stays the same,
+-- but pointing at the peer reaches it again.
+local maximized_peer_address = {}
+
+local function remember_float_peer(window)
+  if not window or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return end
+  local workspace = window.workspace
+  if not workspace_is_regular(workspace) or not workspace_float_enabled(workspace) then return end
+  local address = tostring(window.address or "")
+  if address == "" then return end
+  maximized_peer_address[workspace_key(workspace)] = "address:" .. address
+end
+
+local function restore_peer_over_maximized()
+  local active = hl.get_active_window()
+  if not active or active.floating ~= true or (tonumber(active.fullscreen) or 0) == 0 then return end
+  local workspace = active.workspace
+  if not workspace_is_regular(workspace) or not workspace_float_enabled(workspace) then return end
+  local address = maximized_peer_address[workspace_key(workspace)]
+  if not address or address == "address:" .. tostring(active.address or "") then return end
+  -- Hyprland raises the clicked window while handling the press, so the peer has
+  -- to go back on top after that, not before it.
+  hl.timer(function()
+    local peer = hl.get_window(address)
+    if peer and peer.mapped == true then
+      hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = peer }))
+    end
+  end, { interval = 80 })
+end
+
 if native_maximize_request_event then
   hl.on("float_panel.maximize_request", function(window, requested)
     local token = geometry_window_token(window)
@@ -2461,6 +2496,20 @@ end)
 hl.on("window.update_rules", function(window)
   sync_titlebar_tag(window)
 end)
+
+hl.on("window.active", function(window)
+  remember_float_peer(window)
+end)
+
+-- A plain left or right click is the only event that can tell "the user clicked
+-- inside the maximized window" apart from "the pointer merely moved there";
+-- Hyprland's Lua API exposes no pointer buttons, so bind them transparently (the
+-- click still reaches the application) and re-stack afterwards.
+for _, key in ipairs({ "mouse:272", "mouse:273" }) do
+  pcall(function()
+    hl.bind(key, restore_peer_over_maximized, { mouse = true, transparent = true })
+  end)
+end
 hl.on("window.close", function(window)
   local interrupted = drag_strip and drag_strip.active(window)
   debug_window_geometry("event.window_close_before", window, window and window.workspace, { interrupted = interrupted == true })
