@@ -896,7 +896,19 @@ local function reveal_focused_maximized(window, reason)
   local workspace = window.workspace
   if not workspace_is_regular(workspace) then return end
   local address = tostring(window.address or "")
-  for _, peer in safe_ipairs(workspace:get_windows()) do
+  local key = workspace_key(workspace)
+  local ordered = {}
+  -- hl.get_windows() lists windows bottom to top. Lowering them top-to-bottom
+  -- keeps their own relative order intact, so no background window jumps in
+  -- front of another one while the maximized window is brought forward.
+  for _, peer in safe_ipairs(hl.get_windows()) do
+    local peer_workspace = peer.workspace
+    if peer_workspace and workspace_key(peer_workspace) == key then
+      table.insert(ordered, peer)
+    end
+  end
+  for index = #ordered, 1, -1 do
+    local peer = ordered[index]
     local peer_address = tostring(peer.address or "")
     if peer_address ~= "" and peer_address ~= address and peer.floating == true and
         peer.mapped == true and peer.pinned ~= true and (tonumber(peer.fullscreen) or 0) == 0 then
@@ -2487,7 +2499,11 @@ hl.on("window.open", function(window)
     persistence = persistence_reason,
   })
   if float_enabled then
-    set_window_floating(window, true)
+    if titlebar_excluded(window) then
+      ensure_window_floating(window)
+    else
+      set_window_floating(window, true)
+    end
     sync_titlebar_tag(window, workspace)
     if titlebar_excluded(window) then
       -- The app owns its chrome, its maximize state and its geometry; the plugin
@@ -2499,6 +2515,13 @@ hl.on("window.open", function(window)
       release_excluded_geometry(window)
       app_owned_sync(window)
       initial_placement = window_holds_maximize(window) and "app-owned-maximized" or "app-owned"
+      -- The app asked for a maximized window before it was floating: Hyprland
+      -- applied that request to the not-yet-floating window and dropped it when
+      -- the float rule landed, so re-assert the request the app already made.
+      if startup_maximize and not window_holds_maximize(window) then
+        app_owned_maximize(window)
+        initial_placement = "app-owned-maximized"
+      end
     else
       local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
       slot, record = claimed_slot, claimed_record
