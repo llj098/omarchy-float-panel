@@ -183,21 +183,28 @@ state change makes a toolkit re-lay itself out while it still holds the previous
 box, which pushes the surface past the window and shifts the frame and the
 right-hand controls.
 
-A client that draws client-side decorations reserves a transparent shadow ring
-around its window geometry, and Hyprland treats that window box as the whole
-surface and clips everything beyond it. Telling such a client the truth would move
-its content inward and cut off its right and bottom edge, so the bridge keeps the
-hint for exactly those clients: it recognizes them by the surface area their
-window geometry leaves out and remembers them for their lifetime. GTK4 always
-reserves at least its resize-handle width, so a GTK4 application (Nautilus,
-`org.gnome.*`) keeps its own headerbar, its own working buttons and accurate
-geometry, but its middle button keeps the "restore" glyph while the window floats.
-Apps whose client chrome uses no shadow ring - Chromium, Qt, X11, and GTK3 with
-the rule below - get the truthful state.
+A client that draws client-side decorations reports the part of its surface that
+carries them as the area outside its window geometry: a transparent ring for the
+drop shadow and the resize grips. Hyprland treats the window box as the whole
+surface and draws the surface at the box origin, so the ring would push the
+content inward and cut off its right and bottom edge. The bridge therefore
+configures such a client with its content size - the box minus the ring it
+reports - so that the whole surface fits the box exactly, with the content
+centred and its own controls intact. Because the ring sits between the box edge
+and the content, the compositor border would outline the shadow instead of the
+window, so it is dropped for those clients while they reserve the ring; a
+maximized window has no ring and keeps its border.
 
-GTK3 reserves the same ring unless its theme says otherwise, so give it a zero
-shadow width. Install `gtk/gtk.css` as `~/.config/gtk-3.0/gtk.css` and restart the
-GTK3 applications:
+This is what lets a Chromium or GTK4 window keep a truthful maximize state: its
+middle button draws "maximize" while the window floats and "restore" while it is
+maximized, and clicking it toggles through Hyprland like any other native
+request. The ring is the client's own shadow, so those windows look like normally
+shadowed windows without a compositor frame.
+
+GTK3 reserves the same ring unless its theme says otherwise. Install
+`gtk/gtk.css` as `~/.config/gtk-3.0/gtk.css` and restart the GTK3 applications to
+give GTK3 windows a zero-width ring instead, which keeps the compositor border
+and the app-drawn controls together:
 
 ```css
 decoration {
@@ -209,8 +216,7 @@ decoration {
 
 This changes nothing visually on this desktop: Omarchy on Hyprland never shows
 those shadows, because every client is told it is maximized. It only stops GTK3
-from reserving room the compositor cannot represent, which is what lets its
-buttons follow the real state with the frame still hugging the window.
+from reserving room the compositor cannot represent.
 
 Decide per app which chrome owns the controls:
 
