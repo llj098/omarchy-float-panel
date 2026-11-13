@@ -215,10 +215,6 @@ struct SDecorationMargins {
     bool   empty() const {
         return left <= 0 && top <= 0 && right <= 0 && bottom <= 0;
     }
-
-    bool operator==(const SDecorationMargins& other) const {
-        return left == other.left && top == other.top && right == other.right && bottom == other.bottom;
-    }
 };
 
 SDecorationMargins decorationMargins(PHLWINDOW window) {
@@ -238,34 +234,6 @@ SDecorationMargins decorationMargins(PHLWINDOW window) {
     if (margins.left < 0 || margins.top < 0 || margins.right < 0 || margins.bottom < 0)
         return SDecorationMargins{};
     return margins;
-}
-
-// The ring is only known after the client has committed, and it appears or
-// disappears with the client's own state (a maximize drops it). Whenever the
-// committed ring differs from the one the last configure was built for, ask the
-// client for a fresh configure: otherwise a maximize->restore cycle keeps the
-// widened size of the maximized state and the client's content lands outside
-// the box until something else reconfigures it.
-std::unordered_map<Desktop::View::CWindow*, SDecorationMargins> ringAtLastConfigure;
-CFunctionHook* commitWindowHook = nullptr;
-
-void hookCommitWindow(Desktop::View::CWindow* self) {
-    const auto original = reinterpret_cast<void (*)(Desktop::View::CWindow*)>(commitWindowHook->m_original);
-    original(self);
-    if (!self)
-        return;
-
-    const auto window = self->m_self.lock();
-    if (!window || !window->m_isMapped || !window->m_isFloating)
-        return;
-
-    const auto margins = decorationMargins(window);
-    auto&      recorded = ringAtLastConfigure[self];
-    if (recorded == margins)
-        return;
-
-    recorded = margins;
-    window->sendWindowSize(true);
 }
 
 // Hyprland suppresses client-side decorations by handing the maximize hint to
@@ -446,12 +414,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             borderSizeHook = HyprlandAPI::createFunctionHook(handle, borderMatches[0].address, reinterpret_cast<void*>(hookGetRealBorderSize));
             if (borderSizeHook) borderSizeHook->hook();
         }
-        auto commitMatches = HyprlandAPI::findFunctionsByName(handle, "commitWindow");
-        std::erase_if(commitMatches, [](const auto& m) { return m.demangled.find("CWindow::commitWindow()") == std::string::npos; });
-        if (commitMatches.size() == 1) {
-            commitWindowHook = HyprlandAPI::createFunctionHook(handle, commitMatches[0].address, reinterpret_cast<void*>(hookCommitWindow));
-            if (commitWindowHook) commitWindowHook->hook();
-        }
         auto sizeMatches = HyprlandAPI::findFunctionsByName(handle, "setSize");
         std::erase_if(sizeMatches, [](const auto& m) { return m.demangled.find("CXDGToplevelResource::setSize(") == std::string::npos; });
         if (sizeMatches.size() == 1) {
@@ -508,7 +470,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     windowCreateListener = Event::bus()->m_events.window.create.listen([](PHLWINDOW window) { trackMaximizeRequests(window); });
     windowDestroyListener = Event::bus()->m_events.window.destroy.listen([](PHLWINDOWREF window) {
-        ringAtLastConfigure.erase(reinterpret_cast<Desktop::View::CWindow*>(window.get()));
         maximizeRequestListeners.erase(reinterpret_cast<uintptr_t>(window.get()));
     });
 
