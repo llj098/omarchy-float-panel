@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -199,41 +200,35 @@ int luaWindowSemantics(lua_State* state) {
     return 1;
 }
 
-// A client that draws its own decorations reports the part of its surface that
-// carries them as the area outside its window geometry: a transparent ring for
-// the drop shadow and the resize grips. Hyprland treats the window box as the
-// whole surface and draws the surface at the box origin, so the ring would push
-// the content inward and clip its right and bottom edge. Shrinking the size we
-// configure the client by that ring makes the surface - content plus ring - fit
-// the box exactly, with the content centred and its controls intact.
-struct SDecorationMargins {
-    double left   = 0;
-    double top    = 0;
-    double right  = 0;
-    double bottom = 0;
+// A client that draws its own decoration margins reports them as the surface
+// area outside its window geometry (the drop shadow ring and its resize grips).
+// Those margins belong outside the window box, which Hyprland does not model: it
+// treats the box as the whole surface and clips everything past it. Such a client
+// can only be shown intact while it believes it is maximized, because that is the
+// state in which it stops reserving margins. Every other client gets the truth.
+bool clientReportsDecorationMargins(CXDGToplevelResource* self) {
+    if (!self || !self->m_owner)
+        return false;
 
-    bool   empty() const {
-        return left <= 0 && top <= 0 && right <= 0 && bottom <= 0;
-    }
-};
-
-SDecorationMargins decorationMargins(PHLWINDOW window) {
-    SDecorationMargins margins;
-    if (!window || window->m_isX11 || !window->m_xdgSurface || !window->m_xdgSurface->m_surface)
-        return margins;
-
-    const auto& geometry = window->m_xdgSurface->m_current.geometry;
+    const auto& geometry = self->m_owner->m_current.geometry;
     if (geometry.w <= 0 || geometry.h <= 0)
-        return margins;
+        return false;
 
-    const auto surface = window->m_xdgSurface->m_surface->m_current.size;
-    margins.left       = geometry.x;
-    margins.top        = geometry.y;
-    margins.right      = surface.x - geometry.x - geometry.w;
-    margins.bottom     = surface.y - geometry.y - geometry.h;
-    if (margins.left < 0 || margins.top < 0 || margins.right < 0 || margins.bottom < 0)
-        return SDecorationMargins{};
-    return margins;
+    const auto surface = self->m_owner->m_surface ? self->m_owner->m_surface->m_current.size : Vector2D{};
+    return geometry.pos() != Vector2D{} || surface != geometry.size();
+}
+
+// Once a client has shown that it reserves margins, it keeps the hint for its
+// whole lifetime: the hint is what makes the margins disappear, so re-deciding
+// after that would flip the client between two layouts.
+std::unordered_set<Desktop::View::CWindow*> marginClients;
+
+bool keepsMaximizeHint(CXDGToplevelResource* self, PHLWINDOW window) {
+    if (!window)
+        return false;
+    if (clientReportsDecorationMargins(self))
+        marginClients.insert(window.get());
+    return marginClients.contains(window.get());
 }
 
 // Hyprland suppresses client-side decorations by handing the maximize hint to
@@ -254,24 +249,14 @@ uint32_t hookSetMaximized(CXDGToplevelResource* self, bool maximized) {
     if (!window->m_isFloating)
         return original(self, maximized);
 
+    if (keepsMaximizeHint(self, window))
+        return original(self, true);
+
     const bool reallyMaximized = Fullscreen::controller()->getFullscreenModes(window).internal == Fullscreen::FSMODE_MAXIMIZED;
     return original(self, reallyMaximized);
 }
 
 CFunctionHook* setSizeHook = nullptr;
-CFunctionHook* borderSizeHook = nullptr;
-
-// The frame that the plugin draws belongs to the window box, but a client that
-// reserves decoration margins keeps its own content a ring inside that box, and
-// its own drop shadow fills the ring. A compositor border on the box edge would
-// outline the shadow instead of the window, so it is dropped for those clients.
-int hookGetRealBorderSize(Desktop::View::CWindow* self) {
-    const auto original = reinterpret_cast<int (*)(const Desktop::View::CWindow*)>(borderSizeHook->m_original);
-    const auto window = self ? self->m_self.lock() : nullptr;
-    if (window && window->m_isFloating && !decorationMargins(window).empty())
-        return 0;
-    return original(self);
-}
 
 // The configure carries the box and the state list in one message, so a floating
 // window's maximize bit is corrected here rather than in a separate state-only
@@ -285,21 +270,14 @@ uint32_t hookSetSize(CXDGToplevelResource* self, const Vector2D& size) {
 
     if (self && window && Fullscreen::controller()) {
         const auto modes = Fullscreen::controller()->getFullscreenModes(window);
-        const bool reallyMaximized = window->m_isFloating && modes.internal == Fullscreen::FSMODE_MAXIMIZED;
+        const bool reallyMaximized = window->m_isFloating &&
+            (keepsMaximizeHint(self, window) || modes.internal == Fullscreen::FSMODE_MAXIMIZED);
         auto& states = self->m_pendingApply.states;
         const bool hasMaximized = std::ranges::find(states, XDG_TOPLEVEL_STATE_MAXIMIZED) != states.end();
         if (reallyMaximized && !hasMaximized)
             states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
         else if (!reallyMaximized && hasMaximized)
             std::erase(states, XDG_TOPLEVEL_STATE_MAXIMIZED);
-    }
-
-    // The ring is part of the surface but not of the window: configure only the
-    // content, so the whole surface lands inside the box.
-    if (window && window->m_isFloating) {
-        const auto margins = decorationMargins(window);
-        if (!margins.empty() && (margins.left + margins.right < size.x) && (margins.top + margins.bottom < size.y))
-            return original(self, size - Vector2D{margins.left + margins.right, margins.top + margins.bottom});
     }
 
     return original(self, size);
@@ -408,12 +386,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     installSetMaximizedHook(handle);
     {
-        auto borderMatches = HyprlandAPI::findFunctionsByName(handle, "getRealBorderSize");
-        std::erase_if(borderMatches, [](const auto& m) { return m.demangled.find("CWindow::getRealBorderSize()") == std::string::npos; });
-        if (borderMatches.size() == 1) {
-            borderSizeHook = HyprlandAPI::createFunctionHook(handle, borderMatches[0].address, reinterpret_cast<void*>(hookGetRealBorderSize));
-            if (borderSizeHook) borderSizeHook->hook();
-        }
         auto sizeMatches = HyprlandAPI::findFunctionsByName(handle, "setSize");
         std::erase_if(sizeMatches, [](const auto& m) { return m.demangled.find("CXDGToplevelResource::setSize(") == std::string::npos; });
         if (sizeMatches.size() == 1) {
@@ -424,14 +396,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     truthfulMaximizeListener = Event::bus()->m_events.window.fullscreen.listen([](PHLWINDOW window) {
         pushTruthfulMaximizeState(window);
     });
-
-    // Windows that were mapped before this build loaded still carry whatever
-    // state their previous configure gave them; send every floating window one
-    // truthful configure now, so a plugin reload alone is enough to settle them.
-    for (const auto& window : Desktop::windowState()->windows()) {
-        if (window && window->m_isMapped && window->m_isFloating)
-            window->sendWindowSize(true);
-    }
 
     try {
         DragStrip::init(handle);
@@ -470,6 +434,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     windowCreateListener = Event::bus()->m_events.window.create.listen([](PHLWINDOW window) { trackMaximizeRequests(window); });
     windowDestroyListener = Event::bus()->m_events.window.destroy.listen([](PHLWINDOWREF window) {
+        marginClients.erase(window.get());
         maximizeRequestListeners.erase(reinterpret_cast<uintptr_t>(window.get()));
     });
 
