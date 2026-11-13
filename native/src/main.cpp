@@ -14,6 +14,8 @@
 #include <src/managers/fullscreen/FullscreenController.hpp>
 #include <src/protocols/XDGShell.hpp>
 #include <src/protocols/core/Compositor.hpp>
+#include <src/render/Renderer.hpp>
+#include <src/desktop/state/ViewHitTester.hpp>
 #include <src/desktop/state/WindowState.hpp>
 #include <src/desktop/view/Window.hpp>
 #include <src/event/EventBus.hpp>
@@ -259,13 +261,43 @@ void hookCommitWindow(Desktop::View::CWindow* self) {
     if (!window || !window->m_isMapped || !window->m_isFloating)
         return;
 
-    const auto margins = decorationMargins(window);
-    auto&      recorded = ringAtLastConfigure[self];
-    if (recorded == margins)
-        return;
+    (void)window;
+}
 
-    recorded = margins;
-    window->sendWindowSize(true);
+CFunctionHook* renderWindowHook = nullptr;
+CFunctionHook* hitTestHook = nullptr;
+
+// Hyprland draws a window's surface at the window box origin and treats the box as
+// the window. A client that draws its own decorations keeps a transparent ring
+// outside its window geometry, so the surface has to be drawn that ring up and to
+// the left for the content to land exactly on the box. The ring then falls outside
+// the box, and the compositor border keeps hugging the content instead of floating
+// around the client's shadow.
+void hookRenderWindow(Render::IHyprRenderer* self, PHLWINDOW window, PHLMONITOR monitor, const Time::steady_tp& time, bool decorate,
+                      Render::eRenderPassMode mode, bool ignorePosition, bool standalone) {
+    const auto original = reinterpret_cast<void (*)(Render::IHyprRenderer*, PHLWINDOW, PHLMONITOR, const Time::steady_tp&, bool, Render::eRenderPassMode, bool, bool)>(
+        renderWindowHook->m_original);
+    const auto margins = decorationMargins(window);
+    if (!window || margins.empty() || ignorePosition) {
+        original(self, window, monitor, time, decorate, mode, ignorePosition, standalone);
+        return;
+    }
+
+    const auto saved         = window->m_floatingOffset;
+    window->m_floatingOffset = saved - Vector2D{margins.left, margins.top};
+    original(self, window, monitor, time, decorate, mode, ignorePosition, standalone);
+    window->m_floatingOffset = saved;
+}
+
+// Pointer events have to be mapped into the place the surface was actually drawn:
+// the ring the render path moved by is added back before hit testing, otherwise
+// every click lands one ring up and to the left of what is on screen.
+SP<CWLSurfaceResource> hookWindowSurfaceAt(const Desktop::CViewHitTester* self, const Vector2D& pos, PHLWINDOW window, Vector2D& surfaceLocal) {
+    const auto original = reinterpret_cast<SP<CWLSurfaceResource> (*)(const Desktop::CViewHitTester*, const Vector2D&, PHLWINDOW, Vector2D&)>(hitTestHook->m_original);
+    const auto margins  = decorationMargins(window);
+    if (margins.empty())
+        return original(self, pos, window, surfaceLocal);
+    return original(self, pos + Vector2D{margins.left, margins.top}, window, surfaceLocal);
 }
 
 // Hyprland suppresses client-side decorations by handing the maximize hint to
@@ -299,9 +331,6 @@ CFunctionHook* borderSizeHook = nullptr;
 // outline the shadow instead of the window, so it is dropped for those clients.
 int hookGetRealBorderSize(Desktop::View::CWindow* self) {
     const auto original = reinterpret_cast<int (*)(const Desktop::View::CWindow*)>(borderSizeHook->m_original);
-    const auto window = self ? self->m_self.lock() : nullptr;
-    if (window && window->m_isFloating && !decorationMargins(window).empty())
-        return 0;
     return original(self);
 }
 
@@ -324,14 +353,6 @@ uint32_t hookSetSize(CXDGToplevelResource* self, const Vector2D& size) {
             states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
         else if (!reallyMaximized && hasMaximized)
             std::erase(states, XDG_TOPLEVEL_STATE_MAXIMIZED);
-    }
-
-    // The ring is part of the surface but not of the window: configure only the
-    // content, so the whole surface lands inside the box.
-    if (window && window->m_isFloating) {
-        const auto margins = decorationMargins(window);
-        if (!margins.empty() && (margins.left + margins.right < size.x) && (margins.top + margins.bottom < size.y))
-            return original(self, size - Vector2D{margins.left + margins.right, margins.top + margins.bottom});
     }
 
     return original(self, size);
@@ -458,6 +479,18 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             setSizeHook = HyprlandAPI::createFunctionHook(handle, sizeMatches[0].address, reinterpret_cast<void*>(hookSetSize));
             if (setSizeHook) setSizeHook->hook();
         }
+        auto renderMatches = HyprlandAPI::findFunctionsByName(handle, "renderWindow");
+        std::erase_if(renderMatches, [](const auto& m) { return m.demangled.find("IHyprRenderer::renderWindow(") == std::string::npos; });
+        if (renderMatches.size() == 1) {
+            renderWindowHook = HyprlandAPI::createFunctionHook(handle, renderMatches[0].address, reinterpret_cast<void*>(hookRenderWindow));
+            if (renderWindowHook) renderWindowHook->hook();
+        }
+        auto hitMatches = HyprlandAPI::findFunctionsByName(handle, "windowSurfaceAt");
+        std::erase_if(hitMatches, [](const auto& m) { return m.demangled.find("CViewHitTester::windowSurfaceAt(") == std::string::npos; });
+        if (hitMatches.size() == 1) {
+            hitTestHook = HyprlandAPI::createFunctionHook(handle, hitMatches[0].address, reinterpret_cast<void*>(hookWindowSurfaceAt));
+            if (hitTestHook) hitTestHook->hook();
+        }
     }
     truthfulMaximizeListener = Event::bus()->m_events.window.fullscreen.listen([](PHLWINDOW window) {
         pushTruthfulMaximizeState(window);
@@ -530,6 +563,14 @@ APICALL EXPORT void PLUGIN_EXIT() {
     focusReasonListener.reset();
     pointerButtonListener.reset();
     truthfulMaximizeListener.reset();
+    if (hitTestHook && pluginHandle) {
+        HyprlandAPI::removeFunctionHook(pluginHandle, hitTestHook);
+        hitTestHook = nullptr;
+    }
+    if (renderWindowHook && pluginHandle) {
+        HyprlandAPI::removeFunctionHook(pluginHandle, renderWindowHook);
+        renderWindowHook = nullptr;
+    }
     if (setMaximizedHook && pluginHandle) {
         HyprlandAPI::removeFunctionHook(pluginHandle, setMaximizedHook);
         setMaximizedHook = nullptr;
