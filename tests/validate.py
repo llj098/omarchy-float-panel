@@ -509,17 +509,21 @@ assert "must fail closed without stripping an existing tag" in policy_tests
 # App-owned windows keep their own maximize state and geometry: the plugin may
 # clear a client maximize only for a window it puts its own titlebar on, never
 # set one, and never resize or move an excluded window behind its back.
-assert lua.count('mode = "maximized"') == 1, "only the external titlebar path may clear a client maximize"
-assert 'mode = "maximized", action = "unset"' in lua, "the titlebar path may only clear a client maximize"
-assert 'fullscreen_state({' in lua and 'internal = 2' in lua and 'internal = 0, client = 1' in lua, \
-    "the plugin drives internal fullscreen only for its own key, and splits app-owned maximize"
+# App-owned windows use the compositor's real maximize (so their own three buttons
+# stay truthful); the plugin only ever *clears* the state for windows it gives its
+# own titlebar, and drives the app-owned maximize through the compositor.
+assert lua.count('mode = "maximized"') == 3, "titlebar clear + app-owned maximize/unmaximize"
+assert 'mode = "maximized", action = "unset"' in lua
+assert 'fullscreen_state({' in lua and 'internal = 2' in lua, \
+    "the plugin drives internal fullscreen only for its own Float fullscreen key"
+assert 'internal = 0, client = 1' not in lua, "app-owned windows keep the compositor's own maximize"
 assert 'action = "toggle"' in lua, "Float maximize keeps its own toggle path"
-assert 'fullscreen_state({' in lua and 'internal = 2' in lua and 'internal = 0, client = 1' in lua, \
-    "the plugin drives internal fullscreen only for its own key, and splits app-owned maximize"
 reset_calls = [line.strip() for line in lua.splitlines()
                if "reset_client_maximize(window)" in line and "local function" not in line]
 assert reset_calls == ["reset_client_maximize(window)", "reset_client_maximize(window)"], \
     "client maximize is cleared by the external titlebar action and by the geometric route"
+assert 'focus_reason_event' in lua and 'FOCUS_REASON_FFM' in lua, \
+    "hover focus must stay distinguishable from click focus"
 assert 'reset_client_maximize(window)\n        maximize_geometric_window' in lua, \
     "a client maximize routed to the geometric path must drop the internal state first"
 for removed in ("fit_app_owned_window", "app_owned_initial_size"):

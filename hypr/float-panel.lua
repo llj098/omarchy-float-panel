@@ -85,12 +85,18 @@ local native_float_panel = type(hl.plugin) == "table" and type(hl.plugin.float_p
   hl.plugin.float_panel or nil
 local native_window_semantics = native_float_panel and type(native_float_panel.window_semantics) == "function" and
   native_float_panel.window_semantics or nil
+local native_focus_reason_event = false
+local native_pointer_button_event = false
 local native_maximize_request_event = false
 local native_minimize_request_event = false
 if native_float_panel and type(native_float_panel.capabilities) == "function" then
   local ok, capabilities = pcall(native_float_panel.capabilities)
   native_maximize_request_event = ok and type(capabilities) == "table" and
     capabilities.maximize_request_event == true
+  native_focus_reason_event = ok and type(capabilities) == "table" and
+    capabilities.focus_reason_event == true
+  native_pointer_button_event = ok and type(capabilities) == "table" and
+    capabilities.pointer_button_event == true
   native_minimize_request_event = ok and type(capabilities) == "table" and
     capabilities.minimize_request_event == true
 end
@@ -841,39 +847,24 @@ local function app_owned_restore(window)
   geometry_dispatch("move", { x = box.x, y = box.y, window = window }, "app-owned.giveback")
 end
 
--- Keep the application's own maximize bit while leaving Hyprland's internal
--- maximize state at 0. A window that holds the internal state is painted under
--- every focused floating window, so a click could never bring it to the front;
--- with only the client bit the app's own titlebar keeps the maximize/restore
--- glyph it needs, its restore request still arrives, and this plugin owns the
--- work-area geometry that used to come from the compositor.
-local function split_client_maximize(window, enabled)
-  if not window or window.mapped ~= true then return false end
-  local state = enabled and { internal = 0, client = 1 } or { internal = 0, client = 0 }
-  local ok = pcall(function()
-    hl.dispatch(hl.dsp.window.fullscreen_state({
-      internal = state.internal,
-      client = state.client,
-      action = "set",
-      window = window,
-    }))
-  end)
-  return ok
-end
-
--- Maximize an app-owned window the split way: the app hears "maximized", the
--- compositor keeps no internal state, and the box becomes the floating work area.
+-- App-owned windows keep the compositor's own maximize: the app's own titlebar
+-- gets a real configure for every state change, so maximize/restore/close behave
+-- exactly like on a stock desktop. The z-order cost of holding the internal
+-- state (focused floating windows paint above it) is handled below by lowering
+-- the peers when such a window takes the focus.
 local function app_owned_maximize(window)
   if not window or not titlebar_excluded(window) then return false end
-  split_client_maximize(window, true)
-  app_owned_sync(window, true)
+  pcall(function()
+    hl.dispatch(hl.dsp.window.fullscreen({ mode = "maximized", action = "set", window = window }))
+  end)
   return true
 end
 
 local function app_owned_unmaximize(window)
   if not window or not titlebar_excluded(window) then return false end
-  split_client_maximize(window, false)
-  app_owned_restore(window)
+  pcall(function()
+    hl.dispatch(hl.dsp.window.fullscreen({ mode = "maximized", action = "unset", window = window }))
+  end)
   return true
 end
 
@@ -892,6 +883,46 @@ local function window_holds_maximize(window)
   return (tonumber(window.fullscreen) or 0) == 1 or (tonumber(window.fullscreenClient) or 0) ~= 0
 end
 
+-- Hyprland paints focused floating windows above a window that holds the
+-- internal maximize/fullscreen state, and focusing a peer sets that peer's
+-- over-fullscreen flag. Lowering the peer clears the flag again, so the focused
+-- maximized window is really painted on top. This must only happen for real
+-- input (click, keybind, dispatch): a hover focus (FFM) may move the focus but
+-- must never change the picture.
+local FOCUS_REASON_FFM = 1
+local function reveal_focused_maximized(window, reason)
+  if not window or reason == FOCUS_REASON_FFM then return end
+  if (tonumber(window.fullscreen) or 0) == 0 then return end
+  local workspace = window.workspace
+  if not workspace_is_regular(workspace) then return end
+  local address = tostring(window.address or "")
+  for _, peer in safe_ipairs(workspace:get_windows()) do
+    local peer_address = tostring(peer.address or "")
+    if peer_address ~= "" and peer_address ~= address and peer.floating == true and
+        peer.mapped == true and peer.pinned ~= true and (tonumber(peer.fullscreen) or 0) == 0 then
+      hl.dispatch(hl.dsp.window.alter_zorder({ mode = "bottom", window = peer }))
+    end
+  end
+end
+
+if native_focus_reason_event then
+  hl.on("float_panel.focus_changed", function(window, reason)
+    debug_window_action("event.focus_changed", window, window and window.workspace, { reason = reason })
+    reveal_focused_maximized(window, tonumber(reason) or 0)
+  end)
+end
+
+-- A click on an already hover-focused window changes no focus at all, so the
+-- focus event cannot see it. The raw left-button press carries the window under
+-- the pointer and is the click signal the z-order handover needs.
+local LEFT_BUTTON = 272
+if native_pointer_button_event then
+  hl.on("float_panel.pointer_button", function(window, button, pressed)
+    if pressed ~= true or tonumber(button) ~= LEFT_BUTTON then return end
+    reveal_focused_maximized(window, 0)
+  end)
+end
+
 if native_maximize_request_event then
   hl.on("float_panel.maximize_request", function(window, requested)
     local token = geometry_window_token(window)
@@ -901,11 +932,7 @@ if native_maximize_request_event then
       -- hold the internal maximize state for them: that state paints the window
       -- under every focused floating window, so a click could not bring it back.
       if titlebar_excluded(window) and float_workspace_window(window) then
-        if requested then
-          app_owned_maximize(window)
-        else
-          app_owned_unmaximize(window)
-        end
+        -- The compositor owns this state now; no extra dispatch is needed.
         return
       end
       -- Otherwise route a Float workspace's own maximize request to the
@@ -2177,12 +2204,7 @@ if native_float_panel then
       -- Raw floating/rules/openLate facts; public window.open precedes final visibility.
       hl.on("float_panel.window_changed", function(window)
         debug_window_geometry("event.window_changed", window, window and window.workspace, {})
-        if float_workspace_window(window) and (tonumber(window.fullscreen) or 0) == 1 then
-          -- Hyprland re-applied a maximize: fold it back to the split state.
-          app_owned_maximize(window)
-        else
-          app_owned_sync(window)
-        end
+        app_owned_sync(window)
         reconcile_drag_strip(window)
       end)
       local function reconcile_all()
@@ -2199,7 +2221,7 @@ if native_float_panel then
 end
 
 debug_log("diagnostics.begin", { schema = 2, geometry_reads = "compositor-goal", anchor_cache = "new-lua-instance" })
-debug_log("native.request_events", { maximize = native_maximize_request_event, minimize = native_minimize_request_event })
+debug_log("native.request_events", { maximize = native_maximize_request_event, minimize = native_minimize_request_event, focus_reason = native_focus_reason_event })
 load_float_workspaces()
 load_geometry_records()
 
@@ -2424,11 +2446,7 @@ for _, window in safe_ipairs(hl.get_windows()) do
   tag_auxiliary_window_no_border(window, semantics)
   if titlebar_excluded(window) then
     release_excluded_geometry(window)
-    if float_workspace_window(window) and (tonumber(window.fullscreen) or 0) == 1 then
-      app_owned_maximize(window)
-    else
-      app_owned_sync(window)
-    end
+    app_owned_sync(window)
   end
   local workspace = source_float_workspace(window)
   if workspace and not titlebar_excluded(window) then claim_geometry_slot(window, workspace) end
@@ -2479,13 +2497,8 @@ hl.on("window.open", function(window)
       -- Hyprland re-place a window the app asked to have maximized.
       ensure_window_floating(window)
       release_excluded_geometry(window)
-      if startup_maximize or window_holds_maximize(window) then
-        app_owned_maximize(window)
-        initial_placement = "app-owned-maximized"
-      else
-        app_owned_sync(window)
-        initial_placement = "app-owned"
-      end
+      app_owned_sync(window)
+      initial_placement = window_holds_maximize(window) and "app-owned-maximized" or "app-owned"
     else
       local _, claimed_slot, claimed_record = claim_geometry_slot(window, workspace)
       slot, record = claimed_slot, claimed_record
@@ -2529,9 +2542,6 @@ end)
 hl.on("window.fullscreen", function(window)
   debug_window_geometry("event.fullscreen", window, window and window.workspace, {})
   reconcile_drag_strip(window)
-  if not float_workspace_window(window) then return end
-  if (tonumber(window.fullscreen) or 0) ~= 1 then return end
-  app_owned_maximize(window)
 end)
 
 hl.on("window.close", function(window)

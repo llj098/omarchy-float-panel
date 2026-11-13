@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include <src/desktop/state/FocusState.hpp>
+#include <src/managers/input/InputManager.hpp>
 #include <src/desktop/state/WindowState.hpp>
 #include <src/desktop/view/Window.hpp>
 #include <src/event/EventBus.hpp>
@@ -31,10 +33,14 @@ using CustomEvent = Event::CEventBus::CCustomEvent;
 
 SP<CustomEvent>                                    maximizeRequestEvent;
 SP<CustomEvent>                                    minimizeRequestEvent;
+SP<CustomEvent>                                    focusReasonEvent;
+SP<CustomEvent>                                    pointerButtonEvent;
 CHyprSignalListener                                configPreReloadListener;
 CHyprSignalListener                                configReloadedListener;
 CHyprSignalListener                                windowCreateListener;
 CHyprSignalListener                                windowDestroyListener;
+CHyprSignalListener                                focusReasonListener;
+CHyprSignalListener                                pointerButtonListener;
 std::unordered_map<uintptr_t, CHyprSignalListener> maximizeRequestListeners;
 uint64_t                                           configReloadGeneration    = 0;
 uint64_t                                           announcedReloadGeneration = 0;
@@ -144,6 +150,8 @@ void trackMaximizeRequests(const PHLWINDOW& window) {
 int luaCapabilities(lua_State* state) {
     lua_newtable(state);
     setBoolean(state, "maximize_request_event", true);
+    setBoolean(state, "focus_reason_event", true);
+    setBoolean(state, "pointer_button_event", true);
     setBoolean(state, "minimize_request_event", true);
     setBoolean(state, "decoration_input_v1", DragStrip::ready());
     setBoolean(state, "drag_lifecycle_v1", DragStrip::ready());
@@ -225,6 +233,47 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("failed to register float_panel.minimize_request");
     }
 
+    focusReasonEvent = makeShared<CustomEvent>(
+        "float_panel.focus_changed", std::vector{CustomEvent::TYPE_WINDOW, CustomEvent::TYPE_INT});
+    if (!HyprlandAPI::addEvent(handle, focusReasonEvent)) {
+        HyprlandAPI::removeEvent(handle, "float_panel.minimize_request");
+        HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        maximizeRequestEvent.reset();
+        minimizeRequestEvent.reset();
+        focusReasonEvent.reset();
+        throw std::runtime_error("failed to register float_panel.focus_changed");
+    }
+    focusReasonListener = Event::bus()->m_events.window.active.listen([](PHLWINDOW window, Desktop::eFocusReason reason) {
+        if (!focusReasonEvent || !window)
+            return;
+        focusReasonEvent->emit({PHLWINDOWREF(window), static_cast<int>(reason)});
+    });
+
+    pointerButtonEvent = makeShared<CustomEvent>(
+        "float_panel.pointer_button", std::vector{CustomEvent::TYPE_WINDOW, CustomEvent::TYPE_INT, CustomEvent::TYPE_BOOL});
+    if (!HyprlandAPI::addEvent(handle, pointerButtonEvent)) {
+        HyprlandAPI::removeEvent(handle, "float_panel.focus_changed");
+        HyprlandAPI::removeEvent(handle, "float_panel.minimize_request");
+        HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        maximizeRequestEvent.reset();
+        minimizeRequestEvent.reset();
+        focusReasonEvent.reset();
+        pointerButtonEvent.reset();
+        throw std::runtime_error("failed to register float_panel.pointer_button");
+    }
+    pointerButtonListener = Event::bus()->m_events.input.mouse.button.listen([](IPointer::SButtonEvent event, Event::SCallbackInfo& info) {
+        (void)info;
+        if (!pointerButtonEvent)
+            return;
+        const auto window = g_pInputManager ? g_pInputManager->m_lastMouseFocus.lock() : nullptr;
+        pointerButtonEvent->emit({PHLWINDOWREF(window), static_cast<int>(event.button),
+                                  event.state == WL_POINTER_BUTTON_STATE_PRESSED});
+    });
+
     try {
         DragStrip::init(handle);
     } catch (...) {
@@ -246,6 +295,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         DragStrip::announce(false);
         Event::bus()->m_events.pluginEventRemoved.emit("float_panel.maximize_request");
         Event::bus()->m_events.pluginEventRemoved.emit("float_panel.minimize_request");
+        Event::bus()->m_events.pluginEventRemoved.emit("float_panel.focus_changed");
+        Event::bus()->m_events.pluginEventRemoved.emit("float_panel.pointer_button");
     });
     configReloadedListener  = Event::bus()->m_events.config.reloaded.listen([] {
         if (!maximizeRequestEvent || announcedReloadGeneration == configReloadGeneration)
@@ -253,6 +304,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         announcedReloadGeneration = configReloadGeneration;
         Event::bus()->m_events.pluginEventAdded.emit(maximizeRequestEvent);
         Event::bus()->m_events.pluginEventAdded.emit(minimizeRequestEvent);
+        Event::bus()->m_events.pluginEventAdded.emit(focusReasonEvent);
+        Event::bus()->m_events.pluginEventAdded.emit(pointerButtonEvent);
         DragStrip::announce(true);
     });
 
@@ -276,14 +329,20 @@ APICALL EXPORT void PLUGIN_EXIT() {
     configReloadedListener.reset();
     windowCreateListener.reset();
     windowDestroyListener.reset();
+    focusReasonListener.reset();
+    pointerButtonListener.reset();
     maximizeRequestListeners.clear();
     if (pluginHandle) {
         HyprlandAPI::removeEvent(pluginHandle, "float_panel.maximize_request");
         HyprlandAPI::removeEvent(pluginHandle, "float_panel.minimize_request");
+        HyprlandAPI::removeEvent(pluginHandle, "float_panel.focus_changed");
+        HyprlandAPI::removeEvent(pluginHandle, "float_panel.pointer_button");
         HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "capabilities");
         HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "window_semantics");
     }
     maximizeRequestEvent.reset();
     minimizeRequestEvent.reset();
+    focusReasonEvent.reset();
+    pointerButtonEvent.reset();
     pluginHandle = nullptr;
 }

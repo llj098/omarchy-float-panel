@@ -1757,28 +1757,27 @@ app_owned.fullscreen = 0
 
 local maximize_before = #dispatched
 binds["SUPER + UP"]()
-local split_max, max_geometry = nil, false
+local native_max = nil
 for index = maximize_before + 1, #dispatched do
   local item = dispatched[index]
-  if (item.params and item.params.window) == app_owned then
-    if item.kind == "fullscreen_state" then split_max = item.params end
-    if item.kind == "resize" or item.kind == "move" then max_geometry = true end
+  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen" then
+    native_max = item.params
   end
 end
-assert(split_max and split_max.internal == 0 and split_max.client == 1,
-  "app-owned maximize must tell the client while leaving Hyprland's internal state alone")
-assert(max_geometry, "app-owned maximize must own the geometry itself")
-app_owned.fullscreenClient = 1
+assert(native_max and native_max.mode == "maximized" and native_max.action == "set",
+  "app-owned maximize must use the compositor's real maximize so the app's own button stays truthful")
+app_owned.fullscreen = 1
 local restore_before = #dispatched
 binds["SUPER + DOWN"]()
-local cleared = false
+local native_restore = nil
 for index = restore_before + 1, #dispatched do
   local item = dispatched[index]
-  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen_state" and item.params.client == 0 then
-    cleared = true
+  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen" then
+    native_restore = item.params
   end
 end
-assert(cleared, "Super+Down on a maximized app-owned window must clear the client bit")
+assert(native_restore and native_restore.action == "unset",
+  "Super+Down on a maximized app-owned window must unmaximize it through the compositor")
 app_owned.fullscreen = 0
 
 -- The very same split has to happen when the app's own maximize button asks for
@@ -1790,28 +1789,14 @@ app_owned.fullscreenClient = 1
 app_owned.at, app_owned.size = { x = 100, y = 100 }, { x = 400, y = 300 }
 local req_before = #dispatched
 handlers["float_panel.maximize_request"](app_owned, true)
-local req_split, req_geometry = nil, false
+handlers["float_panel.maximize_request"](app_owned, false)
 for index = req_before + 1, #dispatched do
   local item = dispatched[index]
   if (item.params and item.params.window) == app_owned then
-    if item.kind == "fullscreen_state" then req_split = item.params end
-    if item.kind == "resize" or item.kind == "move" then req_geometry = true end
+    assert(item.kind ~= "fullscreen" and item.kind ~= "fullscreen_state",
+      "the compositor owns an app-owned maximize request; the plugin must not re-dispatch state")
   end
 end
-assert(req_split and req_split.internal == 0 and req_split.client == 1,
-  "an app-owned maximize request must be folded back to the split state")
-assert(req_geometry, "a folded maximize must still own the work-area geometry")
-local unreq_before = #dispatched
-handlers["float_panel.maximize_request"](app_owned, false)
-local unreq_cleared = false
-for index = unreq_before + 1, #dispatched do
-  local item = dispatched[index]
-  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen_state"
-      and item.params.client == 0 then
-    unreq_cleared = true
-  end
-end
-assert(unreq_cleared, "an app-owned unmaximize request must clear the client bit")
 app_owned.fullscreen, app_owned.fullscreenClient = 0, 0
 
 
