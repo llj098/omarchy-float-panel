@@ -1755,48 +1755,66 @@ end
 assert(snapped_after_unmax, "the snap itself must still happen for an app-owned window")
 app_owned.fullscreen = 0
 
+-- A Float maximize keeps the client's maximize bit and nothing else: the
+-- compositor must not hold the internal state, because that state stops every
+-- peer of the workspace from being drawn (the "maximize wipes the other windows
+-- away" symptom) and pins the window under floating peers.
 local maximize_before = #dispatched
 binds["SUPER + UP"]()
-local native_max = nil
+local client_max, internal_max = nil, nil
 for index = maximize_before + 1, #dispatched do
   local item = dispatched[index]
-  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen" then
-    native_max = item.params
+  if (item.params and item.params.window) == app_owned then
+    if item.kind == "fullscreen" then internal_max = item.params end
+    if item.kind == "fullscreen_state" then client_max = item.params end
   end
 end
-assert(native_max and native_max.mode == "maximized" and native_max.action == "set",
-  "app-owned maximize must use the compositor's real maximize so the app's own button stays truthful")
-app_owned.fullscreen = 1
+assert(not internal_max, "app-owned maximize must not hand Hyprland the internal maximize state")
+assert(client_max and client_max.client == 1 and client_max.internal == 0,
+  "app-owned maximize must keep only the client bit, so the app's own button stays truthful")
+app_owned.fullscreen, app_owned.fullscreenClient = 0, 1
 local restore_before = #dispatched
 binds["SUPER + DOWN"]()
-local native_restore = nil
+local client_clear = nil
 for index = restore_before + 1, #dispatched do
   local item = dispatched[index]
-  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen" then
-    native_restore = item.params
+  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen_state" then
+    client_clear = item.params
   end
 end
-assert(native_restore and native_restore.action == "unset",
-  "Super+Down on a maximized app-owned window must unmaximize it through the compositor")
-app_owned.fullscreen = 0
+assert(client_clear and client_clear.client == 0 and client_clear.internal == 0,
+  "Super+Down on a maximized app-owned window must drop the client bit")
+app_owned.fullscreen, app_owned.fullscreenClient = 0, 0
 
 -- The very same split has to happen when the app's own maximize button asks for
 -- it through the native bridge: Hyprland has already applied the request, and the
--- plugin folds it back so the window can still be raised over its floating peers.
+-- plugin folds it back to the client bit so the peers stay on screen.
 active_window = app_owned
 app_owned.fullscreen = 1
 app_owned.fullscreenClient = 1
 app_owned.at, app_owned.size = { x = 100, y = 100 }, { x = 400, y = 300 }
 local req_before = #dispatched
 handlers["float_panel.maximize_request"](app_owned, true)
-handlers["float_panel.maximize_request"](app_owned, false)
+local folded = nil
 for index = req_before + 1, #dispatched do
   local item = dispatched[index]
-  if (item.params and item.params.window) == app_owned then
-    assert(item.kind ~= "fullscreen" and item.kind ~= "fullscreen_state",
-      "the compositor owns an app-owned maximize request; the plugin must not re-dispatch state")
+  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen_state" then
+    folded = item.params
   end
 end
+assert(folded and folded.internal == 0 and folded.client == 1,
+  "an app-owned maximize request must be folded to the client bit")
+local release_before = #dispatched
+handlers["float_panel.maximize_request"](app_owned, false)
+local released = nil
+for index = release_before + 1, #dispatched do
+  local item = dispatched[index]
+  if (item.params and item.params.window) == app_owned and item.kind == "fullscreen_state" then
+    released = item.params
+  end
+end
+assert(released and released.internal == 0 and released.client == 0,
+  "an app-owned restore request must clear the client bit")
 app_owned.fullscreen, app_owned.fullscreenClient = 0, 0
 
 

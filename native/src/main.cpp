@@ -163,6 +163,19 @@ int luaCapabilities(lua_State* state) {
     return 1;
 }
 
+void pushTruthfulMaximizeState(PHLWINDOW window);
+
+// Push the window's current box and state list to its client once. A state-only
+// change (the float-panel split keeps the box) never crosses setSize on its own,
+// so the client would keep drawing the glyph of the previous state.
+int luaPushWindowState(lua_State* state) {
+    const std::string_view address = luaL_checkstring(state, 1);
+    const auto             window  = windowFromAddress(address);
+    if (window)
+        pushTruthfulMaximizeState(window);
+    return 0;
+}
+
 int luaWindowSemantics(lua_State* state) {
     const std::string_view address = luaL_checkstring(state, 1);
     const auto             window  = windowFromAddress(address);
@@ -197,6 +210,16 @@ int luaWindowSemantics(lua_State* state) {
     setBoolean(state, "program_position", pPosition);
     setBoolean(state, "user_position", usPosition);
     setBoolean(state, "position_specified", pPosition || usPosition);
+    // Compositor maximize facts. A window can be maximized for its client while
+    // the compositor holds no internal maximize state (the float-panel split).
+    if (Fullscreen::controller()) {
+        const auto modes = Fullscreen::controller()->getFullscreenModes(window);
+        setBoolean(state, "maximize_internal", modes.internal == Fullscreen::FSMODE_MAXIMIZED);
+        setBoolean(state, "maximize_client", modes.client == Fullscreen::FSMODE_MAXIMIZED);
+    } else {
+        setBoolean(state, "maximize_internal", false);
+        setBoolean(state, "maximize_client", false);
+    }
     return 1;
 }
 
@@ -231,6 +254,20 @@ bool keepsMaximizeHint(CXDGToplevelResource* self, PHLWINDOW window) {
     return marginClients.contains(window.get());
 }
 
+// A floating window's maximize truth is the window's own bit. A window can be
+// maximized for the client (its own chrome then draws "restore") while the
+// compositor holds no internal maximize state: the internal state makes
+// Hyprland stop drawing every other window of the workspace, which is not what
+// a float workspace wants, because there the maximizing window is only supposed
+// to cover its peers. So both state sources are honoured here, and the plugin
+// keeps the box.
+bool floatingMaximizeState(CXDGToplevelResource* self, PHLWINDOW window) {
+    if (keepsMaximizeHint(self, window))
+        return true;
+    const auto modes = Fullscreen::controller()->getFullscreenModes(window);
+    return modes.internal == Fullscreen::FSMODE_MAXIMIZED || modes.client == Fullscreen::FSMODE_MAXIMIZED;
+}
+
 // Hyprland suppresses client-side decorations by handing the maximize hint to
 // every window as it maps. The hint is never withdrawn once the window starts
 // floating, so the application believes it is maximized forever: its own window
@@ -249,11 +286,7 @@ uint32_t hookSetMaximized(CXDGToplevelResource* self, bool maximized) {
     if (!window->m_isFloating)
         return original(self, maximized);
 
-    if (keepsMaximizeHint(self, window))
-        return original(self, true);
-
-    const bool reallyMaximized = Fullscreen::controller()->getFullscreenModes(window).internal == Fullscreen::FSMODE_MAXIMIZED;
-    return original(self, reallyMaximized);
+    return original(self, floatingMaximizeState(self, window));
 }
 
 CFunctionHook* setSizeHook = nullptr;
@@ -269,9 +302,7 @@ uint32_t hookSetSize(CXDGToplevelResource* self, const Vector2D& size) {
     const auto window = self ? self->m_window.lock() : nullptr;
 
     if (self && window && Fullscreen::controller()) {
-        const auto modes = Fullscreen::controller()->getFullscreenModes(window);
-        const bool reallyMaximized = window->m_isFloating &&
-            (keepsMaximizeHint(self, window) || modes.internal == Fullscreen::FSMODE_MAXIMIZED);
+        const bool reallyMaximized = window->m_isFloating && floatingMaximizeState(self, window);
         auto& states = self->m_pendingApply.states;
         const bool hasMaximized = std::ranges::find(states, XDG_TOPLEVEL_STATE_MAXIMIZED) != states.end();
         if (reallyMaximized && !hasMaximized)
@@ -318,7 +349,13 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "window_semantics", luaWindowSemantics))
         throw std::runtime_error("failed to register hl.plugin.float_panel.window_semantics");
+    if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "push_state", luaPushWindowState)) {
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        throw std::runtime_error("failed to register hl.plugin.float_panel.push_state");
+    }
     if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "capabilities", luaCapabilities)) {
+        HyprlandAPI::removeLuaFunction(handle, "float_panel", "push_state");
         HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
         throw std::runtime_error("failed to register hl.plugin.float_panel.capabilities");
     }

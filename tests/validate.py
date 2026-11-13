@@ -506,22 +506,28 @@ for policy_case in (
 assert "synthetic native bridge failure" in policy_tests
 assert "must fail closed without stripping an existing tag" in policy_tests
 
-# App-owned windows keep their own maximize state and geometry: the plugin may
-# clear a client maximize only for a window it puts its own titlebar on, never
-# set one, and never resize or move an excluded window behind its back.
-# App-owned windows use the compositor's real maximize (so their own three buttons
-# stay truthful); the plugin only ever *clears* the state for windows it gives its
-# own titlebar, and drives the app-owned maximize through the compositor.
-assert lua.count('mode = "maximized"') == 3, "titlebar clear + app-owned maximize/unmaximize"
-assert 'mode = "maximized", action = "unset"' in lua
+# A Float workspace maximizes by covering, never by clearing. The window keeps
+# the client's maximize bit (so the app's own controls stay truthful) and the
+# compositor keeps no internal maximize state: that state stops every peer of the
+# workspace from being drawn, which is the "maximize wipes the other windows"
+# symptom, and it pins the window under the other floating windows.
+assert lua.count('mode = "maximized"') == 1, \
+    "only the titlebar route may name the internal maximize mode"
+assert 'mode = "maximized", action = "unset"' in lua, \
+    "a titlebar window clears its client maximize before the geometric route"
+assert 'internal = 0,' in lua and 'client = maximize and 1 or 0' in lua, \
+    "app-owned maximize must use the split state (client bit only)"
+assert 'hl.dsp.window.fullscreen({ mode = "maximized", action = "set"' not in lua, \
+    "app-owned maximize must never hand Hyprland the internal maximize state"
 assert 'fullscreen_state({' in lua and 'internal = 2' in lua, \
     "the plugin drives internal fullscreen only for its own Float fullscreen key"
-assert 'internal = 0, client = 1' not in lua, "app-owned windows keep the compositor's own maximize"
+assert '(tonumber(window.fullscreen) or 0) < 2' in lua, \
+    "only a real fullscreen window may lower its peers"
 assert 'action = "toggle"' in lua, "Float maximize keeps its own toggle path"
 reset_calls = [line.strip() for line in lua.splitlines()
                if "reset_client_maximize(window)" in line and "local function" not in line]
-assert reset_calls == ["reset_client_maximize(window)", "reset_client_maximize(window)"], \
-    "client maximize is cleared by the external titlebar action and by the geometric route"
+assert reset_calls == ["reset_client_maximize(window)"] * 3, \
+    "a titlebar window drops its client maximize on every route into the geometric maximize"
 assert 'focus_reason_event' in lua and 'FOCUS_REASON_FFM' in lua, \
     "hover focus must stay distinguishable from click focus"
 assert 'reset_client_maximize(window)\n        maximize_geometric_window' in lua, \

@@ -110,6 +110,19 @@ local function read_native_window_semantics(window)
   return result, "found"
 end
 
+-- The Lua window object carries only the internal maximize bit; the client bit
+-- (what the app itself believes) comes from the compositor through the bridge.
+-- Stored on the plugin table rather than in another file-scope local: this module
+-- is already at the Lua register limit for locals.
+window_client_maximized = function(window)
+  if not window then return false end
+  -- Test doubles and any future Lua-side field win; in the real compositor the
+  -- window object only carries the internal bit, so the bridge reports it.
+  if (tonumber(window.fullscreenClient) or 0) ~= 0 then return true end
+  local semantics = read_native_window_semantics(window)
+  return semantics ~= nil and semantics.maximize_client == true
+end
+
 local function debug_flag_enabled()
   local file = io.open(debug_flag_path, "r")
   if not file then return false end
@@ -361,7 +374,7 @@ end
 -- fullscreen or maximize state is active.
 local function ensure_window_floating(window)
   if not window or window.floating == true then return end
-  if (tonumber(window.fullscreen) or 0) ~= 0 or (tonumber(window.fullscreenClient) or 0) ~= 0 then return end
+  if (tonumber(window.fullscreen) or 0) ~= 0 or window_client_maximized(window) then return end
   set_window_floating(window, true)
 end
 
@@ -433,7 +446,7 @@ local function debug_window_geometry(event, window, workspace, fields)
   fields.hidden = window and window.hidden == true or false
   fields.visible = window and window.visible == true or false
   fields.fullscreen = window and window.fullscreen or "nil"
-  fields.fullscreen_client = window and window.fullscreenClient or "nil"
+  fields.fullscreen_client = window and tostring(window_client_maximized(window)) or "nil"
   fields.xwayland = window and window.xwayland == true or false
   debug_window_action(event, window, workspace, fields)
 end
@@ -802,7 +815,10 @@ end
 -- Hyprland, or a stale toolkit belief), a maximized client bit means a work-area
 -- box, and clearing it gives the box back. No state is ever sent to the app from
 -- here, so this cannot produce a glyph the window does not match.
-local app_owned_boxes = {}
+-- The only geometry the plugin keeps for an app-owned window is its last
+-- un-maximized box: that is what a restore gives back. It is recorded from
+-- ordinary frames only (no maximize bit, and not the work area), so a maximized
+-- frame can never become the next restore target.
 local app_owned_last = {}
 local app_owned_restoring = {}
 
@@ -812,24 +828,20 @@ local function app_owned_sync(window, force_maximized)
   if not token then return end
   local at, size = window.at, window.size
   if not at or not size then return end
-  local client = force_maximized and 1 or (tonumber(window.fullscreenClient) or 0)
+  local client = force_maximized and 1 or (window_client_maximized(window) and 1 or 0)
   local bounds = window_floating_bounds(window)
+  local width, height = tonumber(size.x) or 0, tonumber(size.y) or 0
+  local at_work_area = bounds ~= nil and width >= bounds.width - 1 and height >= bounds.height - 1
   if client == 0 then
-    app_owned_boxes[token] = nil
-    app_owned_last[token] = {
-      x = nearest_integer(at.x), y = nearest_integer(at.y),
-      width = nearest_integer(size.x), height = nearest_integer(size.y),
-    }
+    if bounds and not at_work_area and (tonumber(window.fullscreen) or 0) == 0 then
+      app_owned_last[token] = {
+        x = nearest_integer(at.x), y = nearest_integer(at.y),
+        width = nearest_integer(width), height = nearest_integer(height),
+      }
+    end
     return
   end
-  if not bounds then return end
-  if not app_owned_boxes[token] then
-    app_owned_boxes[token] = app_owned_last[token] or {
-      x = nearest_integer(at.x), y = nearest_integer(at.y),
-      width = nearest_integer(size.x), height = nearest_integer(size.y),
-    }
-  end
-  if (tonumber(size.x) or 0) >= bounds.width - 1 and (tonumber(size.y) or 0) >= bounds.height - 1 then return end
+  if not bounds or at_work_area then return end
   if app_owned_restoring[token] then return end
   app_owned_restoring[token] = true
   geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "app-owned.sync")
@@ -837,34 +849,61 @@ local function app_owned_sync(window, force_maximized)
   app_owned_restoring[token] = nil
 end
 
-local function app_owned_restore(window)
-  if not window or not titlebar_excluded(window) then return end
-  local token = geometry_window_token(window)
-  local box = token and app_owned_boxes[token]
-  if not token or not box then return end
-  app_owned_boxes[token] = nil
+local function app_owned_restore_to(window, box)
+  if not window or not box then return end
   geometry_dispatch("resize", { x = box.width, y = box.height, window = window }, "app-owned.giveback")
   geometry_dispatch("move", { x = box.x, y = box.y, window = window }, "app-owned.giveback")
 end
 
--- App-owned windows keep the compositor's own maximize: the app's own titlebar
--- gets a real configure for every state change, so maximize/restore/close behave
--- exactly like on a stock desktop. The z-order cost of holding the internal
--- state (focused floating windows paint above it) is handled below by lowering
--- the peers when such a window takes the focus.
+-- A Float workspace maximizes by covering, never by clearing: the window keeps
+-- the client's maximize bit (so the app's own window controls stay truthful and
+-- the app receives a maximized configure) while the compositor holds no internal
+-- maximize state. The internal state is what makes Hyprland stop drawing every
+-- other window of the workspace, so with it a maximize looks like the peers being
+-- wiped away instead of this window covering them; it also pins the window under
+-- the other floating windows. The box is the plugin's: it is the work area.
+-- A state-only change never crosses the size path by itself, so the client would
+-- keep drawing the glyph of the previous state until something resizes it.
+function app_owned_push_state(window)
+  local address = tostring(window and window.address or "")
+  if address == "" then return end
+  pcall(function()
+    if type(hl.plugin) == "table" and type(hl.plugin.float_panel) == "table" and
+        type(hl.plugin.float_panel.push_state) == "function" then
+      hl.plugin.float_panel.push_state(address)
+    end
+  end)
+end
+
+local function set_client_maximize(window, maximize)
+  if not window then return end
+  pcall(function()
+    hl.dispatch(hl.dsp.window.fullscreen_state({
+      internal = 0,
+      client = maximize and 1 or 0,
+      action = "set",
+      window = window,
+    }))
+  end)
+  app_owned_push_state(window)
+end
+
 local function app_owned_maximize(window)
   if not window or not titlebar_excluded(window) then return false end
+  set_client_maximize(window, true)
+  app_owned_sync(window, true)
   pcall(function()
-    hl.dispatch(hl.dsp.window.fullscreen({ mode = "maximized", action = "set", window = window }))
+    hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
   end)
   return true
 end
 
 local function app_owned_unmaximize(window)
   if not window or not titlebar_excluded(window) then return false end
-  pcall(function()
-    hl.dispatch(hl.dsp.window.fullscreen({ mode = "maximized", action = "unset", window = window }))
-  end)
+  local token = geometry_window_token(window)
+  local box = token and app_owned_last[token] or nil
+  set_client_maximize(window, false)
+  app_owned_restore_to(window, box)
   return true
 end
 
@@ -880,7 +919,7 @@ end
 -- internal maximize as 1 and a real fullscreen as 2 or 3.
 local function window_holds_maximize(window)
   if not window then return false end
-  return (tonumber(window.fullscreen) or 0) == 1 or (tonumber(window.fullscreenClient) or 0) ~= 0
+  return (tonumber(window.fullscreen) or 0) == 1 or window_client_maximized(window)
 end
 
 -- Hyprland paints focused floating windows above a window that holds the
@@ -892,7 +931,10 @@ end
 local FOCUS_REASON_FFM = 1
 local function reveal_focused_maximized(window, reason)
   if not window or reason == FOCUS_REASON_FFM then return end
-  if (tonumber(window.fullscreen) or 0) == 0 then return end
+  -- A maximized window is an ordinary floating window now: it covers its peers
+  -- by z-order, so nothing has to be lowered. Only a real fullscreen window
+  -- hides the rest of the workspace from the compositor.
+  if (tonumber(window.fullscreen) or 0) < 2 then return end
   local workspace = window.workspace
   if not workspace_is_regular(workspace) then return end
   local address = tostring(window.address or "")
@@ -941,10 +983,15 @@ if native_maximize_request_event then
     if not token then return end
     if opened_window_tokens[token] then
       -- App-owned windows keep their own maximize bit, but never let Hyprland
-      -- hold the internal maximize state for them: that state paints the window
-      -- under every focused floating window, so a click could not bring it back.
+      -- hold the internal maximize state for them: that state stops every peer
+      -- of the workspace from being drawn, so a maximize would wipe the other
+      -- windows away instead of covering them.
       if titlebar_excluded(window) and float_workspace_window(window) then
-        -- The compositor owns this state now; no extra dispatch is needed.
+        if requested then
+          app_owned_maximize(window)
+        else
+          app_owned_unmaximize(window)
+        end
         return
       end
       -- Otherwise route a Float workspace's own maximize request to the
@@ -2562,9 +2609,26 @@ end)
 -- Fold every app-owned maximize back to the split state: keep the client bit so
 -- the app's own controls stay truthful, drop the internal state so the window can
 -- still be raised over its floating peers by a click.
+-- Hyprland can start a maximize on its own (a startup request, a toolkit that
+-- maximizes itself, a rule). Fold every Float-workspace maximize back to
+-- "client bit + plugin box" so no window of a float workspace ever holds the
+-- internal state that stops its peers from being drawn.
+function fold_float_maximize(window)
+  if not window or not float_workspace_window(window) then return false end
+  if (tonumber(window.fullscreen) or 0) ~= 1 then return false end
+  if titlebar_excluded(window) then
+    app_owned_maximize(window)
+    return true
+  end
+  if window_geometric_max_metadata(window) then return false end
+  reset_client_maximize(window)
+  return maximize_geometric_window(window, window.workspace)
+end
+
 hl.on("window.fullscreen", function(window)
   debug_window_geometry("event.fullscreen", window, window and window.workspace, {})
   reconcile_drag_strip(window)
+  fold_float_maximize(window)
 end)
 
 hl.on("window.close", function(window)
@@ -2577,7 +2641,6 @@ hl.on("window.close", function(window)
     pending_startup_maximize[token] = nil
     minimize_request_handled[token] = nil
     opened_window_tokens[token] = nil
-    app_owned_boxes[token] = nil
     app_owned_last[token] = nil
     app_owned_restoring[token] = nil
   end

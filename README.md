@@ -163,21 +163,26 @@ Titlebar mode inherits the titlebar package's interaction: app-name/title text, 
 
 Only ordinary floating windows on plugin Float workspaces receive the titlebar tag. Tiling workspaces, the minimized special store, and auxiliary menu/tooltip windows do not. Windows whose class matches `titlebar.exclude` are also left untagged. A pattern without `*` is a case-insensitive substring; a pattern with `*` is a case-insensitive glob.
 
-Excluded apps keep their own chrome, their own maximize state and their own
-geometry. The plugin only makes such a window float on Float workspaces and
-drops its own tags; it never unmaximizes, resizes or moves the window. Toolkits
-that remember a maximized window (Lollypop, Chromium, Electron and Qt apps all
-do) then see exactly the state they asked for: the middle button shows restore
-while the window is maximized and maximize while it floats, and clicking it
-toggles through Hyprland like any other native request. That is why a maximized
-Lollypop or WeChat window opens maximized instead of being shrunk to a floating
-size behind the app's back.
+Excluded apps keep their own chrome and their own maximize bit, and the plugin
+keeps the box: on a Float workspace a maximize is `client maximized + work-area
+box`, never the compositor's internal maximize state. The reason is what that
+state does on a floating workspace: Hyprland stops drawing every other window of
+the workspace, so a maximize looks like the peers being wiped away instead of this
+window covering them, and the window is painted under the focused floating peers.
+With only the client bit set, the app still receives a maximized configure, so its
+own middle button shows restore while the window covers the work area and maximize
+while it floats, and clicking it toggles through the normal native request path.
+`Super+Up`/`Super+Down`, the app's own button and a startup maximize all end in the
+same state, and a restore gives back the window's last un-maximized box.
 
 Hyprland hands every client a maximize hint while it maps, which is how it
 suppresses client-side decorations, and that hint never goes away once the window
 floats. The bridge therefore withdraws it for a floating window and keeps the
-maximize bit in step with the compositor's own maximize state, so the client's
-middle button describes the window it is actually attached to. It does that inside
+maximize bit in step with the window's own maximize state — the client bit or the
+internal one — so the client's middle button describes the window it is actually
+attached to. A state-only change never crosses the size path, so the plugin also
+asks the bridge to push the current box and state list once (`push_state`) after
+it changes a client's maximize bit. It does that inside
 the configure that carries the size, never as a separate state-only update: a lone
 state change makes a toolkit re-lay itself out while it still holds the previous
 box, which pushes the surface past the window and shifts the frame and the
