@@ -427,6 +427,7 @@ local function debug_window_geometry(event, window, workspace, fields)
   fields.hidden = window and window.hidden == true or false
   fields.visible = window and window.visible == true or false
   fields.fullscreen = window and window.fullscreen or "nil"
+  fields.fullscreen_client = window and window.fullscreenClient or "nil"
   fields.xwayland = window and window.xwayland == true or false
   debug_window_action(event, window, workspace, fields)
 end
@@ -912,6 +913,12 @@ if native_maximize_request_event then
       local workspace = window.workspace
       debug_window_action("event.maximize_request.post", window, workspace, { requested = requested == true })
       if requested and workspace_is_regular(workspace) and workspace_float_enabled(workspace) then
+        -- Hyprland already applied the client's request, which leaves the
+        -- internal maximize state set. The plugin's own titlebar window is
+        -- maximized geometrically, so clear that internal state first: keeping
+        -- both makes the window paint under focused floating peers and leaves
+        -- the two maximize states disagreeing.
+        reset_client_maximize(window)
         maximize_geometric_window(window, workspace)
       elseif not requested then
         if window_geometric_max_metadata(window) then restore_geometric_max(window) end

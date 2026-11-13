@@ -518,8 +518,10 @@ assert 'fullscreen_state({' in lua and 'internal = 2' in lua and 'internal = 0, 
     "the plugin drives internal fullscreen only for its own key, and splits app-owned maximize"
 reset_calls = [line.strip() for line in lua.splitlines()
                if "reset_client_maximize(window)" in line and "local function" not in line]
-assert reset_calls == ["reset_client_maximize(window)"], \
-    "client maximize may only be cleared from the external titlebar action"
+assert reset_calls == ["reset_client_maximize(window)", "reset_client_maximize(window)"], \
+    "client maximize is cleared by the external titlebar action and by the geometric route"
+assert 'reset_client_maximize(window)\n        maximize_geometric_window' in lua, \
+    "a client maximize routed to the geometric path must drop the internal state first"
 for removed in ("fit_app_owned_window", "app_owned_initial_size"):
     assert removed not in lua, f"app-owned windows must keep their own geometry: {removed}"
 for case in ("app-owned", "own maximize state"):
