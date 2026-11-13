@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -13,11 +14,11 @@
 #include <src/managers/input/InputManager.hpp>
 #include <src/managers/fullscreen/FullscreenController.hpp>
 #include <src/protocols/XDGShell.hpp>
+#include <src/protocols/core/Compositor.hpp>
 #include <src/desktop/state/WindowState.hpp>
 #include <src/desktop/view/Window.hpp>
 #include <src/event/EventBus.hpp>
 #include <src/plugins/PluginAPI.hpp>
-#include <src/protocols/XDGShell.hpp>
 #include <src/version.h>
 #include <src/xwayland/XWayland.hpp>
 
@@ -199,50 +200,97 @@ int luaWindowSemantics(lua_State* state) {
     return 1;
 }
 
-// Hyprland tells every client it is maximized - that is how it suppresses
-// client-side decorations ("tiled windows get MAXIMIZED so apps stop drawing
-// their own chrome"). The side effect is that every application's own window
-// controls believe the window is maximized forever: the middle button always
-// renders "restore" and a click only ever sends an unmaximize request that the
-// compositor ignores. Only forward the maximize state when the window really
-// holds it, so the client's own state (and its button glyph) follows the truth.
+// A client that draws its own decoration margins reports them as the surface
+// area outside its window geometry (the drop shadow ring and its resize grips).
+// Those margins belong outside the window box, which Hyprland does not model: it
+// treats the box as the whole surface and clips everything past it. Such a client
+// can only be shown intact while it believes it is maximized, because that is the
+// state in which it stops reserving margins. Every other client gets the truth.
+bool clientReportsDecorationMargins(CXDGToplevelResource* self) {
+    if (!self || !self->m_owner)
+        return false;
+
+    const auto& geometry = self->m_owner->m_current.geometry;
+    if (geometry.w <= 0 || geometry.h <= 0)
+        return false;
+
+    const auto surface = self->m_owner->m_surface ? self->m_owner->m_surface->m_current.size : Vector2D{};
+    return geometry.pos() != Vector2D{} || surface != geometry.size();
+}
+
+// Once a client has shown that it reserves margins, it keeps the hint for its
+// whole lifetime: the hint is what makes the margins disappear, so re-deciding
+// after that would flip the client between two layouts.
+std::unordered_set<Desktop::View::CWindow*> marginClients;
+
+bool keepsMaximizeHint(CXDGToplevelResource* self, PHLWINDOW window) {
+    if (!window)
+        return false;
+    if (clientReportsDecorationMargins(self))
+        marginClients.insert(window.get());
+    return marginClients.contains(window.get());
+}
+
+// Hyprland suppresses client-side decorations by handing the maximize hint to
+// every window as it maps. The hint is never withdrawn once the window starts
+// floating, so the application believes it is maximized forever: its own window
+// controls keep drawing "restore" and a click can only ever send an unmaximize
+// request. Floating windows get the truthful state instead; tiled windows keep
+// Hyprland's own behaviour.
 uint32_t hookSetMaximized(CXDGToplevelResource* self, bool maximized) {
     const auto original = reinterpret_cast<uint32_t (*)(CXDGToplevelResource*, bool)>(setMaximizedHook->m_original);
-    if (!self || !maximized)
+    if (!self)
         return original(self, maximized);
 
     const auto window = self->m_window.lock();
     if (!window || !Fullscreen::controller())
         return original(self, maximized);
 
-    // Tiled windows keep Hyprland's own behaviour: the maximize hint is how it
-    // suppresses client-side decorations there.
     if (!window->m_isFloating)
         return original(self, maximized);
+
+    if (keepsMaximizeHint(self, window))
+        return original(self, true);
 
     const bool reallyMaximized = Fullscreen::controller()->getFullscreenModes(window).internal == Fullscreen::FSMODE_MAXIMIZED;
     return original(self, reallyMaximized);
 }
 
-// Hyprland applies the state before telling the client, so a floating window
-// that just got maximized needs one truthful update; without it the client
-// would keep the state it had before the maximize.
+CFunctionHook* setSizeHook = nullptr;
+
+// The configure carries the box and the state list in one message, so a floating
+// window's maximize bit is corrected here rather than in a separate state-only
+// configure: a lone state change makes toolkits re-lay themselves out while they
+// still hold the previous box, which pushes the surface past the window and
+// misaligns the frame. Doing it here also notifies the client about a maximize
+// the compositor started on its own (a startup maximize, or the panel's dispatch).
+uint32_t hookSetSize(CXDGToplevelResource* self, const Vector2D& size) {
+    const auto original = reinterpret_cast<uint32_t (*)(CXDGToplevelResource*, const Vector2D&)>(setSizeHook->m_original);
+    const auto window = self ? self->m_window.lock() : nullptr;
+
+    if (self && window && Fullscreen::controller()) {
+        const auto modes = Fullscreen::controller()->getFullscreenModes(window);
+        const bool reallyMaximized = window->m_isFloating &&
+            (keepsMaximizeHint(self, window) || modes.internal == Fullscreen::FSMODE_MAXIMIZED);
+        auto& states = self->m_pendingApply.states;
+        const bool hasMaximized = std::ranges::find(states, XDG_TOPLEVEL_STATE_MAXIMIZED) != states.end();
+        if (reallyMaximized && !hasMaximized)
+            states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
+        else if (!reallyMaximized && hasMaximized)
+            std::erase(states, XDG_TOPLEVEL_STATE_MAXIMIZED);
+    }
+
+    return original(self, size);
+}
+
+// A maximize that does not change the box (the window already fills the work
+// area) never reaches the client through setSize, so re-send the current box
+// once when the maximize state changes.
 CHyprSignalListener truthfulMaximizeListener;
-CHyprSignalListener truthfulMaximizeOpenListener;
-CHyprSignalListener truthfulMaximizeRulesListener;
 void pushTruthfulMaximizeState(PHLWINDOW window) {
-    if (!window || !setMaximizedHook || !Fullscreen::controller())
+    if (!window || !window->m_isMapped || !window->m_isFloating)
         return;
-    const auto xdgSurface = window->m_xdgSurface.lock();
-    if (!xdgSurface)
-        return;
-    const auto toplevel = xdgSurface->m_toplevel.lock();
-    if (!toplevel)
-        return;
-    const auto original = reinterpret_cast<uint32_t (*)(CXDGToplevelResource*, bool)>(setMaximizedHook->m_original);
-    const bool maximized = window->m_isFloating &&
-        Fullscreen::controller()->getFullscreenModes(window).internal == Fullscreen::FSMODE_MAXIMIZED;
-    original(toplevel.get(), maximized);
+    window->sendWindowSize(true);
 }
 
 void installSetMaximizedHook(HANDLE handle) {
@@ -337,15 +385,15 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     });
 
     installSetMaximizedHook(handle);
+    {
+        auto sizeMatches = HyprlandAPI::findFunctionsByName(handle, "setSize");
+        std::erase_if(sizeMatches, [](const auto& m) { return m.demangled.find("CXDGToplevelResource::setSize(") == std::string::npos; });
+        if (sizeMatches.size() == 1) {
+            setSizeHook = HyprlandAPI::createFunctionHook(handle, sizeMatches[0].address, reinterpret_cast<void*>(hookSetSize));
+            if (setSizeHook) setSizeHook->hook();
+        }
+    }
     truthfulMaximizeListener = Event::bus()->m_events.window.fullscreen.listen([](PHLWINDOW window) {
-        pushTruthfulMaximizeState(window);
-    });
-    // A window that mapped before its float rule landed carries the "maximized"
-    // hint from the tiled case; correct it as soon as the window settles.
-    truthfulMaximizeOpenListener = Event::bus()->m_events.window.openLate.listen([](PHLWINDOW window) {
-        pushTruthfulMaximizeState(window);
-    });
-    truthfulMaximizeRulesListener = Event::bus()->m_events.window.updateRules.listen([](PHLWINDOW window) {
         pushTruthfulMaximizeState(window);
     });
 
@@ -386,6 +434,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     windowCreateListener = Event::bus()->m_events.window.create.listen([](PHLWINDOW window) { trackMaximizeRequests(window); });
     windowDestroyListener = Event::bus()->m_events.window.destroy.listen([](PHLWINDOWREF window) {
+        marginClients.erase(window.get());
         maximizeRequestListeners.erase(reinterpret_cast<uintptr_t>(window.get()));
     });
 
@@ -407,8 +456,6 @@ APICALL EXPORT void PLUGIN_EXIT() {
     focusReasonListener.reset();
     pointerButtonListener.reset();
     truthfulMaximizeListener.reset();
-    truthfulMaximizeOpenListener.reset();
-    truthfulMaximizeRulesListener.reset();
     if (setMaximizedHook && pluginHandle) {
         HyprlandAPI::removeFunctionHook(pluginHandle, setMaximizedHook);
         setMaximizedHook = nullptr;

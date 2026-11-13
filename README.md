@@ -173,6 +173,45 @@ toggles through Hyprland like any other native request. That is why a maximized
 Lollypop or WeChat window opens maximized instead of being shrunk to a floating
 size behind the app's back.
 
+Hyprland hands every client a maximize hint while it maps, which is how it
+suppresses client-side decorations, and that hint never goes away once the window
+floats. The bridge therefore withdraws it for a floating window and keeps the
+maximize bit in step with the compositor's own maximize state, so the client's
+middle button describes the window it is actually attached to. It does that inside
+the configure that carries the size, never as a separate state-only update: a lone
+state change makes a toolkit re-lay itself out while it still holds the previous
+box, which pushes the surface past the window and shifts the frame and the
+right-hand controls.
+
+A client that draws client-side decorations reserves a transparent shadow ring
+around its window geometry, and Hyprland treats that window box as the whole
+surface and clips everything beyond it. Telling such a client the truth would move
+its content inward and cut off its right and bottom edge, so the bridge keeps the
+hint for exactly those clients: it recognizes them by the surface area their
+window geometry leaves out and remembers them for their lifetime. GTK4 always
+reserves at least its resize-handle width, so a GTK4 application (Nautilus,
+`org.gnome.*`) keeps its own headerbar, its own working buttons and accurate
+geometry, but its middle button keeps the "restore" glyph while the window floats.
+Apps whose client chrome uses no shadow ring - Chromium, Qt, X11, and GTK3 with
+the rule below - get the truthful state.
+
+GTK3 reserves the same ring unless its theme says otherwise, so give it a zero
+shadow width. Install `gtk/gtk.css` as `~/.config/gtk-3.0/gtk.css` and restart the
+GTK3 applications:
+
+```css
+decoration {
+  box-shadow: none;
+  margin: 0;
+  border-radius: 0;
+}
+```
+
+This changes nothing visually on this desktop: Omarchy on Hyprland never shows
+those shadows, because every client is told it is maximized. It only stops GTK3
+from reserving room the compositor cannot represent, which is what lets its
+buttons follow the real state with the frame still hugging the window.
+
 Decide per app which chrome owns the controls:
 
 - **Excluded (default for apps with their own headerbar/tab strip).** The app
