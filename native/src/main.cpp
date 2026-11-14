@@ -338,6 +338,29 @@ void installSetMaximizedHook(HANDLE handle) {
 
 } // namespace
 
+// Every registration and every hook has to come back out on the same paths that
+// put it in: a Lua function or a patched function that outlives the unloaded
+// library is a dangling pointer in the compositor. Unloading and reloading this
+// plugin is part of the normal deploy loop, so the list lives in one place.
+void unregisterLuaFunctions(HANDLE handle) {
+    HyprlandAPI::removeLuaFunction(handle, "float_panel", "push_state");
+    HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
+    HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+}
+
+void removeFunctionHooks(HANDLE handle) {
+    if (!handle)
+        return;
+    if (setMaximizedHook) {
+        HyprlandAPI::removeFunctionHook(handle, setMaximizedHook);
+        setMaximizedHook = nullptr;
+    }
+    if (setSizeHook) {
+        HyprlandAPI::removeFunctionHook(handle, setSizeHook);
+        setSizeHook = nullptr;
+    }
+}
+
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
     return HYPRLAND_API_VERSION;
 }
@@ -350,21 +373,18 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "window_semantics", luaWindowSemantics))
         throw std::runtime_error("failed to register hl.plugin.float_panel.window_semantics");
     if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "push_state", luaPushWindowState)) {
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        unregisterLuaFunctions(handle);
         throw std::runtime_error("failed to register hl.plugin.float_panel.push_state");
     }
     if (!HyprlandAPI::addLuaFunction(handle, "float_panel", "capabilities", luaCapabilities)) {
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "push_state");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        unregisterLuaFunctions(handle);
         throw std::runtime_error("failed to register hl.plugin.float_panel.capabilities");
     }
 
     maximizeRequestEvent = makeShared<CustomEvent>(
         "float_panel.maximize_request", std::vector{CustomEvent::TYPE_WINDOW, CustomEvent::TYPE_BOOL});
     if (!HyprlandAPI::addEvent(handle, maximizeRequestEvent)) {
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        unregisterLuaFunctions(handle);
         maximizeRequestEvent.reset();
         throw std::runtime_error("failed to register float_panel.maximize_request");
     }
@@ -373,8 +393,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         "float_panel.minimize_request", std::vector{CustomEvent::TYPE_WINDOW, CustomEvent::TYPE_BOOL});
     if (!HyprlandAPI::addEvent(handle, minimizeRequestEvent)) {
         HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        unregisterLuaFunctions(handle);
         maximizeRequestEvent.reset();
         minimizeRequestEvent.reset();
         throw std::runtime_error("failed to register float_panel.minimize_request");
@@ -385,8 +404,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (!HyprlandAPI::addEvent(handle, focusReasonEvent)) {
         HyprlandAPI::removeEvent(handle, "float_panel.minimize_request");
         HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        unregisterLuaFunctions(handle);
         maximizeRequestEvent.reset();
         minimizeRequestEvent.reset();
         focusReasonEvent.reset();
@@ -404,8 +422,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         HyprlandAPI::removeEvent(handle, "float_panel.focus_changed");
         HyprlandAPI::removeEvent(handle, "float_panel.minimize_request");
         HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        unregisterLuaFunctions(handle);
         maximizeRequestEvent.reset();
         minimizeRequestEvent.reset();
         focusReasonEvent.reset();
@@ -421,7 +438,22 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
                                   event.state == WL_POINTER_BUTTON_STATE_PRESSED});
     });
 
-    installSetMaximizedHook(handle);
+    try {
+        installSetMaximizedHook(handle);
+    } catch (...) {
+        focusReasonListener.reset();
+        pointerButtonListener.reset();
+        HyprlandAPI::removeEvent(handle, "float_panel.pointer_button");
+        HyprlandAPI::removeEvent(handle, "float_panel.focus_changed");
+        HyprlandAPI::removeEvent(handle, "float_panel.minimize_request");
+        HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
+        unregisterLuaFunctions(handle);
+        maximizeRequestEvent.reset();
+        minimizeRequestEvent.reset();
+        focusReasonEvent.reset();
+        pointerButtonEvent.reset();
+        throw;
+    }
     {
         auto sizeMatches = HyprlandAPI::findFunctionsByName(handle, "setSize");
         std::erase_if(sizeMatches, [](const auto& m) { return m.demangled.find("CXDGToplevelResource::setSize(") == std::string::npos; });
@@ -437,12 +469,19 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     try {
         DragStrip::init(handle);
     } catch (...) {
+        focusReasonListener.reset();
+        pointerButtonListener.reset();
+        truthfulMaximizeListener.reset();
+        removeFunctionHooks(handle);
+        HyprlandAPI::removeEvent(handle, "float_panel.pointer_button");
+        HyprlandAPI::removeEvent(handle, "float_panel.focus_changed");
         HyprlandAPI::removeEvent(handle, "float_panel.minimize_request");
         HyprlandAPI::removeEvent(handle, "float_panel.maximize_request");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "capabilities");
-        HyprlandAPI::removeLuaFunction(handle, "float_panel", "window_semantics");
+        unregisterLuaFunctions(handle);
         maximizeRequestEvent.reset();
         minimizeRequestEvent.reset();
+        focusReasonEvent.reset();
+        pointerButtonEvent.reset();
         throw;
     }
 
@@ -493,18 +532,14 @@ APICALL EXPORT void PLUGIN_EXIT() {
     focusReasonListener.reset();
     pointerButtonListener.reset();
     truthfulMaximizeListener.reset();
-    if (setMaximizedHook && pluginHandle) {
-        HyprlandAPI::removeFunctionHook(pluginHandle, setMaximizedHook);
-        setMaximizedHook = nullptr;
-    }
+    removeFunctionHooks(pluginHandle);
     maximizeRequestListeners.clear();
     if (pluginHandle) {
         HyprlandAPI::removeEvent(pluginHandle, "float_panel.maximize_request");
         HyprlandAPI::removeEvent(pluginHandle, "float_panel.minimize_request");
         HyprlandAPI::removeEvent(pluginHandle, "float_panel.focus_changed");
         HyprlandAPI::removeEvent(pluginHandle, "float_panel.pointer_button");
-        HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "capabilities");
-        HyprlandAPI::removeLuaFunction(pluginHandle, "float_panel", "window_semantics");
+        unregisterLuaFunctions(pluginHandle);
     }
     maximizeRequestEvent.reset();
     minimizeRequestEvent.reset();

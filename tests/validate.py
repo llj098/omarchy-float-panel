@@ -454,8 +454,16 @@ for raw_field in (
     '"position_specified"',
 ):
     assert raw_field in native_main, f"native metadata bridge missing raw fact: {raw_field}"
-assert native_main.count('removeLuaFunction(pluginHandle, "float_panel"') == 2, \
-    "all native bridge bindings must be removed on plugin exit"
+for bridge_function in ("window_semantics", "capabilities", "push_state"):
+    assert f'unregisterLuaFunctions' in native_main and f'"{bridge_function}"' in native_main, \
+        f"native bridge binding must be registered and removed: {bridge_function}"
+assert 'unregisterLuaFunctions(pluginHandle);' in native_main, \
+    "every native bridge binding must be removed on plugin exit"
+for hook in ("setMaximizedHook", "setSizeHook"):
+    assert f'removeFunctionHook(handle, {hook});' in native_main, \
+        f"a patched compositor function must be unhooked: {hook}"
+assert 'removeFunctionHooks(pluginHandle);' in native_main, \
+    "plugin exit must unhook every patched compositor function"
 assert 'removeEvent(pluginHandle, "float_panel.maximize_request")' in native_main, \
     "the raw maximize event must be removed on plugin exit"
 assert 'removeEvent(pluginHandle, "float_panel.minimize_request")' in native_main, \

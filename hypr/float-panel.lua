@@ -821,6 +821,10 @@ end
 -- frame can never become the next restore target.
 local app_owned_last = {}
 local app_owned_restoring = {}
+-- A restore the compositor may answer with its own remembered size. The box is
+-- remembered here until the window really holds it, so the give-back survives
+-- that answer instead of leaving the window at the work-area box.
+local app_owned_giveback = {}
 
 local function app_owned_sync(window, force_maximized)
   if not window or not titlebar_excluded(window) then return end
@@ -833,6 +837,19 @@ local function app_owned_sync(window, force_maximized)
   local width, height = tonumber(size.x) or 0, tonumber(size.y) or 0
   local at_work_area = bounds ~= nil and width >= bounds.width - 1 and height >= bounds.height - 1
   if client == 0 then
+    local pending = app_owned_giveback[token]
+    if pending then
+      local arrived = math.abs(width - pending.width) <= 1 and math.abs(height - pending.height) <= 1 and
+        math.abs((tonumber(at.x) or 0) - pending.x) <= 1 and math.abs((tonumber(at.y) or 0) - pending.y) <= 1
+      if arrived then
+        app_owned_giveback[token] = nil
+      elseif at_work_area and (tonumber(pending.retries) or 0) < 2 then
+        pending.retries = (tonumber(pending.retries) or 0) + 1
+        app_owned_restore_to(window, pending)
+      else
+        app_owned_giveback[token] = nil
+      end
+    end
     if bounds and not at_work_area and (tonumber(window.fullscreen) or 0) == 0 then
       app_owned_last[token] = {
         x = nearest_integer(at.x), y = nearest_integer(at.y),
@@ -849,7 +866,7 @@ local function app_owned_sync(window, force_maximized)
   app_owned_restoring[token] = nil
 end
 
-local function app_owned_restore_to(window, box)
+function app_owned_restore_to(window, box)
   if not window or not box then return end
   geometry_dispatch("resize", { x = box.width, y = box.height, window = window }, "app-owned.giveback")
   geometry_dispatch("move", { x = box.x, y = box.y, window = window }, "app-owned.giveback")
@@ -891,6 +908,10 @@ end
 local function app_owned_maximize(window)
   if not window or not titlebar_excluded(window) then return false end
   set_client_maximize(window, true)
+  -- Keep this apply even though the compositor also sizes a client maximize:
+  -- when the fold drops the internal state right after the app asked for it,
+  -- Hyprland restores the pre-maximize box, and without a second apply the
+  -- window would sit at its old size with the client bit set.
   app_owned_sync(window, true)
   pcall(function()
     hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
@@ -902,6 +923,7 @@ local function app_owned_unmaximize(window)
   if not window or not titlebar_excluded(window) then return false end
   local token = geometry_window_token(window)
   local box = token and app_owned_last[token] or nil
+  if token and box then app_owned_giveback[token] = box end
   set_client_maximize(window, false)
   app_owned_restore_to(window, box)
   return true
@@ -2613,9 +2635,23 @@ end)
 -- maximizes itself, a rule). Fold every Float-workspace maximize back to
 -- "client bit + plugin box" so no window of a float workspace ever holds the
 -- internal state that stops its peers from being drawn.
+-- Re-entrancy guard: the fold dispatches a state change, and a re-delivered
+-- fullscreen event must not start a second fold on the same window.
+float_maximize_folding = false
+
 function fold_float_maximize(window)
   if not window or not float_workspace_window(window) then return false end
   if (tonumber(window.fullscreen) or 0) ~= 1 then return false end
+  if float_maximize_folding then return false end
+  float_maximize_folding = true
+  local folded = fold_float_maximize_unlocked(window)
+  float_maximize_folding = false
+  return folded
+end
+
+function fold_float_maximize_unlocked(window)
+  -- The guards above have already established: float workspace, floating window,
+  -- internal maximize state set.
   if titlebar_excluded(window) then
     app_owned_maximize(window)
     return true
@@ -2643,6 +2679,7 @@ hl.on("window.close", function(window)
     opened_window_tokens[token] = nil
     app_owned_last[token] = nil
     app_owned_restoring[token] = nil
+    app_owned_giveback[token] = nil
   end
   local workspace = source_float_workspace(window)
   if workspace and not interrupted and not titlebar_excluded(window) then
