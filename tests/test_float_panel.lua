@@ -347,10 +347,24 @@ local context_window = {
 active_workspace = ws2
 active_monitor = own_monitor
 active_window = context_window
+function list_contains(list, value)
+  for _, item in ipairs(list) do
+    if item == value then return true end
+  end
+  return false
+end
+
 local before_context_snap = #dispatched
 binds["SUPER + RIGHT"]()
-assert(dispatched[before_context_snap + 1].kind == "float" and dispatched[before_context_snap + 2].kind == "resize" and
-  dispatched[before_context_snap + 2].params.window == context_window,
+-- A window that already floats must not be floated again: Hyprland re-places it
+-- with its own remembered box, which would undo the snap that follows.
+local context_kinds = {}
+for index = before_context_snap + 1, #dispatched do
+  table.insert(context_kinds, dispatched[index].kind)
+end
+assert(not list_contains(context_kinds, "float") and context_kinds[1] == "resize" and context_kinds[2] == "move",
+  "snap must only resize and move an already floating window (" .. table.concat(context_kinds, ",") .. ")")
+assert(dispatched[before_context_snap + 1].params.window == context_window,
   "Float routing must follow the active window workspace, not the focused monitor workspace")
 assert(context_window.at.x == 5340 and context_window.at.y == 12 and context_window.size.x == 315 and context_window.size.y == 443,
   "fractional monitor geometry must use Hyprland's nearest-logical-pixel rounding")

@@ -114,6 +114,16 @@ end
 -- (what the app itself believes) comes from the compositor through the bridge.
 -- Stored on the plugin table rather than in another file-scope local: this module
 -- is already at the Lua register limit for locals.
+-- A client may pin its window to a single size (Obsidian's vault chooser does:
+-- resizable/maximizable/fullscreenable false). The compositor clamps every
+-- resize away, but a move still applies, so a placement that does both would
+-- drag the window around without ever changing its size. Such a window keeps its
+-- geometry: no geometric maximize, no snap, no titlebar space reclaim.
+window_size_pinned = function(window)
+  local semantics = read_native_window_semantics(window)
+  return semantics ~= nil and semantics.size_pinned == true
+end
+
 window_client_maximized = function(window)
   if not window then return false end
   -- Test doubles and any future Lua-side field win; in the real compositor the
@@ -1467,8 +1477,27 @@ local function restore_side_snap(window)
 end
 
 maximize_geometric_window = function(window, workspace)
-  if not window or titlebar_excluded(window) or window_geometric_max_metadata(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
+  if not window or titlebar_excluded(window) or window.floating ~= true or (tonumber(window.fullscreen) or 0) ~= 0 then return false end
+  if window_size_pinned(window) then
+    debug_window_action("geometry.pinned-skip", window, workspace, { action = "maximize" })
+    return false
+  end
   local bounds = window_floating_bounds(window)
+  if window_geometric_max_metadata(window) then
+    -- Already tagged: re-apply the work-area box. A re-place or an application
+    -- resize can leave the tag on a smaller box, and then Up (and the titlebar
+    -- button) would look dead because the tag makes the maximize a no-op.
+    if not bounds then return false end
+    local at, size = window.at, window.size
+    if at and size and tonumber(at.x) == bounds.left and tonumber(at.y) == bounds.top and
+        math.abs((tonumber(size.x) or 0) - bounds.width) <= 1 and math.abs((tonumber(size.y) or 0) - bounds.height) <= 1 then
+      return true
+    end
+    geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "maximize-geometric")
+    geometry_dispatch("move", { x = bounds.left, y = bounds.top, window = window }, "maximize-geometric")
+    rebase_reflow_anchor(window, nil, nil, nil, "maximize-geometric")
+    return true
+  end
   local tag = make_geometric_max_tag(window, workspace)
   if not bounds or not tag then return false end
   add_window_tag(window, tag)
@@ -1661,12 +1690,18 @@ end
 
 local function snap_active_window(window, workspace, side, capture_restore)
   if not window then return end
+  if window_size_pinned(window) then
+    debug_window_action("geometry.pinned-skip", window, workspace, { action = "snap." .. tostring(side) })
+    return
+  end
   local restore = capture_restore ~= false and snap_restore_geometry(window) or nil
   if window_geometric_max_metadata(window) then restore_geometric_max(window) end
   local geometry = side_geometry(side, window.monitor, titlebar_inset(window))
   if not geometry then return end
 
-  set_window_floating(window, true)
+  -- A redundant float toggle makes Hyprland re-place the window with its own
+  -- remembered box, which undoes the snap that follows; only float a tiled one.
+  ensure_window_floating(window)
   -- Resize first so Hyprland does not clamp the old, wider window before placing it.
   geometry_dispatch("resize", { x = geometry.width, y = geometry.height, window = window }, "snap." .. side)
   geometry_dispatch("move", { x = geometry.x, y = geometry.y, window = window }, "snap." .. side)
@@ -2372,6 +2407,11 @@ end
 -- work-area geometry. Windows that were not near the top are left alone.
 reclaim_titlebar_space = function(window)
   if not has_window_tag(window, titlebar_tag) then return end
+  if window_size_pinned(window) then
+    debug_window_action("geometry.pinned-skip", window, window.workspace, { action = "reclaim" })
+    remove_window_tag(window, titlebar_tag)
+    return
+  end
   if window.floating == true and workspace_is_regular(window.workspace) and
       workspace_float_enabled(window.workspace) and (tonumber(window.fullscreen) or 0) == 0 then
     local bounds = floating_window_bounds(window.monitor)

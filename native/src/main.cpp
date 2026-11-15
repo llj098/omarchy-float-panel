@@ -220,6 +220,41 @@ int luaWindowSemantics(lua_State* state) {
         setBoolean(state, "maximize_internal", false);
         setBoolean(state, "maximize_client", false);
     }
+    // Size limits the client itself declares. A client may pin its window to one
+    // size (min == max); every resize the compositor applies is then clamped away,
+    // so a placement that resizes and moves would drag the window around without
+    // ever changing its size.
+    // The rule-adjusted accessors are not the truth here: this plugin itself
+    // relaxes a window's min size with a rule, while the compositor keeps clamping
+    // every resize to what the client declared on the toplevel. Read the client's
+    // own numbers so a pinned window is recognised as pinned.
+    Vector2D minSize{};
+    Vector2D maxSize{};
+    bool     haveLimits = false;
+    if (window->m_isX11 && window->m_xwaylandSurface && window->m_xwaylandSurface->m_sizeHints) {
+        const auto* hints = window->m_xwaylandSurface->m_sizeHints.get();
+        minSize           = Vector2D{static_cast<double>(hints->min_width), static_cast<double>(hints->min_height)};
+        maxSize           = Vector2D{static_cast<double>(hints->max_width), static_cast<double>(hints->max_height)};
+        haveLimits        = true;
+    } else if (window->m_xdgSurface && window->m_xdgSurface->m_toplevel) {
+        minSize    = window->m_xdgSurface->m_toplevel->layoutMinSize();
+        maxSize    = window->m_xdgSurface->m_toplevel->layoutMaxSize();
+        haveLimits = true;
+    }
+    if (haveLimits && maxSize.x >= 5 && maxSize.y >= 5) {
+        const bool pinned = minSize.x >= maxSize.x && minSize.y >= maxSize.y;
+        setBoolean(state, "size_pinned", pinned);
+        lua_pushinteger(state, static_cast<lua_Integer>(minSize.x));
+        lua_setfield(state, -2, "min_size_width");
+        lua_pushinteger(state, static_cast<lua_Integer>(minSize.y));
+        lua_setfield(state, -2, "min_size_height");
+        lua_pushinteger(state, static_cast<lua_Integer>(maxSize.x));
+        lua_setfield(state, -2, "max_size_width");
+        lua_pushinteger(state, static_cast<lua_Integer>(maxSize.y));
+        lua_setfield(state, -2, "max_size_height");
+    } else {
+        setBoolean(state, "size_pinned", false);
+    }
     return 1;
 }
 

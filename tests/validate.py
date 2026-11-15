@@ -531,6 +531,14 @@ assert 'fullscreen_state({' in lua and 'internal = 2' in lua, \
     "the plugin drives internal fullscreen only for its own Float fullscreen key"
 assert '(tonumber(window.fullscreen) or 0) < 2' in lua, \
     "only a real fullscreen window may lower its peers"
+# A client can pin its window to one size (Obsidian's vault chooser declares
+# resizable/maximizable/fullscreenable false). The compositor clamps the resize
+# away but still applies a move, so every placement that resizes and moves has to
+# skip such a window or it drags it around.
+assert 'size_pinned' in native_main and 'layoutMaxSize' in native_main, \
+    "the bridge must report the client's own size limits"
+assert lua.count('window_size_pinned(window)') >= 3, \
+    "maximize, snap and the titlebar reclaim must all respect a pinned size"
 assert 'action = "toggle"' in lua, "Float maximize keeps its own toggle path"
 reset_calls = [line.strip() for line in lua.splitlines()
                if "reset_client_maximize(window)" in line and "local function" not in line]
