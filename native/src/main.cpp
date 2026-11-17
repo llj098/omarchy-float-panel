@@ -1,4 +1,5 @@
 #include "drag_strip.hpp"
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <format>
@@ -11,12 +12,14 @@
 #include <vector>
 
 #include <src/desktop/state/FocusState.hpp>
+#include <src/desktop/state/ViewHitTester.hpp>
 #include <src/managers/input/InputManager.hpp>
 #include <src/managers/fullscreen/FullscreenController.hpp>
 #include <src/protocols/XDGShell.hpp>
 #include <src/protocols/core/Compositor.hpp>
 #include <src/desktop/state/WindowState.hpp>
 #include <src/desktop/view/Window.hpp>
+#include <src/render/pass/SurfacePassElement.hpp>
 #include <src/event/EventBus.hpp>
 #include <src/plugins/PluginAPI.hpp>
 #include <src/version.h>
@@ -291,19 +294,15 @@ int luaWindowSemantics(lua_State* state) {
     return 1;
 }
 
-// A client that draws its own decoration margins reports them as a symmetric
-// ring: the window geometry sits inside the surface with the same margin on
-// every side (the drop shadow plus its resize grips). Those margins belong
-// outside the window box, which Hyprland does not model: it treats the box as
-// the whole surface and clips everything past it. Such a client can only be
-// shown intact while it believes it is maximized, because that is the state in
-// which it stops reserving margins.
+// A client that draws its own frame reports it as a symmetric ring: the window
+// geometry sits inside the surface with the same margin on every side (the drop
+// shadow, the clear margin a resize grip needs, the rounded corners). The
+// geometry is the window; the ring is the client's frame around it.
 //
 // A surface that is merely a different size than the geometry is not a ring: it
 // is a client that has not yet committed a frame for the box it was just given,
-// or one that is mid-resize. That happens for every window at map time and must
-// never be mistaken for a decoration, because the maximize hint is latched for
-// the whole lifetime of a client that is thought to reserve margins.
+// or one that is mid-resize. That happens for every window at map time, and
+// placing a surface by a ring that does not exist yet would shift the window.
 Vector2D decorationRing(CXDGToplevelResource* self) {
     if (!self || !self->m_owner)
         return Vector2D{};
@@ -327,6 +326,86 @@ Vector2D decorationRing(CXDGToplevelResource* self) {
 bool clientReportsDecorationMargins(CXDGToplevelResource* self) {
     const auto ring = decorationRing(self);
     return ring.x > 0 && ring.y > 0;
+}
+
+Vector2D windowDecorationRing(PHLWINDOW window) {
+    if (!window || window->m_isX11 || !window->m_xdgSurface || !window->m_xdgSurface->m_toplevel)
+        return Vector2D{};
+    return decorationRing(window->m_xdgSurface->m_toplevel.get());
+}
+
+// Placement. A Wayland client's window geometry is the window: the surface may
+// reach past it with the client's own frame. Hyprland places the surface at the
+// box origin and sizes its destination box to the box, which draws that frame
+// inside the window instead of around it: the content ends up inset by the
+// frame margin, its right and bottom edge is cut, and the app's own controls sit
+// away from where they are drawn. Here the surface keeps the size it committed
+// and is placed so that the geometry lands exactly on the window box; the frame
+// then falls outside it, over the gap.
+//
+// The margin comes from the client's own commit, so nothing here needs state, a
+// configuration value, or knowledge of any application.
+CFunctionHook* surfaceCtorHook = nullptr;
+using SurfaceCtorFn = void (*)(CSurfacePassElement*, const CSurfacePassElement::SRenderData&);
+
+void hookSurfaceCtor(CSurfacePassElement* self, const CSurfacePassElement::SRenderData& data) {
+    const auto original = reinterpret_cast<SurfaceCtorFn>(surfaceCtorHook->m_original);
+    // Popups carry no window geometry of their own, and Hyprland already places
+    // them against the geometry of the window they belong to.
+    const auto ring = data.popup ? Vector2D{} : windowDecorationRing(data.pWindow);
+    if (ring.x <= 0 || ring.y <= 0) {
+        original(self, data);
+        return;
+    }
+
+    auto placed = data;
+    placed.pos  = data.pos - ring;
+    if (data.mainSurface) {
+        // The surface covers the box plus its frame; a subsurface is placed by
+        // the same origin shift and keeps its own size.
+        placed.w = data.w + ring.x * 2;
+        placed.h = data.h + ring.y * 2;
+    }
+    original(self, placed);
+}
+
+// Pointer coordinates are measured from the same origin the surface is placed
+// at, otherwise every click inside such a window would land one frame margin
+// away from the point it was aimed at.
+CFunctionHook* windowSurfaceAtHook = nullptr;
+using WindowSurfaceAtFn = SP<CWLSurfaceResource> (*)(Desktop::CViewHitTester*, const Vector2D&, PHLWINDOW, Vector2D&);
+
+SP<CWLSurfaceResource> hookWindowSurfaceAt(Desktop::CViewHitTester* self, const Vector2D& pos, PHLWINDOW window, Vector2D& surfaceLocal) {
+    const auto original = reinterpret_cast<WindowSurfaceAtFn>(windowSurfaceAtHook->m_original);
+    const auto ring     = windowDecorationRing(window);
+    if (ring.x <= 0 || ring.y <= 0)
+        return original(self, pos, window, surfaceLocal);
+    return original(self, pos + ring, window, surfaceLocal);
+}
+
+// The size limits a client declares are content sizes. Hyprland reports them
+// with the frame margin added, so the compositor would refuse to make a window
+// narrower or shorter than the client allows by that margin, and would clamp a
+// window whose client pins its own size to a box larger than the size it pinned.
+CFunctionHook* layoutMinSizeHook = nullptr;
+CFunctionHook* layoutMaxSizeHook = nullptr;
+using LayoutSizeFn = Vector2D (*)(CXDGToplevelResource*);
+
+Vector2D hookLayoutSize(CFunctionHook* hook, CXDGToplevelResource* self) {
+    const auto original = reinterpret_cast<LayoutSizeFn>(hook->m_original);
+    const auto size     = original(self);
+    const auto ring     = decorationRing(self);
+    if (ring.x <= 0 || ring.y <= 0)
+        return size;
+    return {std::max(0.0, size.x - ring.x), std::max(0.0, size.y - ring.y)};
+}
+
+Vector2D hookLayoutMinSize(CXDGToplevelResource* self) {
+    return hookLayoutSize(layoutMinSizeHook, self);
+}
+
+Vector2D hookLayoutMaxSize(CXDGToplevelResource* self) {
+    return hookLayoutSize(layoutMaxSizeHook, self);
 }
 
 // A floating window's maximize truth is the window's own bit. A window can be
@@ -382,19 +461,10 @@ uint32_t hookSetSize(CXDGToplevelResource* self, const Vector2D& size) {
             states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
         else if (!reallyMaximized && hasMaximized)
             std::erase(states, XDG_TOPLEVEL_STATE_MAXIMIZED);
-
-        // A client that draws its own decoration ring reports it as a margin on
-        // every side of its window geometry. Configure the content size instead:
-        // the surface the client then commits is exactly the box, so nothing it
-        // draws is clipped and the maximize state can stay truthful, which is
-        // what keeps the app's own window controls in step with the window.
-        if (window->m_isFloating && !reallyMaximized) {
-            const auto ring = decorationRing(self);
-            if (ring.x > 0 && ring.y > 0 && size.x > ring.x * 2 && size.y > ring.y * 2)
-                return original(self, {size.x - ring.x * 2, size.y - ring.y * 2});
-        }
     }
 
+    // The configure carries the box, which is the content size: the client adds
+    // its own frame around it and the surface is placed accordingly.
     return original(self, size);
 }
 
@@ -408,16 +478,49 @@ void pushTruthfulMaximizeState(PHLWINDOW window) {
     window->sendWindowSize(true);
 }
 
-void installSetMaximizedHook(HANDLE handle) {
-    auto matches = HyprlandAPI::findFunctionsByName(handle, "setMaximized");
-    std::erase_if(matches, [](const auto& match) {
-        return match.demangled.find("CXDGToplevelResource::setMaximized(bool)") == std::string::npos;
-    });
-    if (matches.size() != 1)
-        throw std::runtime_error("float-panel: ambiguous/missing native symbol CXDGToplevelResource::setMaximized");
-    setMaximizedHook = HyprlandAPI::createFunctionHook(handle, matches[0].address, reinterpret_cast<void*>(hookSetMaximized));
-    if (!setMaximizedHook || !setMaximizedHook->hook())
-        throw std::runtime_error("float-panel: cannot hook CXDGToplevelResource::setMaximized");
+// Every symbol is looked up by its own name and its own signature, so a
+// compositor that changed one of them refuses to load the plugin instead of
+// being patched at a wrong offset.
+void* requireSymbol(HANDLE handle, const std::string& name, std::string_view mangled, const char* what) {
+    auto matches = HyprlandAPI::findFunctionsByName(handle, name);
+    std::erase_if(matches, [&](const auto& match) { return match.demangled.find(mangled) == std::string::npos; });
+    // One symbol can be listed twice: a constructor has a complete-object and a
+    // base-object entry, both at the same address.
+    std::vector<void*> addresses;
+    for (const auto& match : matches) {
+        if (std::ranges::find(addresses, match.address) == addresses.end())
+            addresses.push_back(match.address);
+    }
+    if (addresses.size() != 1)
+        throw std::runtime_error(std::format("float-panel: ambiguous/missing native symbol {}", what));
+    return addresses.front();
+}
+
+CFunctionHook* installHook(HANDLE handle, const std::string& name, const std::string& mangled, const char* what, void* replacement) {
+    auto* hook = HyprlandAPI::createFunctionHook(handle, requireSymbol(handle, name, mangled, what), replacement);
+    if (!hook || !hook->hook())
+        throw std::runtime_error(std::format("float-panel: cannot hook {}", what));
+    return hook;
+}
+
+void installStateHooks(HANDLE handle) {
+    setMaximizedHook = installHook(handle, "setMaximized", "CXDGToplevelResource::setMaximized(bool)", "CXDGToplevelResource::setMaximized",
+                                   reinterpret_cast<void*>(hookSetMaximized));
+    setSizeHook = installHook(handle, "setSize", "CXDGToplevelResource::setSize(", "CXDGToplevelResource::setSize", reinterpret_cast<void*>(hookSetSize));
+}
+
+void installPlacementHooks(HANDLE handle) {
+    surfaceCtorHook = installHook(handle, "CSurfacePassElement", "CSurfacePassElement::CSurfacePassElement(",
+                                  "CSurfacePassElement::CSurfacePassElement", reinterpret_cast<void*>(hookSurfaceCtor));
+    windowSurfaceAtHook =
+        installHook(handle, "windowSurfaceAt", "Desktop::CViewHitTester::windowSurfaceAt(", "Desktop::CViewHitTester::windowSurfaceAt",
+                    reinterpret_cast<void*>(hookWindowSurfaceAt));
+    layoutMinSizeHook =
+        installHook(handle, "layoutMinSize", "CXDGToplevelResource::layoutMinSize()", "CXDGToplevelResource::layoutMinSize",
+                    reinterpret_cast<void*>(hookLayoutMinSize));
+    layoutMaxSizeHook =
+        installHook(handle, "layoutMaxSize", "CXDGToplevelResource::layoutMaxSize()", "CXDGToplevelResource::layoutMaxSize",
+                    reinterpret_cast<void*>(hookLayoutMaxSize));
 }
 
 } // namespace
@@ -442,6 +545,22 @@ void removeFunctionHooks(HANDLE handle) {
     if (setSizeHook) {
         HyprlandAPI::removeFunctionHook(handle, setSizeHook);
         setSizeHook = nullptr;
+    }
+    if (surfaceCtorHook) {
+        HyprlandAPI::removeFunctionHook(handle, surfaceCtorHook);
+        surfaceCtorHook = nullptr;
+    }
+    if (windowSurfaceAtHook) {
+        HyprlandAPI::removeFunctionHook(handle, windowSurfaceAtHook);
+        windowSurfaceAtHook = nullptr;
+    }
+    if (layoutMinSizeHook) {
+        HyprlandAPI::removeFunctionHook(handle, layoutMinSizeHook);
+        layoutMinSizeHook = nullptr;
+    }
+    if (layoutMaxSizeHook) {
+        HyprlandAPI::removeFunctionHook(handle, layoutMaxSizeHook);
+        layoutMaxSizeHook = nullptr;
     }
 }
 
@@ -523,8 +642,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     });
 
     try {
-        installSetMaximizedHook(handle);
+        installStateHooks(handle);
+        installPlacementHooks(handle);
     } catch (...) {
+        removeFunctionHooks(handle);
         focusReasonListener.reset();
         pointerButtonListener.reset();
         HyprlandAPI::removeEvent(handle, "float_panel.pointer_button");
@@ -537,14 +658,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         focusReasonEvent.reset();
         pointerButtonEvent.reset();
         throw;
-    }
-    {
-        auto sizeMatches = HyprlandAPI::findFunctionsByName(handle, "setSize");
-        std::erase_if(sizeMatches, [](const auto& m) { return m.demangled.find("CXDGToplevelResource::setSize(") == std::string::npos; });
-        if (sizeMatches.size() == 1) {
-            setSizeHook = HyprlandAPI::createFunctionHook(handle, sizeMatches[0].address, reinterpret_cast<void*>(hookSetSize));
-            if (setSizeHook) setSizeHook->hook();
-        }
     }
     truthfulMaximizeListener = Event::bus()->m_events.window.fullscreen.listen([](PHLWINDOW window) {
         pushTruthfulMaximizeState(window);

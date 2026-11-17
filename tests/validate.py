@@ -459,7 +459,7 @@ for bridge_function in ("window_semantics", "capabilities", "push_state"):
         f"native bridge binding must be registered and removed: {bridge_function}"
 assert 'unregisterLuaFunctions(pluginHandle);' in native_main, \
     "every native bridge binding must be removed on plugin exit"
-for hook in ("setMaximizedHook", "setSizeHook"):
+for hook in ("setMaximizedHook", "setSizeHook", "surfaceCtorHook", "windowSurfaceAtHook", "layoutMinSizeHook", "layoutMaxSizeHook"):
     assert f'removeFunctionHook(handle, {hook});' in native_main, \
         f"a patched compositor function must be unhooked: {hook}"
 assert 'removeFunctionHooks(pluginHandle);' in native_main, \
@@ -496,6 +496,19 @@ for required_lua_policy in (
     'initial_placement = "app-maximized"',
 ):
     assert required_lua_policy in lua, f"Lua client-request policy missing: {required_lua_policy}"
+for placement_contract in (
+    '"CXDGToplevelResource::setSize(", "CXDGToplevelResource::setSize"',
+    'Desktop::CViewHitTester::windowSurfaceAt(',
+    'CXDGToplevelResource::layoutMinSize()',
+    'CXDGToplevelResource::layoutMaxSize()',
+    'data.mainSurface',
+    'placed.pos  = data.pos - ring;',
+    'std::abs(ring.x - margin.x * 2) > 1',
+):
+    assert placement_contract in native_main, \
+        f"client decoration margins must be placed from the client's own geometry: {placement_contract}"
+assert 'size.x - ring.x * 2' not in native_main, \
+    "the configure must carry the window box as the content size, not a shrunk one"
 assert "minimize_request_handled" not in lua, \
     "a client minimize request must not be latched per window: the app never reports the matching unminimize"
 assert "window.workspace" in lua and '"client.minimize"' in lua, \
