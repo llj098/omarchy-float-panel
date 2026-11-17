@@ -175,6 +175,15 @@ hl.config({ general = { float_gaps = -1 } })
 
 local function ignore_window_minimum_size(window)
   if not window or window.mapped ~= true or window.hidden == true then return false end
+  -- A client that pins its window to one size renders for that size. Forcing the
+  -- compositor's minimum to 1x1 would let a later resize shrink the box below
+  -- the surface the client already laid out, and the client then draws past the
+  -- box: content scaled against a window it never agreed to. Nothing resizes
+  -- such a window, so the override has no purpose here.
+  if window_size_pinned(window) then
+    debug_log("geometry.pinned-skip", { action = "min-size", window = window.address })
+    return false
+  end
   return pcall(function()
     hl.dispatch(hl.dsp.window.set_prop({ prop = "min_size", value = "1 1", window = window }))
   end)
@@ -1301,6 +1310,11 @@ local function fit_window_to_floating_bounds(window, target_monitor, source_work
   if drag_strip and drag_strip.active(window) then return end
   if not window or window.mapped ~= true or window.hidden == true or window.floating ~= true then return end
   if (tonumber(window.fullscreen) or 0) ~= 0 then return end
+  -- Size-pinned windows are not ours to lay out; see window_persistence_policy.
+  if window_size_pinned(window) then
+    debug_window_action("geometry.pinned-skip", window, window.workspace, { action = "fit" })
+    return
+  end
 
   target_monitor = target_monitor or window.monitor
   source_workspace = source_workspace or window.workspace
@@ -1841,6 +1855,12 @@ local function window_persistence_policy(semantics)
   if semantics.override_redirect == true then return false, "override-redirect" end
   if semantics.transient == true then return false, "transient" end
   if semantics.has_parent == true then return false, "has-parent" end
+  -- A client that pins its window to a single size cannot follow a stored box:
+  -- the compositor clamps the resize away, or the box shrinks while the client
+  -- keeps drawing the surface it already laid out, so the page ends up rendered
+  -- against a box it never agreed to. Such a window owns its geometry outright:
+  -- no record, no restore, no fit.
+  if semantics.size_pinned == true then return false, "size-pinned" end
 
   local window_type = tostring(semantics.window_type or "unknown")
   if semantics.xwayland == false then return true, "independent-" .. window_type end
@@ -2186,6 +2206,12 @@ end
 
 local function restore_window_placement(window, workspace, record)
   if not record or (tonumber(window and window.fullscreen) or 0) ~= 0 then return false end
+  -- Belt and braces: a size-pinned client is never restored into a stored box,
+  -- even if an old record for its class is still on disk.
+  if window_size_pinned(window) then
+    debug_window_action("geometry.pinned-skip", window, workspace, { action = "restore" })
+    return false
+  end
   if debug_enabled then debug_window_action("record.restore", window, workspace, {
     slot = record.slot or "none", record = debug_record_key(placement_record_key(record.workspace, record.class, record.role)),
     value = format_record(record) }) end

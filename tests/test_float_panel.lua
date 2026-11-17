@@ -1081,6 +1081,45 @@ hl.plugin.float_panel.window_semantics = window_semantics_bridge
 hl.plugin.float_panel.capabilities = function() return { maximize_request_event = true } end
 dofile("hypr/float-panel.lua")
 
+-- A client that pins its window to a single size owns its geometry: the plugin
+-- must not relax its minimum size, must not claim a persistence slot, and must
+-- never move or resize it, because the compositor's box would then disagree
+-- with the surface the client already laid out.
+local pinned_chooser = persisted_window("0x5100", "PinnedChooser", 470, 230, 190, 130)
+native_semantics_by_address[pinned_chooser.address] = parent_semantics(nil, false)
+native_semantics_by_address[pinned_chooser.address].size_pinned = true
+local pinned_before = #dispatched
+handlers["window.open"](pinned_chooser)
+local pinned_dispatches = {}
+for index = pinned_before + 1, #dispatched do
+  local item = dispatched[index]
+  if item.params and item.params.window == pinned_chooser then table.insert(pinned_dispatches, item) end
+end
+for _, item in ipairs(pinned_dispatches) do
+  assert(item.kind == "float" or item.kind == "tag" or item.kind == "focus",
+    "a size-pinned window must receive only state and tag dispatches, not " .. tostring(item.kind))
+end
+assert(pinned_chooser.at.x == 470 and pinned_chooser.at.y == 230 and
+  pinned_chooser.size.x == 190 and pinned_chooser.size.y == 130,
+  "a size-pinned window must keep the application's own box")
+assert(not pinned_chooser.applied_props,
+  "a size-pinned window must not have its minimum size relaxed")
+assert(not table.concat(pinned_chooser.tags, "\n"):find("float%-panel%-geometry%-slot%-v1%-"),
+  "a size-pinned window must not claim a geometry slot")
+local pinned_file = assert(io.open((os.getenv("HOME") or "") .. "/.local/state/omarchy/float-panel-geometries", "r"))
+local pinned_state = pinned_file:read("*a")
+pinned_file:close()
+assert(not pinned_state:find("50696e6e656443686f6f736572", 1, true),
+  "a size-pinned window must never write a geometry record")
+
+active_workspace, active_monitor, active_window = ws1, own_monitor, pinned_chooser
+local pinned_keys = #dispatched
+binds["SUPER + LEFT"]()
+binds["SUPER + UP"]()
+binds["SUPER + DOWN"]()
+assert(#dispatched == pinned_keys and pinned_chooser.at.x == 470 and pinned_chooser.at.y == 230,
+  "Super+Left/Up/Down must leave a size-pinned window exactly where it is")
+
 -- A first-open record must capture the final post-fit application placement.
 local post_fit = persisted_window("0x5008", "PostFitPersist", 2000, 100, 200, 100)
 handlers["window.open"](post_fit)

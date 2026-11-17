@@ -537,8 +537,12 @@ assert '(tonumber(window.fullscreen) or 0) < 2' in lua, \
 # skip such a window or it drags it around.
 assert 'size_pinned' in native_main and 'layoutMaxSize' in native_main, \
     "the bridge must report the client's own size limits"
-assert lua.count('window_size_pinned(window)') >= 3, \
-    "maximize, snap and the titlebar reclaim must all respect a pinned size"
+assert lua.count('window_size_pinned(window)') >= 5, \
+    "maximize, snap, the titlebar reclaim, the work-area fit and the record restore must all respect a pinned size"
+assert 'return false, "size-pinned"' in lua and 'if semantics.size_pinned == true' in lua, \
+    "a pinned window must stay out of geometry persistence entirely"
+assert 'action = "min-size"' in lua, \
+    "relaxing the minimum size of a pinned window is what lets the box drift away from its surface"
 assert 'action = "toggle"' in lua, "Float maximize keeps its own toggle path"
 reset_calls = [line.strip() for line in lua.splitlines()
                if "reset_client_maximize(window)" in line and "local function" not in line]
