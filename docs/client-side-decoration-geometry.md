@@ -79,3 +79,15 @@ Private headless Hyprland, real pointer events, screenshots plus `hyprctl` facts
   pixels behind it. The ring is transparent for Chromium and a shadow for GTK, so
   this is invisible in practice; it is recorded here rather than patched with a
   further hook on `damageWindow`.
+- On a fractional monitor scale a client cannot express its frame margin exactly:
+  a 1426-logical-wide Chromium window is 2281.6 physical pixels, so the client
+  rounds its surface, its geometry and its margin independently. Hyprland stores
+  the window-geometry origin as an integer, so what it reports can be 1-2 logical
+  pixels short of the margin the client actually drew. The surface is then placed
+  that much too far towards the box and a hairline of the ring shows inside the
+  border, with the matching sub-2px error on pointer coordinates. Measured at
+  scale 1.6: Obsidian (ring exactly 10) is pixel-exact, a Chromium window at
+  1426x778 shows 1.9 logical pixels on all four sides, and the same Chromium
+  client at a size whose 1.6 multiple is whole (800x500) is exact again. The exact
+  origin is not recoverable from the compositor side; closing the last 2px needs
+  Hyprland itself to carry a fractional window geometry.
