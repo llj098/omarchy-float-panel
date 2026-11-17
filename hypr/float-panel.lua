@@ -468,7 +468,6 @@ window_surface_facts = function(window)
   local signature = table.concat({
     tostring(size.x), tostring(size.y), tostring(semantics.surface_width), tostring(semantics.surface_height),
     tostring(semantics.geometry_width), tostring(semantics.geometry_height), tostring(semantics.reserves_margins),
-    tostring(semantics.keeps_maximize_hint),
   }, ",")
   if surface_facts_reported[token] == signature then return end
   surface_facts_reported[token] = signature
@@ -489,7 +488,6 @@ window_surface_facts = function(window)
     buffer_scale = scale,
     geometry_w = semantics.geometry_width, geometry_h = semantics.geometry_height,
     reserves_margins = tostring(semantics.reserves_margins),
-    keeps_maximize_hint = tostring(semantics.keeps_maximize_hint),
   })
 end
 
@@ -1072,6 +1070,10 @@ end
 if native_focus_reason_event then
   hl.on("float_panel.focus_changed", function(window, reason)
     debug_window_action("event.focus_changed", window, window and window.workspace, { reason = reason })
+    -- These events carry the window as it is now, which is the only moment an
+    -- ordinary app-owned frame can be recorded: the rule-change event that fires
+    -- on a resize still holds the box from before that resize.
+    app_owned_sync(window)
     reveal_focused_maximized(window, tonumber(reason) or 0)
   end)
 end
@@ -1083,6 +1085,9 @@ local LEFT_BUTTON = 272
 if native_pointer_button_event then
   hl.on("float_panel.pointer_button", function(window, button, pressed)
     if pressed ~= true or tonumber(button) ~= LEFT_BUTTON then return end
+    -- A press is the last moment the window still has the box it is about to
+    -- change, and it is the press that reaches the app's own maximize control.
+    app_owned_sync(window)
     reveal_focused_maximized(window, 0)
   end)
 end

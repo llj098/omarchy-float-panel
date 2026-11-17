@@ -176,8 +176,8 @@ int luaPushWindowState(lua_State* state) {
     return 0;
 }
 
-bool clientReportsDecorationMargins(CXDGToplevelResource* self);
-bool keepsMaximizeHint(CXDGToplevelResource* self, PHLWINDOW window);
+bool               clientReportsDecorationMargins(CXDGToplevelResource* self);
+Vector2D           decorationRing(CXDGToplevelResource* self);
 
 int luaWindowSemantics(lua_State* state) {
     const std::string_view address = luaL_checkstring(state, 1);
@@ -279,10 +279,9 @@ int luaWindowSemantics(lua_State* state) {
         lua_setfield(state, -2, "buffer_height");
         lua_pushinteger(state, surface.scale);
         lua_setfield(state, -2, "buffer_scale");
-        // The window geometry the client set on its toplevel, plus the two facts
-        // that decide whether this window keeps the compositor's maximize hint:
-        // the margins it reserves around the geometry, and whether the hint has
-        // been latched for it. Raw compositor facts; the policy stays in Lua.
+        // The window geometry the client set on its toplevel and the ring it
+        // therefore reserves around it. Raw compositor facts; the policy stays in
+        // Lua.
         lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.x));
         lua_setfield(state, -2, "geometry_x");
         lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.y));
@@ -292,7 +291,6 @@ int luaWindowSemantics(lua_State* state) {
         lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.h));
         lua_setfield(state, -2, "geometry_height");
         setBoolean(state, "reserves_margins", clientReportsDecorationMargins(window->m_xdgSurface->m_toplevel.get()));
-        setBoolean(state, "keeps_maximize_hint", keepsMaximizeHint(window->m_xdgSurface->m_toplevel.get(), window));
     }
     return 1;
 }
@@ -310,34 +308,29 @@ int luaWindowSemantics(lua_State* state) {
 // or one that is mid-resize. That happens for every window at map time and must
 // never be mistaken for a decoration, because the maximize hint is latched for
 // the whole lifetime of a client that is thought to reserve margins.
-bool clientReportsDecorationMargins(CXDGToplevelResource* self) {
+Vector2D decorationRing(CXDGToplevelResource* self) {
     if (!self || !self->m_owner)
-        return false;
+        return Vector2D{};
 
     const auto& geometry = self->m_owner->m_current.geometry;
     if (geometry.w <= 0 || geometry.h <= 0)
-        return false;
+        return Vector2D{};
 
     const auto surface = self->m_owner->m_surface ? self->m_owner->m_surface->m_current.size : Vector2D{};
     const auto margin  = geometry.pos();
     const auto ring    = surface - geometry.size();
     if (margin.x <= 0 || margin.y <= 0)
-        return false;
+        return Vector2D{};
 
-    return std::abs(ring.x - margin.x * 2) <= 1 && std::abs(ring.y - margin.y * 2) <= 1;
+    if (std::abs(ring.x - margin.x * 2) > 1 || std::abs(ring.y - margin.y * 2) > 1)
+        return Vector2D{};
+
+    return margin;
 }
 
-// Once a client has shown that it reserves margins, it keeps the hint for its
-// whole lifetime: the hint is what makes the margins disappear, so re-deciding
-// after that would flip the client between two layouts.
-std::unordered_set<Desktop::View::CWindow*> marginClients;
-
-bool keepsMaximizeHint(CXDGToplevelResource* self, PHLWINDOW window) {
-    if (!window)
-        return false;
-    if (clientReportsDecorationMargins(self))
-        marginClients.insert(window.get());
-    return marginClients.contains(window.get());
+bool clientReportsDecorationMargins(CXDGToplevelResource* self) {
+    const auto ring = decorationRing(self);
+    return ring.x > 0 && ring.y > 0;
 }
 
 // A floating window's maximize truth is the window's own bit. A window can be
@@ -347,9 +340,7 @@ bool keepsMaximizeHint(CXDGToplevelResource* self, PHLWINDOW window) {
 // a float workspace wants, because there the maximizing window is only supposed
 // to cover its peers. So both state sources are honoured here, and the plugin
 // keeps the box.
-bool floatingMaximizeState(CXDGToplevelResource* self, PHLWINDOW window) {
-    if (keepsMaximizeHint(self, window))
-        return true;
+bool floatingMaximizeState(PHLWINDOW window) {
     const auto modes = Fullscreen::controller()->getFullscreenModes(window);
     return modes.internal == Fullscreen::FSMODE_MAXIMIZED || modes.client == Fullscreen::FSMODE_MAXIMIZED;
 }
@@ -372,7 +363,7 @@ uint32_t hookSetMaximized(CXDGToplevelResource* self, bool maximized) {
     if (!window->m_isFloating)
         return original(self, maximized);
 
-    return original(self, floatingMaximizeState(self, window));
+    return original(self, floatingMaximizeState(window));
 }
 
 CFunctionHook* setSizeHook = nullptr;
@@ -388,13 +379,24 @@ uint32_t hookSetSize(CXDGToplevelResource* self, const Vector2D& size) {
     const auto window = self ? self->m_window.lock() : nullptr;
 
     if (self && window && Fullscreen::controller()) {
-        const bool reallyMaximized = window->m_isFloating && floatingMaximizeState(self, window);
+        const bool reallyMaximized = window->m_isFloating && floatingMaximizeState(window);
         auto& states = self->m_pendingApply.states;
         const bool hasMaximized = std::ranges::find(states, XDG_TOPLEVEL_STATE_MAXIMIZED) != states.end();
         if (reallyMaximized && !hasMaximized)
             states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
         else if (!reallyMaximized && hasMaximized)
             std::erase(states, XDG_TOPLEVEL_STATE_MAXIMIZED);
+
+        // A client that draws its own decoration ring reports it as a margin on
+        // every side of its window geometry. Configure the content size instead:
+        // the surface the client then commits is exactly the box, so nothing it
+        // draws is clipped and the maximize state can stay truthful, which is
+        // what keeps the app's own window controls in step with the window.
+        if (window->m_isFloating && !reallyMaximized) {
+            const auto ring = decorationRing(self);
+            if (ring.x > 0 && ring.y > 0 && size.x > ring.x * 2 && size.y > ring.y * 2)
+                return original(self, {size.x - ring.x * 2, size.y - ring.y * 2});
+        }
     }
 
     return original(self, size);
@@ -596,7 +598,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     windowCreateListener = Event::bus()->m_events.window.create.listen([](PHLWINDOW window) { trackMaximizeRequests(window); });
     windowDestroyListener = Event::bus()->m_events.window.destroy.listen([](PHLWINDOWREF window) {
-        marginClients.erase(window.get());
         maximizeRequestListeners.erase(reinterpret_cast<uintptr_t>(window.get()));
     });
 
