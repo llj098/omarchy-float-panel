@@ -496,6 +496,8 @@ for required_lua_policy in (
     'initial_placement = "app-maximized"',
 ):
     assert required_lua_policy in lua, f"Lua client-request policy missing: {required_lua_policy}"
+assert 'for (const auto& window : Desktop::windowState()->windows())\n        trackMaximizeRequests(window);' in native_main, \
+    "reloading the plugin must bring the request bridge back for the windows that are already open"
 for placement_contract in (
     '"CXDGToplevelResource::setSize(", "CXDGToplevelResource::setSize"',
     'Desktop::CViewHitTester::windowSurfaceAt(',

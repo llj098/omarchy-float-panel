@@ -147,11 +147,16 @@ void trackMaximizeRequests(const PHLWINDOW& window) {
     if (!hasStateSurface(window))
         return;
 
+    const auto address = reinterpret_cast<uintptr_t>(window.get());
+    // A window this plugin already tracks keeps the listener it has.
+    if (maximizeRequestListeners.contains(address))
+        return;
+
     const auto reference = PHLWINDOWREF(window);
     const auto listener  = window->m_isX11 ?
          window->m_xwaylandSurface->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); forwardMinimizeRequest(reference); }) :
          window->m_xdgSurface->m_toplevel->m_events.stateChanged.listen([reference] { forwardMaximizeRequest(reference); forwardMinimizeRequest(reference); });
-    maximizeRequestListeners[reinterpret_cast<uintptr_t>(window.get())] = listener;
+    maximizeRequestListeners[address] = listener;
 }
 
 int luaCapabilities(lua_State* state) {
@@ -709,6 +714,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     windowDestroyListener = Event::bus()->m_events.window.destroy.listen([](PHLWINDOWREF window) {
         maximizeRequestListeners.erase(reinterpret_cast<uintptr_t>(window.get()));
     });
+    // Reloading this plugin (the normal deploy loop) must not leave the windows
+    // that are already open without their request bridge: the create event for
+    // them has long since fired, so their own window controls would ask the
+    // compositor for a maximize or a minimize and no Lua handler would hear it.
+    for (const auto& window : Desktop::windowState()->windows())
+        trackMaximizeRequests(window);
 
     pluginHandle = handle;
     return {
