@@ -282,10 +282,6 @@ int luaWindowSemantics(lua_State* state) {
         // The window geometry the client set on its toplevel and the ring it
         // therefore reserves around it. Raw compositor facts; the policy stays in
         // Lua.
-        lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.x));
-        lua_setfield(state, -2, "geometry_x");
-        lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.y));
-        lua_setfield(state, -2, "geometry_y");
         lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.w));
         lua_setfield(state, -2, "geometry_width");
         lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.h));
