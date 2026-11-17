@@ -1704,12 +1704,19 @@ do
         item.params.workspace == "special:omarchy-minimized-1" then moved = true end
   end
   assert(moved, "client minimize request must move to the per-workspace store")
+  -- The compositor applies that move immediately, so a stored window is no
+  -- longer on a regular workspace; that, and only that, makes a repeat inert.
   local after_first = #dispatched
+  minimized_client.workspace = special
   handlers["float_panel.minimize_request"](minimized_client, true)
-  assert(#dispatched == after_first, "repeated minimize requests must not move the same window twice")
-  handlers["float_panel.minimize_request"](minimized_client, false)
+  assert(#dispatched == after_first, "a stored window must not be moved into the store twice")
+  -- One minimize per window lifetime is not enough: the app never reports the
+  -- matching "unminimize", so once the window is back its own button must work
+  -- again without any other bookkeeping.
+  minimized_client.workspace = ws1
   handlers["float_panel.minimize_request"](minimized_client, true)
-  assert(#dispatched > after_first, "a later minimize request after release must be handled again")
+  assert(#dispatched > after_first, "the app's minimize button must keep working after a restore")
+  minimized_client.workspace = ws1
 
   local client_workspace = workspace(12, "12", false)
   client_workspace.monitor = own_monitor
@@ -1776,6 +1783,26 @@ for index = startup_before + 1, #dispatched do
     assert(item.kind ~= "fullscreen", "a maximized app-owned window must not be unmaximized by the plugin")
   end
 end
+
+-- That window was maximized before the plugin ever saw an ordinary frame, so
+-- there is no restore box to hand back. A Wayland client cannot resize its own
+-- toplevel and the compositor keeps no pre-maximize box for a floating window,
+-- so the app's own restore control must still produce a real box.
+maximized_app_owned.fullscreenClient = 1
+handlers["float_panel.window_changed"](maximized_app_owned)
+assert(not (maximized_app_owned.applied_props or {})["record"], "test setup: a maximized app-owned frame must not be recorded as a restore box")
+local restore_before = #dispatched
+handlers["float_panel.maximize_request"](maximized_app_owned, false)
+local gave_back_box = false
+for index = restore_before + 1, #dispatched do
+  local item = dispatched[index]
+  if (item.params and item.params.window) == maximized_app_owned and (item.kind == "resize" or item.kind == "move") then
+    gave_back_box = true
+  end
+end
+assert(gave_back_box, "an app-owned restore without a recorded box must still give the window a box back")
+assert((maximized_app_owned.size or {}).x and maximized_app_owned.size.x < 1990,
+    "the restored app-owned window must really shrink away from the maximized box")
 
 -- Explicit keyboard geometry commands keep working for app-owned windows, and
 -- the maximize key forwards to Hyprland's native maximize so the app's own

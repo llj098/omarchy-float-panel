@@ -176,6 +176,9 @@ int luaPushWindowState(lua_State* state) {
     return 0;
 }
 
+bool clientReportsDecorationMargins(CXDGToplevelResource* self);
+bool keepsMaximizeHint(CXDGToplevelResource* self, PHLWINDOW window);
+
 int luaWindowSemantics(lua_State* state) {
     const std::string_view address = luaL_checkstring(state, 1);
     const auto             window  = windowFromAddress(address);
@@ -255,15 +258,58 @@ int luaWindowSemantics(lua_State* state) {
     } else {
         setBoolean(state, "size_pinned", false);
     }
+    // Raw surface facts, for diagnosing a client that lays its page out for a
+    // different size than the box it was given: the compositor box, the size it
+    // last reported to the client, the buffer the client actually committed and
+    // the buffer scale it committed with. Purely factual, no policy here.
+    const auto reported = window->m_reportedSize;
+    lua_pushinteger(state, static_cast<lua_Integer>(reported.x));
+    lua_setfield(state, -2, "reported_width");
+    lua_pushinteger(state, static_cast<lua_Integer>(reported.y));
+    lua_setfield(state, -2, "reported_height");
+    if (window->m_xdgSurface && window->m_xdgSurface->m_surface) {
+        const auto& surface = window->m_xdgSurface->m_surface->m_current;
+        lua_pushinteger(state, static_cast<lua_Integer>(surface.size.x));
+        lua_setfield(state, -2, "surface_width");
+        lua_pushinteger(state, static_cast<lua_Integer>(surface.size.y));
+        lua_setfield(state, -2, "surface_height");
+        lua_pushinteger(state, static_cast<lua_Integer>(surface.bufferSize.x));
+        lua_setfield(state, -2, "buffer_width");
+        lua_pushinteger(state, static_cast<lua_Integer>(surface.bufferSize.y));
+        lua_setfield(state, -2, "buffer_height");
+        lua_pushinteger(state, surface.scale);
+        lua_setfield(state, -2, "buffer_scale");
+        // The window geometry the client set on its toplevel, plus the two facts
+        // that decide whether this window keeps the compositor's maximize hint:
+        // the margins it reserves around the geometry, and whether the hint has
+        // been latched for it. Raw compositor facts; the policy stays in Lua.
+        lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.x));
+        lua_setfield(state, -2, "geometry_x");
+        lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.y));
+        lua_setfield(state, -2, "geometry_y");
+        lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.w));
+        lua_setfield(state, -2, "geometry_width");
+        lua_pushinteger(state, static_cast<lua_Integer>(window->m_xdgSurface->m_current.geometry.h));
+        lua_setfield(state, -2, "geometry_height");
+        setBoolean(state, "reserves_margins", clientReportsDecorationMargins(window->m_xdgSurface->m_toplevel.get()));
+        setBoolean(state, "keeps_maximize_hint", keepsMaximizeHint(window->m_xdgSurface->m_toplevel.get(), window));
+    }
     return 1;
 }
 
-// A client that draws its own decoration margins reports them as the surface
-// area outside its window geometry (the drop shadow ring and its resize grips).
-// Those margins belong outside the window box, which Hyprland does not model: it
-// treats the box as the whole surface and clips everything past it. Such a client
-// can only be shown intact while it believes it is maximized, because that is the
-// state in which it stops reserving margins. Every other client gets the truth.
+// A client that draws its own decoration margins reports them as a symmetric
+// ring: the window geometry sits inside the surface with the same margin on
+// every side (the drop shadow plus its resize grips). Those margins belong
+// outside the window box, which Hyprland does not model: it treats the box as
+// the whole surface and clips everything past it. Such a client can only be
+// shown intact while it believes it is maximized, because that is the state in
+// which it stops reserving margins.
+//
+// A surface that is merely a different size than the geometry is not a ring: it
+// is a client that has not yet committed a frame for the box it was just given,
+// or one that is mid-resize. That happens for every window at map time and must
+// never be mistaken for a decoration, because the maximize hint is latched for
+// the whole lifetime of a client that is thought to reserve margins.
 bool clientReportsDecorationMargins(CXDGToplevelResource* self) {
     if (!self || !self->m_owner)
         return false;
@@ -273,7 +319,12 @@ bool clientReportsDecorationMargins(CXDGToplevelResource* self) {
         return false;
 
     const auto surface = self->m_owner->m_surface ? self->m_owner->m_surface->m_current.size : Vector2D{};
-    return geometry.pos() != Vector2D{} || surface != geometry.size();
+    const auto margin  = geometry.pos();
+    const auto ring    = surface - geometry.size();
+    if (margin.x <= 0 || margin.y <= 0)
+        return false;
+
+    return std::abs(ring.x - margin.x * 2) <= 1 && std::abs(ring.y - margin.y * 2) <= 1;
 }
 
 // Once a client has shown that it reserves margins, it keeps the hint for its

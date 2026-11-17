@@ -490,13 +490,16 @@ for required_lua_policy in (
     'hl.on("float_panel.maximize_request"',
     'hl.on("float_panel.minimize_request"',
     "pending_startup_maximize",
-    "minimize_request_handled",
     '"client.minimize"',
     "persistence_eligible and not record",
     "startup_maximize and maximize_geometric_window(window, workspace)",
     'initial_placement = "app-maximized"',
 ):
     assert required_lua_policy in lua, f"Lua client-request policy missing: {required_lua_policy}"
+assert "minimize_request_handled" not in lua, \
+    "a client minimize request must not be latched per window: the app never reports the matching unminimize"
+assert "window.workspace" in lua and '"client.minimize"' in lua, \
+    "a client minimize request must be gated by the window's own workspace"
 assert not (ROOT / "native" / "src" / "window_policy.hpp").exists()
 assert not (ROOT / "native" / "tests" / "test_window_policy.cpp").exists()
 assert "wechat" not in native_main.lower() and "m_title" not in native_main, \

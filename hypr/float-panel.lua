@@ -212,7 +212,6 @@ local monitor_bounds_cache = {}
 local pending_startup_maximize = {}
 local opened_window_tokens = {}
 local window_floating_bounds
-local minimize_request_handled = {}
 local debug_window_details
 local geometry_dispatch
 local restore_geometric_max
@@ -447,6 +446,51 @@ local function debug_window_action(event, window, workspace, fields)
   fields.focused_workspace = focused_workspace and focused_workspace.name or "nil"
   fields.focused_monitor = focused_monitor and focused_monitor.name or "nil"
   debug_log(event, fields)
+end
+
+-- A window whose committed surface does not match the box it was given is drawn
+-- stretched or clipped by the compositor, which looks like a page that is scaled
+-- against a window it never agreed to. Report the raw numbers once per window so
+-- a mismatch is measured instead of guessed; deciding what to do about it is a
+-- separate step.
+local surface_facts_reported = {}
+window_surface_facts = function(window)
+  if not window then return end
+  local token = window.stable_id ~= nil and ("stable:" .. tostring(window.stable_id)) or tostring(window.address or "")
+  if token == "" then return end
+  local semantics = read_native_window_semantics(window)
+  if type(semantics) ~= "table" or semantics.surface_width == nil then return end
+  local scale = tonumber(semantics.buffer_scale) or 0
+  local size = window.size
+  if scale <= 0 or not size then return end
+  -- One line per distinct fact set: a repeated frame with identical numbers says
+  -- nothing, a changed one is the interesting case.
+  local signature = table.concat({
+    tostring(size.x), tostring(size.y), tostring(semantics.surface_width), tostring(semantics.surface_height),
+    tostring(semantics.geometry_width), tostring(semantics.geometry_height), tostring(semantics.reserves_margins),
+    tostring(semantics.keeps_maximize_hint),
+  }, ",")
+  if surface_facts_reported[token] == signature then return end
+  surface_facts_reported[token] = signature
+  -- surface_width is the surface's logical size; the buffer is what the client
+  -- really rasterized, so buffer/surface is the ratio it rendered at.
+  local surface_w = tonumber(semantics.surface_width) or 0
+  local surface_h = tonumber(semantics.surface_height) or 0
+  local mismatch = math.abs(surface_w - (tonumber(size.x) or 0)) > 2 or
+    math.abs(surface_h - (tonumber(size.y) or 0)) > 2
+  local dpr = surface_w > 0 and ((tonumber(semantics.buffer_width) or 0) / surface_w) or 0
+  debug_window_action("geometry.surface-facts", window, window.workspace, {
+    mismatch = tostring(mismatch),
+    window_w = size.x, window_h = size.y,
+    surface_w = surface_w, surface_h = surface_h,
+    raster_ratio = string.format("%.3f", dpr),
+    reported_w = semantics.reported_width, reported_h = semantics.reported_height,
+    buffer_w = semantics.buffer_width, buffer_h = semantics.buffer_height,
+    buffer_scale = scale,
+    geometry_w = semantics.geometry_width, geometry_h = semantics.geometry_height,
+    reserves_margins = tostring(semantics.reserves_margins),
+    keeps_maximize_hint = tostring(semantics.keeps_maximize_hint),
+  })
 end
 
 local function debug_window_geometry(event, window, workspace, fields)
@@ -924,6 +968,30 @@ local function set_client_maximize(window, maximize)
   app_owned_push_state(window)
 end
 
+-- The box a restore gives back when no ordinary frame was ever recorded: the app
+-- arrived maximized, or maximized itself before this module saw it. A Wayland
+-- client cannot resize its own toplevel and Hyprland keeps no pre-maximize box
+-- for a floating window, so without this the app's own restore control would
+-- only clear its bit and leave the window at the maximized box for good. The
+-- box used is the one this desktop gives a new floating window: the middle 60%
+-- of the work area.
+local function app_owned_restore_fallback(window)
+  local bounds = window_floating_bounds(window)
+  local at, size = window and window.at or nil, window and window.size or nil
+  if not bounds or not at or not size then return nil end
+  local covers = tonumber(size.x) >= bounds.width - 1 and tonumber(size.y) >= bounds.height - 1
+  if not covers then return nil end
+  local width = math.max(1, math.floor(bounds.width * 0.6 + 0.5))
+  local height = math.max(1, math.floor(bounds.height * 0.6 + 0.5))
+  debug_log("geometry.app-owned-restore-default", { window = tostring(window.address or "") })
+  return {
+    x = bounds.left + math.floor((bounds.width - width) / 2),
+    y = bounds.top + math.floor((bounds.height - height) / 2),
+    width = width,
+    height = height,
+  }
+end
+
 local function app_owned_maximize(window)
   if not window or not titlebar_excluded(window) then return false end
   set_client_maximize(window, true)
@@ -942,6 +1010,7 @@ local function app_owned_unmaximize(window)
   if not window or not titlebar_excluded(window) then return false end
   local token = geometry_window_token(window)
   local box = token and app_owned_last[token] or nil
+  box = box or app_owned_restore_fallback(window)
   if token and box then app_owned_giveback[token] = box end
   set_client_maximize(window, false)
   app_owned_restore_to(window, box)
@@ -1061,15 +1130,15 @@ if native_minimize_request_event then
   hl.on("float_panel.minimize_request", function(window, requested)
     if not window or window.mapped ~= true then return end
     local token = geometry_window_token(window)
-    if not token then return end
-    if not requested then
-      minimize_request_handled[token] = nil
-      return
-    end
-    if minimize_request_handled[token] or not geometry_dispatch then return end
+    if not token or not requested or not geometry_dispatch then return end
+    -- The window's own workspace is the guard against a second move: a stored
+    -- window is no longer on a regular workspace, so the same request cannot
+    -- park it twice. Nothing else may latch here: the compositor hands the
+    -- request over once per press, and an app never reports the matching
+    -- "unminimize", so a latched flag would allow exactly one minimize per
+    -- window for the rest of its life.
     local workspace = window.workspace
     if not workspace_is_regular(workspace) then return end
-    minimize_request_handled[token] = true
     debug_window_action("event.minimize_request", window, workspace, {})
     geometry_dispatch("move", {
       workspace = "special:omarchy-minimized-" .. tostring(workspace.id), follow = false, window = window,
@@ -2346,6 +2415,7 @@ if native_float_panel then
       -- Raw floating/rules/openLate facts; public window.open precedes final visibility.
       hl.on("float_panel.window_changed", function(window)
         debug_window_geometry("event.window_changed", window, window and window.workspace, {})
+        window_surface_facts(window)
         app_owned_sync(window)
         reconcile_drag_strip(window)
       end)
@@ -2619,7 +2689,6 @@ hl.on("window.open", function(window)
   local startup_maximize = token and pending_startup_maximize[token] == true or false
   if token then
     pending_startup_maximize[token] = nil
-    minimize_request_handled[token] = nil
     opened_window_tokens[token] = true
   end
   ignore_window_minimum_size(window)
@@ -2687,6 +2756,7 @@ hl.on("window.open", function(window)
     requested_maximize = startup_maximize,
     restored_intent = record and record.intent or "none",
   })
+  window_surface_facts(window)
 end)
 
 hl.on("window.update_rules", function(window)
@@ -2741,7 +2811,6 @@ hl.on("window.close", function(window)
   local token = geometry_window_token(window)
   if token then
     pending_startup_maximize[token] = nil
-    minimize_request_handled[token] = nil
     opened_window_tokens[token] = nil
     app_owned_last[token] = nil
     app_owned_restoring[token] = nil
@@ -2758,8 +2827,6 @@ hl.on("window.close", function(window)
 end)
 
 hl.on("window.destroy", function(window)
-  local token = geometry_window_token(window)
-  if token then minimize_request_handled[token] = nil end
   debug_window_geometry("event.window_destroy", window, window and window.workspace, {})
 end)
 hl.on("monitor.added", function(monitor) debug_monitor("event.monitor_added", monitor) end)
