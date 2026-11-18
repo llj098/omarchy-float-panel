@@ -508,6 +508,7 @@ for placement_contract in (
     'data.mainSurface',
     'placed.pos  = data.pos - ring;',
     'std::abs(ring.x - margin.x * 2) > 1',
+    'placed.clipBox = CBox{data.pos - monitor->m_position, {data.w, data.h}}.scale(monitor->m_scale).round();',
 ):
     assert placement_contract in native_main, \
         f"client decoration margins must be placed from the client's own geometry: {placement_contract}"

@@ -38,7 +38,7 @@ application knowledge and no configuration:
 | Hook | Purpose |
 | --- | --- |
 | `CXDGToplevelResource::setSize` | the configure carries the box, which is the content size |
-| `CSurfacePassElement::CSurfacePassElement` | the surface is placed at `box − ring` and covers `box + ring`; popups keep Hyprland's own placement |
+| `CSurfacePassElement::CSurfacePassElement` | the surface is placed at `box − ring`, covers `box + ring`, and is clipped to the box; popups keep Hyprland's own placement |
 | `Desktop::CViewHitTester::windowSurfaceAt` | pointer coordinates are shifted by the same ring |
 | `CXDGToplevelResource::layoutMinSize` / `layoutMaxSize` | the client's declared limits are content sizes, not content plus frame |
 
@@ -52,6 +52,40 @@ Because the margin is part of the surface the client already committed, this nee
 no state, no per-window bookkeeping and no policy in Lua: the box stays the content
 rect everywhere else in the plugin (persistence, maximize, minimize, snapping), and
 Lua keeps every decision.
+
+## The frame is not drawn outside the window
+
+The ring is the client's own decoration, and this compositor draws the window frame
+itself (border, gaps, shadow when enabled). Showing the client's frame as well puts
+a second frame around every such window: a Chromium or Electron window paints a
+faint dark band across the whole ring, which is invisible over a dark wallpaper and
+clearly visible over a light one, and a GTK round-corner client paints a real drop
+shadow there.
+
+So the surface pass clips the surface to the window box: `clipBox` is the renderer's
+scissor, in output-local scaled pixels, and it is set to the box the surface was
+placed against. The client keeps drawing its frame — that is its business and its
+resize band sits inside the geometry anyway — but what lands outside the window box
+is not composited. Input is untouched: pointer coordinates are still shifted by the
+same ring, and the client's resize band is inside the geometry, so edge resizing
+keeps working.
+
+This is not app-specific: it holds for any client that commits a window geometry
+smaller than its surface. There is no configuration value and no application
+knowledge involved.
+
+The negotiation cannot be used instead. Hyprland implements `zxdg_decoration` and
+answers `MODE_SERVER_SIDE` to every request (`src/protocols/XDGDecoration.cpp`:
+the request is ignored and the server-side mode is sent back), but Chromium never
+reads that answer: `WaylandToplevelWindow::OnDecorationModeChanged` is only called
+from its own preference changes, so the client keeps its frame no matter what the
+compositor says. The app-side lever that does exist is Chromium's *Use system title
+bar and borders* preference (`browser.custom_chrome_frame = false`), and it removes
+the frame and the ring with it — measured: `geometry == surface`, no margins. The
+cost is that Chromium then stops drawing its own window controls, and this
+compositor draws no titlebar to replace them, so the window loses its minimise,
+maximise and close buttons. Clipping keeps the client's controls and removes only
+the pixels outside the window.
 
 Popups are left to Hyprland on purpose. Its popup pass already draws the window
 surface at `box − geometry origin` before placing the popups, so a popup is drawn
@@ -69,6 +103,15 @@ Private headless Hyprland, real pointer events, screenshots plus `hyprctl` facts
   1050×980`, and the content starts exactly at the box edge (border outside it, ring
   over the gap);
 - a click 200px right of the box edge reaches the page as `clientX = 200`, not 190;
+- on a light grey backdrop at scale 1.6, an unmaximized Chromium window darkens the
+  pixels outside its border by a flat 5/255 across the whole ring; with the clip the
+  same pixels differ from the backdrop by 0 (screenshots of the window in place and
+  of the same area with the window moved away, compared pixel by pixel);
+- a window that moves away repaints its old ring area completely, and the window at
+  its new position is clipped the same way;
+- pointer coordinates stay exact: a click 100 logical pixels right of and 99 below
+  the page origin arrives as `clientX = 100, clientY = 99`, and one 400/305 away as
+  `clientX = 400, clientY = 305`;
 - Obsidian's own window controls work through real clicks: maximize covers the work
   area (`[10,10] 1580×980`), restore returns to the exact previous box, minimize
   parks the window in the per-workspace store twice in a row, close closes;
@@ -81,12 +124,8 @@ Private headless Hyprland, real pointer events, screenshots plus `hyprctl` facts
   window geometry, and are not touched.
 - A workspace slide clips the ring to the window bounding box for the duration of
   the animation.
-- Damage on window movement comes from Hyprland's own window box. With the
-  compositor shadow enabled (the default) that box already covers the ring; with
-  shadows disabled, a moving ring client can leave up to one frame margin of stale
-  pixels behind it. The ring is transparent for Chromium and a shadow for GTK, so
-  this is invisible in practice; it is recorded here rather than patched with a
-  further hook on `damageWindow`.
+- Damage still comes from the surface element's box, which spans the ring, so a ring
+  client that moves repaints the ring it just vacated (measured, no stale pixels).
 - A window that the plugin decorates with its own titlebar keeps that decoration
   inside the window box, so a ring client's top margin overlaps the bottom of the
   titlebar by one frame margin. The client's ring cannot be dropped there without
@@ -99,10 +138,11 @@ Private headless Hyprland, real pointer events, screenshots plus `hyprctl` facts
   rounds its surface, its geometry and its margin independently. Hyprland stores
   the window-geometry origin as an integer, so what it reports can be 1-2 logical
   pixels short of the margin the client actually drew. The surface is then placed
-  that much too far towards the box and a hairline of the ring shows inside the
-  border, with the matching sub-2px error on pointer coordinates. Measured at
-  scale 1.6: Obsidian (ring exactly 10) is pixel-exact, a Chromium window at
-  1426x778 shows 1.9 logical pixels on all four sides, and the same Chromium
-  client at a size whose 1.6 multiple is whole (800x500) is exact again. The exact
-  origin is not recoverable from the compositor side; closing the last 2px needs
-  Hyprland itself to carry a fractional window geometry.
+  that much too far towards the box: a hairline of the ring shows inside the border
+  (the band the client drew there is faint, but it is inside the window, so the clip
+  does not remove it) and pointer coordinates carry the matching sub-2px error.
+  Measured at scale 1.6: Obsidian (ring exactly 10) is pixel-exact, a Chromium
+  window at 1426x778 shows 1.9 logical pixels on all four sides, and the same
+  Chromium client at a size whose 1.6 multiple is whole (800x500) is exact again.
+  The exact origin is not recoverable from the compositor side; closing the last 2px
+  needs Hyprland itself to carry a fractional window geometry.

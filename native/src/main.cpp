@@ -19,6 +19,7 @@
 #include <src/protocols/core/Compositor.hpp>
 #include <src/desktop/state/WindowState.hpp>
 #include <src/desktop/view/Window.hpp>
+#include <src/output/Monitor.hpp>
 #include <src/render/pass/SurfacePassElement.hpp>
 #include <src/event/EventBus.hpp>
 #include <src/plugins/PluginAPI.hpp>
@@ -354,6 +355,13 @@ Vector2D windowDecorationRing(PHLWINDOW window) {
 // and is placed so that the geometry lands exactly on the window box; the frame
 // then falls outside it, over the gap.
 //
+// The frame is the client's decoration, not the window: it is drawn in the ring
+// between the window geometry and the surface edge. The compositor draws its own
+// frame around the window box, so the ring is clipped to the geometry instead of
+// being painted over the gap: a client that draws its own drop shadow (Chromium
+// and Electron apps draw one for their resize border) would otherwise put a
+// second, redundant frame around the window, outside the compositor's border.
+//
 // The margin comes from the client's own commit, so nothing here needs state, a
 // configuration value, or knowledge of any application.
 CFunctionHook* surfaceCtorHook = nullptr;
@@ -376,6 +384,11 @@ void hookSurfaceCtor(CSurfacePassElement* self, const CSurfacePassElement::SRend
         // the same origin shift and keeps its own size.
         placed.w = data.w + ring.x * 2;
         placed.h = data.h + ring.y * 2;
+        // `clipBox` is the renderer's scissor in output-local scaled pixels, the
+        // same space the surface box is drawn in. Keep it on the window box so
+        // only the window geometry is drawn.
+        if (const auto monitor = data.pMonitor.lock())
+            placed.clipBox = CBox{data.pos - monitor->m_position, {data.w, data.h}}.scale(monitor->m_scale).round();
     }
     original(self, placed);
 }
