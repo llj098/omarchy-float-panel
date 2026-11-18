@@ -1,14 +1,10 @@
-/* Client-side decoration shadow ring, removed for Hyprland.
+/* GTK3's own window shadow, removed.
  *
- * Hyprland renders a window box as the whole client surface and clips anything
- * past it, so it has no room for the transparent shadow ring that GTK reserves
- * around a client-side decorated window. Hyprland's workaround is to tell every
- * client it is maximized, which makes GTK drop the ring - and with it the
- * truthful maximize state that the window's own buttons need.
- *
- * With this rule GTK computes a zero shadow width; its surface is exactly the
- * window box, so the compositor can send a truthful maximize state and the
- * client's own controls follow it.
+ * This is a cosmetic choice, not a workaround: float-panel places a client's
+ * window geometry on the window box, so the shadow GTK reserves around it is
+ * drawn outside the window, over the gap, the way a normal compositor shows it.
+ * Zeroing it here drops the shadow and the rounded corners and leaves GTK3's
+ * frame flush with the window box.
  *
  * Install to ~/.config/gtk-3.0/gtk.css and restart the affected applications.
  */

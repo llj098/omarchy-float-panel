@@ -190,21 +190,25 @@ state change makes a toolkit re-lay itself out while it still holds the previous
 box, which pushes the surface past the window and shifts the frame and the
 right-hand controls.
 
-A client that draws client-side decorations reserves a transparent shadow ring
-around its window geometry, and Hyprland treats that window box as the whole
-surface and clips everything beyond it. Telling such a client the truth would move
-its content inward and cut off its right and bottom edge, so the bridge keeps the
-hint for exactly those clients: it recognizes them by the surface area their
-window geometry leaves out and remembers them for their lifetime. GTK4 always
-reserves at least its resize-handle width, so a GTK4 application (Nautilus,
-`org.gnome.*`) keeps its own headerbar, its own working buttons and accurate
-geometry, but its middle button keeps the "restore" glyph while the window floats.
-Apps whose client chrome uses no shadow ring - Chromium, Qt, X11, and GTK3 with
-the rule below - get the truthful state.
+A client that draws client-side decorations declares a window geometry smaller
+than the surface it commits; the margin between them is its own frame — the drop
+shadow and the clear band a resize grip needs. Hyprland draws such a surface at
+the window box origin and treats the box as the whole surface, which pushes the
+content inward and cuts its right and bottom edge. The bridge removes that
+mismatch instead of hiding it: the configure carries the box as the content size,
+the surface is placed at `box − ring` and covers `box + ring`, pointer coordinates
+are shifted with it, and the client's own minimum/maximum sizes stop being padded
+by the ring. The ring therefore lands outside the window, over the gap, and the
+maximize state stays truthful for every client — no latched hint, no per-client
+special case, no application knowledge. [docs/client-side-decoration-geometry.md](docs/client-side-decoration-geometry.md)
+records the protocol behaviour, why this cannot be expressed from Lua, and what
+stays untouched (XWayland, popups, a fractional-scale residue of up to 2 logical
+pixels).
 
-GTK3 reserves the same ring unless its theme says otherwise, so give it a zero
-shadow width. Install `gtk/gtk.css` as `~/.config/gtk-3.0/gtk.css` and restart the
-GTK3 applications:
+`gtk/gtk.css` is not needed for correctness any more; it only removes GTK3's own
+shadow entirely, and the rounded corners with it. Install it as
+`~/.config/gtk-3.0/gtk.css` and restart the GTK3 applications if that is the look
+you want:
 
 ```css
 decoration {
@@ -213,11 +217,6 @@ decoration {
   border-radius: 0;
 }
 ```
-
-This changes nothing visually on this desktop: Omarchy on Hyprland never shows
-those shadows, because every client is told it is maximized. It only stops GTK3
-from reserving room the compositor cannot represent, which is what lets its
-buttons follow the real state with the frame still hugging the window.
 
 Decide per app which chrome owns the controls:
 

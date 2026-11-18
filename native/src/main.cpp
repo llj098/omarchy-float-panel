@@ -621,7 +621,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     focusReasonListener = Event::bus()->m_events.window.active.listen([](PHLWINDOW window, Desktop::eFocusReason reason) {
         if (!focusReasonEvent || !window)
             return;
-        focusReasonEvent->emit({PHLWINDOWREF(window), static_cast<int>(reason)});
+        (void)focusReasonEvent->emit({PHLWINDOWREF(window), static_cast<int>(reason)});
     });
 
     pointerButtonEvent = makeShared<CustomEvent>(
@@ -642,8 +642,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         if (!pointerButtonEvent)
             return;
         const auto window = g_pInputManager ? g_pInputManager->m_lastMouseFocus.lock() : nullptr;
-        pointerButtonEvent->emit({PHLWINDOWREF(window), static_cast<int>(event.button),
-                                  event.state == WL_POINTER_BUTTON_STATE_PRESSED});
+        (void)pointerButtonEvent->emit({PHLWINDOWREF(window), static_cast<int>(event.button),
+                                        event.state == WL_POINTER_BUTTON_STATE_PRESSED});
     });
 
     try {

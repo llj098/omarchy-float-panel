@@ -53,6 +53,14 @@ no state, no per-window bookkeeping and no policy in Lua: the box stays the cont
 rect everywhere else in the plugin (persistence, maximize, minimize, snapping), and
 Lua keeps every decision.
 
+Popups are left to Hyprland on purpose. Its popup pass already draws the window
+surface at `box − geometry origin` before placing the popups, so a popup is drawn
+relative to the same origin this plugin now uses for the main surface; shifting the
+pointer coordinate with the same margin makes popup input agree with where the
+popup is drawn. Upstream's own popup hit test works from the unshifted box, so
+before this change a menu on a ring client was hit-tested one frame margin away
+from where it was drawn.
+
 ## Verification
 
 Private headless Hyprland, real pointer events, screenshots plus `hyprctl` facts:
@@ -79,6 +87,13 @@ Private headless Hyprland, real pointer events, screenshots plus `hyprctl` facts
   pixels behind it. The ring is transparent for Chromium and a shadow for GTK, so
   this is invisible in practice; it is recorded here rather than patched with a
   further hook on `damageWindow`.
+- A window that the plugin decorates with its own titlebar keeps that decoration
+  inside the window box, so a ring client's top margin overlaps the bottom of the
+  titlebar by one frame margin. The client's ring cannot be dropped there without
+  moving its content; every client on this desktop that draws a ring is excluded
+  from the plugin titlebar, so this is a theoretical case.
+- A single-window screen capture uses the window box, so it cuts the ring that the
+  surface draws outside it. Monitor captures are unaffected.
 - On a fractional monitor scale a client cannot express its frame margin exactly:
   a 1426-logical-wide Chromium window is 2281.6 physical pixels, so the client
   rounds its surface, its geometry and its margin independently. Hyprland stores
