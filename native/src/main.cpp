@@ -428,8 +428,12 @@ void hookDamageSurface(Render::IHyprRenderer* self, SP<CWLSurfaceResource> surfa
     const auto original  = reinterpret_cast<DamageSurfaceFn>(damageSurfaceHook->m_original);
     const auto wlSurface = Desktop::View::CWLSurface::fromResource(surface);
     const auto view      = wlSurface ? wlSurface->view() : SP<Desktop::View::IView>{};
-    const auto window    = view ? Desktop::View::CWindow::fromView(view) : PHLWINDOW{};
-    const auto ring      = windowDecorationRing(window);
+    // Only a window's own surface resolves to a window here. A subsurface's view
+    // is the subsurface, and the ring of the window it hangs in is not reachable
+    // from it; the clients that draw a frame around their geometry do not commit
+    // subsurfaces, so nothing is drawn with one origin and damaged with another.
+    const auto window = view ? Desktop::View::CWindow::fromView(view) : PHLWINDOW{};
+    const auto ring   = windowDecorationRing(window);
 
     if (ring.x <= 0 || ring.y <= 0)
         return original(self, surface, x, y, scale);

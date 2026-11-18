@@ -816,7 +816,14 @@ assert(not side_tag(snap_probe) and snap_probe.at.x == 200 and snap_probe.at.y =
 snap_probe.at, snap_probe.size = { x = 250, y = 180 }, { x = 360, y = 260 }
 binds["SUPER + UP"]()
 assert(geometric_tag(snap_probe) and snap_probe.size.x == 946, "Up from free must still maximize")
+local before_snap_from_max = #dispatched
 binds["SUPER + LEFT"]()
+local snap_from_max_resizes = 0
+for index = before_snap_from_max + 1, #dispatched do
+  if dispatched[index].kind == "resize" then snap_from_max_resizes = snap_from_max_resizes + 1 end
+end
+assert(snap_from_max_resizes == 1,
+  "snapping a maximized window must resize it once: the pre-max box is remembered, not applied on the way")
 assert(snap_probe.size.x == 466 and side_tag(snap_probe):find("p250%-p180%-p360%-p260$"),
   "snapping a maximized window must save the pre-max free box")
 binds["SUPER + DOWN"]()

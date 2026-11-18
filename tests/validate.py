@@ -498,6 +498,15 @@ for required_lua_policy in (
     assert required_lua_policy in lua, f"Lua client-request policy missing: {required_lua_policy}"
 assert 'for (const auto& window : Desktop::windowState()->windows())\n        trackMaximizeRequests(window);' in native_main, \
     "reloading the plugin must bring the request bridge back for the windows that are already open"
+for switch_contract in (
+    "if maximum then remove_window_tag(window, maximum.raw) end",
+    "set_client_maximize(window, false, false)",
+    'hl.dsp.window.fullscreen({ mode = "fullscreen", action = "unset", window = window })',
+    "snap_restore = snap_restore_geometry(window)",
+    'direction == "l" and "left" or "right", snap_restore)',
+):
+    assert switch_contract in lua, \
+        f"a half/maximize switch must apply one box and leave fullscreen first: {switch_contract}"
 for geometry_fact in ('"geometry_x"', '"geometry_y"', '"geometry_width"', '"geometry_height"'):
     assert geometry_fact in native_main, f"the placement input must stay observable: {geometry_fact}"
 for placement_contract in (

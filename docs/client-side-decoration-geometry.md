@@ -158,6 +158,11 @@ Private headless Hyprland, real pointer events, screenshots plus `hyprctl` facts
   titlebar) still comes from the window box, which is exactly the area the clipped
   surface covers, so a ring client that moves repaints the ring it just vacated
   (measured, no stale pixels).
+- The damage origin is corrected for a window's own surface. A *subsurface* carries
+  no window of its own, so its damage keeps the compositor's origin; the clients
+  that commit a window geometry smaller than their surface (Chromium, Electron) do
+  not commit subsurfaces, so no window is drawn with one origin and damaged with
+  the other.
 - A window that the plugin decorates with its own titlebar keeps that decoration
   inside the window box, so a ring client's top margin overlaps the bottom of the
   titlebar by one frame margin. The client's ring cannot be dropped there without

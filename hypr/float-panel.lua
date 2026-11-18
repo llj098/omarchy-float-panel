@@ -919,14 +919,15 @@ local function app_owned_sync(window, force_maximized)
         width = nearest_integer(width), height = nearest_integer(height),
       }
     end
-    return
+    return false
   end
-  if not bounds or at_work_area then return end
-  if app_owned_restoring[token] then return end
+  if not bounds or at_work_area then return false end
+  if app_owned_restoring[token] then return false end
   app_owned_restoring[token] = true
   geometry_dispatch("resize", { x = bounds.width, y = bounds.height, window = window }, "app-owned.sync")
   geometry_dispatch("move", { x = bounds.left, y = bounds.top, window = window }, "app-owned.sync")
   app_owned_restoring[token] = nil
+  return true
 end
 
 function app_owned_restore_to(window, box)
@@ -955,7 +956,11 @@ function app_owned_push_state(window)
   end)
 end
 
-local function set_client_maximize(window, maximize)
+-- `push` re-sends the current box so the app redraws its own control for the new
+-- state. A caller that resizes the window right after does not need it: that
+-- configure already carries the new state list, and pushing first would only
+-- make the client lay itself out for a box it is about to leave.
+local function set_client_maximize(window, maximize, push)
   if not window then return end
   pcall(function()
     hl.dispatch(hl.dsp.window.fullscreen_state({
@@ -965,7 +970,7 @@ local function set_client_maximize(window, maximize)
       window = window,
     }))
   end)
-  app_owned_push_state(window)
+  if push ~= false then app_owned_push_state(window) end
 end
 
 -- The box a restore gives back when no ordinary frame was ever recorded: the app
@@ -994,12 +999,15 @@ end
 
 local function app_owned_maximize(window)
   if not window or not titlebar_excluded(window) then return false end
-  set_client_maximize(window, true)
+  -- The box this state change is followed by carries the new state list, so the
+  -- app is told once. Only a window that already covers the work area is pushed
+  -- to on its own, because nothing will be resized for it.
+  set_client_maximize(window, true, false)
   -- Keep this apply even though the compositor also sizes a client maximize:
   -- when the fold drops the internal state right after the app asked for it,
   -- Hyprland restores the pre-maximize box, and without a second apply the
   -- window would sit at its old size with the client bit set.
-  app_owned_sync(window, true)
+  if not app_owned_sync(window, true) then app_owned_push_state(window) end
   pcall(function()
     hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = window }))
   end)
@@ -1012,8 +1020,9 @@ local function app_owned_unmaximize(window)
   local box = token and app_owned_last[token] or nil
   box = box or app_owned_restore_fallback(window)
   if token and box then app_owned_giveback[token] = box end
-  set_client_maximize(window, false)
-  app_owned_restore_to(window, box)
+  -- Same as the maximize: the box that follows carries the state list.
+  set_client_maximize(window, false, false)
+  if box then app_owned_restore_to(window, box) else app_owned_push_state(window) end
   return true
 end
 
@@ -1760,15 +1769,29 @@ local function mode_aware_resize(dx, dy)
 end
 
 -- The box a snap must be able to give back: the pre-max box when the window was
--- geometry-maximized, otherwise the half's own previous box, otherwise the
--- live box. Restoring a persisted half passes capture_restore = false because
--- its pre-snap geometry belongs to a closed window, not to this one.
+-- maximized, otherwise the half's own previous box, otherwise the live box.
+-- Restoring a persisted half passes capture_restore = false because its pre-snap
+-- geometry belongs to a closed window, not to this one.
+--
+-- A window the plugin decorates keeps its pre-maximize box in the maximize tag. An
+-- app-owned window holds its maximize as the client's own bit, so the box to give
+-- back is its last ordinary frame, and one that arrived maximized gets the same
+-- default box a restore gives it.
 local function snap_restore_geometry(window)
   local side = window_side_intent(window)
   if side and side.restore then return side.restore end
   local maximum = window_geometric_max_metadata(window)
   if maximum then
     return { x = maximum.x, y = maximum.y, width = maximum.width, height = maximum.height }
+  end
+  if window_client_maximized(window) then
+    local token = geometry_window_token(window)
+    local last = token and app_owned_last[token] or nil
+    if last then
+      return { x = last.x, y = last.y, width = last.width, height = last.height }
+    end
+    local fallback = app_owned_restore_fallback(window)
+    if fallback then return fallback end
   end
   local at, size = window and window.at or nil, window and window.size or nil
   if not at or not size then return nil end
@@ -1784,8 +1807,19 @@ local function snap_active_window(window, workspace, side, capture_restore)
     debug_window_action("geometry.pinned-skip", window, workspace, { action = "snap." .. tostring(side) })
     return
   end
-  local restore = capture_restore ~= false and snap_restore_geometry(window) or nil
-  if window_geometric_max_metadata(window) then restore_geometric_max(window) end
+  -- A caller that knows the box to give back passes it in; the plain snap reads
+  -- it from the window before anything is changed.
+  local restore
+  if type(capture_restore) == "table" then
+    restore = capture_restore
+  elseif capture_restore ~= false then
+    restore = snap_restore_geometry(window)
+  end
+  -- The maximize intent goes, its box stays: `restore` already carries the box
+  -- the window had before it was maximized, so restoring it here would only add
+  -- a second box (and a second client layout) before the one this snap sets.
+  local maximum = window_geometric_max_metadata(window)
+  if maximum then remove_window_tag(window, maximum.raw) end
   local geometry = side_geometry(side, window.monitor, titlebar_inset(window))
   if not geometry then return end
 
@@ -1803,10 +1837,19 @@ local function mode_aware_direction(direction)
   local window, workspace = active_window_context()
   local float_mode = workspace_is_regular(workspace) and workspace_float_enabled(workspace)
   debug_window_action("bind.direction", window, workspace, { direction = direction, float = float_mode })
+  local snap_restore
   if float_mode then
+    -- A real fullscreen window ignores every geometry dispatch, so a direction
+    -- key would otherwise do nothing and leave only its intent behind for a
+    -- later surprise. Leave that state first; the box the key asks for is then
+    -- the one geometry the window gets.
+    if window and (tonumber(window.fullscreen) or 0) >= 2 then
+      hl.dispatch(hl.dsp.window.fullscreen({ mode = "fullscreen", action = "unset", window = window }))
+      window = hl.get_active_window() or window
+    end
     if window and titlebar_excluded(window) then
       -- The app-owned window keeps its own maximize bit but never Hyprland's
-      -- internal state; a half snap first gives the pre-max box back.
+      -- internal state.
       if direction == "u" then
         app_owned_maximize(window)
         return
@@ -1816,11 +1859,21 @@ local function mode_aware_direction(direction)
           return
         end
       elseif direction == "l" or direction == "r" then
-        if window_holds_maximize(window) then app_owned_unmaximize(window) end
+        -- The half box is the next box; giving the pre-maximize box back first
+        -- would resize the window (and re-lay the client out) on the way there.
+        -- A window that pins its own size is not snapped at all, so it keeps the
+        -- box its maximize gave it. The box to give back is read while the window
+        -- still holds the maximize, because clearing the bit is what ends it.
+        if window_holds_maximize(window) and not window_size_pinned(window) then
+          snap_restore = snap_restore_geometry(window)
+          set_client_maximize(window, false, false)
+          local token = geometry_window_token(window)
+          if token then app_owned_giveback[token] = nil end
+        end
       end
     end
     if direction == "l" or direction == "r" then
-      snap_active_window(window, workspace, direction == "l" and "left" or "right")
+      snap_active_window(window, workspace, direction == "l" and "left" or "right", snap_restore)
     elseif direction == "u" then
       maximize_geometric_window(window, workspace)
     else
