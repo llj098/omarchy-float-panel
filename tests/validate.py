@@ -498,6 +498,8 @@ for required_lua_policy in (
     assert required_lua_policy in lua, f"Lua client-request policy missing: {required_lua_policy}"
 assert 'for (const auto& window : Desktop::windowState()->windows())\n        trackMaximizeRequests(window);' in native_main, \
     "reloading the plugin must bring the request bridge back for the windows that are already open"
+for geometry_fact in ('"geometry_x"', '"geometry_y"', '"geometry_width"', '"geometry_height"'):
+    assert geometry_fact in native_main, f"the placement input must stay observable: {geometry_fact}"
 for placement_contract in (
     '"CXDGToplevelResource::setSize(", "CXDGToplevelResource::setSize"',
     'Desktop::CViewHitTester::windowSurfaceAt(',

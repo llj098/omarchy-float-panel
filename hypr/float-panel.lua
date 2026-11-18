@@ -467,6 +467,7 @@ window_surface_facts = function(window)
   -- nothing, a changed one is the interesting case.
   local signature = table.concat({
     tostring(size.x), tostring(size.y), tostring(semantics.surface_width), tostring(semantics.surface_height),
+    tostring(semantics.geometry_x), tostring(semantics.geometry_y),
     tostring(semantics.geometry_width), tostring(semantics.geometry_height), tostring(semantics.reserves_margins),
   }, ",")
   if surface_facts_reported[token] == signature then return end
@@ -486,6 +487,7 @@ window_surface_facts = function(window)
     reported_w = semantics.reported_width, reported_h = semantics.reported_height,
     buffer_w = semantics.buffer_width, buffer_h = semantics.buffer_height,
     buffer_scale = scale,
+    geometry_x = semantics.geometry_x, geometry_y = semantics.geometry_y,
     geometry_w = semantics.geometry_width, geometry_h = semantics.geometry_height,
     reserves_margins = tostring(semantics.reserves_margins),
   })
