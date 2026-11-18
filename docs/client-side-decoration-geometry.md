@@ -40,6 +40,7 @@ application knowledge and no configuration:
 | `CXDGToplevelResource::setSize` | the configure carries the box, which is the content size |
 | `CSurfacePassElement::CSurfacePassElement` | the surface is placed at `box − ring`, covers `box + ring`, and is clipped to the box; popups keep Hyprland's own placement |
 | `Desktop::CViewHitTester::windowSurfaceAt` | pointer coordinates are shifted by the same ring |
+| `Render::IHyprRenderer::damageSurface` | a client's own repaint is damaged from the same origin the surface is drawn at |
 | `CXDGToplevelResource::layoutMinSize` / `layoutMaxSize` | the client's declared limits are content sizes, not content plus frame |
 
 The ring is read from the client's own commit (`geometry` versus surface size) and
@@ -73,6 +74,35 @@ keeps working.
 This is not app-specific: it holds for any client that commits a window geometry
 smaller than its surface. There is no configuration value and no application
 knowledge involved.
+
+## A client's repaint is moved with it
+
+The compositor treats a window's position as the origin of its surface: when a
+client commits, the part of the surface it repainted is moved to the output from
+that position (`CWindow::commitWindow`: `damageSurface(surface,
+m_realPosition->goal())`). Placing the surface one frame margin before that
+position therefore separates two things that have to agree — where a client's
+pixels are drawn and which pixels are considered changed — and every partial
+update lands one frame margin away from the pixels it describes. The client's own
+repaint is then drawn outside the damaged area, and the area that was damaged
+keeps the previous frame until something repaints the whole window. Inside a text
+line that reads as a selection highlight or freshly typed text that is only
+partly revealed and heals as soon as the window is fully repainted.
+
+So the damage origin is shifted by the same ring the placement uses, which puts
+the two back on one origin. Measured in the private headless lab on a 900×560
+Chromium box at (200,160) with a 10-pixel ring, same text selection, client damage
+rect untouched between the two runs:
+
+| | damage extents logged by `debug:log_damage` |
+| --- | --- |
+| placement only | `xy: 210, 179 wh: 860, 541` |
+| placement and damage | `xy: 200, 169 wh: 860, 541` |
+
+The surface is drawn at (190,150), so the client's own damage rect (10,19 in
+surface coordinates) lands on (200,169) in both runs. The first row points at
+(210,179) instead — one frame margin down and to the right of the pixels the
+client actually painted — and the second row names that rect exactly.
 
 The negotiation cannot be used instead. Hyprland implements `zxdg_decoration` and
 answers `MODE_SERVER_SIDE` to every request (`src/protocols/XDGDecoration.cpp`:
@@ -124,8 +154,10 @@ Private headless Hyprland, real pointer events, screenshots plus `hyprctl` facts
   window geometry, and are not touched.
 - A workspace slide clips the ring to the window bounding box for the duration of
   the animation.
-- Damage still comes from the surface element's box, which spans the ring, so a ring
-  client that moves repaints the ring it just vacated (measured, no stale pixels).
+- Damage the compositor raises on its own (a move, a resize, a decoration or a
+  titlebar) still comes from the window box, which is exactly the area the clipped
+  surface covers, so a ring client that moves repaints the ring it just vacated
+  (measured, no stale pixels).
 - A window that the plugin decorates with its own titlebar keeps that decoration
   inside the window box, so a ring client's top margin overlaps the bottom of the
   titlebar by one frame margin. The client's ring cannot be dropped there without

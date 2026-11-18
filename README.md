@@ -197,7 +197,8 @@ the window box origin and treats the box as the whole surface, which pushes the
 content inward and cuts its right and bottom edge. The bridge removes that
 mismatch instead of hiding it: the configure carries the box as the content size,
 the surface is placed at `box − ring` and covers `box + ring`, pointer coordinates
-are shifted with it, and the client's own minimum/maximum sizes stop being padded
+and the client's own repaints are moved with it, and the client's own
+minimum/maximum sizes stop being padded
 by the ring. Because this compositor draws the window frame itself, the surface is
 also clipped to the box, so the client's frame — Chromium's faint dark band, GTK's
 drop shadow — is not painted a second time around the window. The maximize state

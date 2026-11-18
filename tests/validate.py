@@ -459,7 +459,7 @@ for bridge_function in ("window_semantics", "capabilities", "push_state"):
         f"native bridge binding must be registered and removed: {bridge_function}"
 assert 'unregisterLuaFunctions(pluginHandle);' in native_main, \
     "every native bridge binding must be removed on plugin exit"
-for hook in ("setMaximizedHook", "setSizeHook", "surfaceCtorHook", "windowSurfaceAtHook", "layoutMinSizeHook", "layoutMaxSizeHook"):
+for hook in ("setMaximizedHook", "setSizeHook", "surfaceCtorHook", "windowSurfaceAtHook", "damageSurfaceHook", "layoutMinSizeHook", "layoutMaxSizeHook"):
     assert f'removeFunctionHook(handle, {hook});' in native_main, \
         f"a patched compositor function must be unhooked: {hook}"
 assert 'removeFunctionHooks(pluginHandle);' in native_main, \
@@ -509,6 +509,8 @@ for placement_contract in (
     'placed.pos  = data.pos - ring;',
     'std::abs(ring.x - margin.x * 2) > 1',
     'placed.clipBox = CBox{data.pos - monitor->m_position, {data.w, data.h}}.scale(monitor->m_scale).round();',
+    '"IHyprRenderer::damageSurface(", "Render::IHyprRenderer::damageSurface"',
+    'original(self, surface, x - ring.x, y - ring.y, scale);',
 ):
     assert placement_contract in native_main, \
         f"client decoration margins must be placed from the client's own geometry: {placement_contract}"

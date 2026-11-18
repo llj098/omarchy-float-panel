@@ -19,6 +19,7 @@
 #include <src/protocols/core/Compositor.hpp>
 #include <src/desktop/state/WindowState.hpp>
 #include <src/desktop/view/Window.hpp>
+#include <src/desktop/view/WLSurface.hpp>
 #include <src/output/Monitor.hpp>
 #include <src/render/pass/SurfacePassElement.hpp>
 #include <src/event/EventBus.hpp>
@@ -29,6 +30,12 @@
 extern "C" {
 #include <lauxlib.h>
 #include <lua.h>
+}
+
+// The renderer only ever appears as the receiver of a hooked member function, so
+// the plugin names it instead of pulling in the renderer's inline stubs.
+namespace Render {
+    class IHyprRenderer;
 }
 
 
@@ -407,6 +414,29 @@ SP<CWLSurfaceResource> hookWindowSurfaceAt(Desktop::CViewHitTester* self, const 
     return original(self, pos + ring, window, surfaceLocal);
 }
 
+// The compositor treats a window's position as the origin of its surface: the
+// part of the surface a client repainted is moved to the output from there. The
+// placement above draws the surface one frame margin before that position, so a
+// partial update would otherwise be damaged one frame margin away from the
+// pixels it describes: the client's own repaint would land outside the damaged
+// area, and the area it did repaint would keep the previous frame until
+// something repainted the whole window. The damage follows the drawing.
+CFunctionHook* damageSurfaceHook = nullptr;
+using DamageSurfaceFn = void (*)(Render::IHyprRenderer*, SP<CWLSurfaceResource>, double, double, double);
+
+void hookDamageSurface(Render::IHyprRenderer* self, SP<CWLSurfaceResource> surface, double x, double y, double scale) {
+    const auto original  = reinterpret_cast<DamageSurfaceFn>(damageSurfaceHook->m_original);
+    const auto wlSurface = Desktop::View::CWLSurface::fromResource(surface);
+    const auto view      = wlSurface ? wlSurface->view() : SP<Desktop::View::IView>{};
+    const auto window    = view ? Desktop::View::CWindow::fromView(view) : PHLWINDOW{};
+    const auto ring      = windowDecorationRing(window);
+
+    if (ring.x <= 0 || ring.y <= 0)
+        return original(self, surface, x, y, scale);
+
+    original(self, surface, x - ring.x, y - ring.y, scale);
+}
+
 // The size limits a client declares are content sizes. Hyprland reports them
 // with the frame margin added, so the compositor would refuse to make a window
 // narrower or shorter than the client allows by that margin, and would clamp a
@@ -539,6 +569,8 @@ void installPlacementHooks(HANDLE handle) {
     windowSurfaceAtHook =
         installHook(handle, "windowSurfaceAt", "Desktop::CViewHitTester::windowSurfaceAt(", "Desktop::CViewHitTester::windowSurfaceAt",
                     reinterpret_cast<void*>(hookWindowSurfaceAt));
+    damageSurfaceHook = installHook(handle, "damageSurface", "IHyprRenderer::damageSurface(", "Render::IHyprRenderer::damageSurface",
+                                    reinterpret_cast<void*>(hookDamageSurface));
     layoutMinSizeHook =
         installHook(handle, "layoutMinSize", "CXDGToplevelResource::layoutMinSize()", "CXDGToplevelResource::layoutMinSize",
                     reinterpret_cast<void*>(hookLayoutMinSize));
@@ -577,6 +609,10 @@ void removeFunctionHooks(HANDLE handle) {
     if (windowSurfaceAtHook) {
         HyprlandAPI::removeFunctionHook(handle, windowSurfaceAtHook);
         windowSurfaceAtHook = nullptr;
+    }
+    if (damageSurfaceHook) {
+        HyprlandAPI::removeFunctionHook(handle, damageSurfaceHook);
+        damageSurfaceHook = nullptr;
     }
     if (layoutMinSizeHook) {
         HyprlandAPI::removeFunctionHook(handle, layoutMinSizeHook);
